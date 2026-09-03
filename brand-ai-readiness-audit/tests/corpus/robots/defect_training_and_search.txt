@@ -1,0 +1,11 @@
+User-agent: *
+Disallow:
+
+User-agent: GPTBot
+User-agent: ClaudeBot
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: PerplexityBot
+User-agent: Claude-SearchBot
+Disallow: /

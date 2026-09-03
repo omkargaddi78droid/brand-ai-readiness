@@ -1,0 +1,30 @@
+This clinic treats hypertension, diabetes, and thyroid disorders. Our cardiologists specialize in arrhythmia and atherosclerosis. We also diagnose autoimmune conditions like lupus and rheumatoid arthritis.
+
+Patients receive a full metabolic panel at intake. This checks glucose, creatinine, and electrolyte levels. We also test for hyperlipidemia and hypothyroidism.
+
+Anticoagulant therapy requires regular monitoring. We check prothrombin time and INR weekly. Dosage adjustments happen based on these results.
+
+Our pharmacology team reviews every prescription. They check for contraindications and drug interactions. Nephrotoxicity and hepatotoxicity are flagged automatically.
+
+Immunosuppressant regimens follow strict protocols. Transplant patients get tacrolimus or cyclosporine. Levels are checked monthly to avoid nephrotoxicity.
+
+Endocrinology consults cover thyroid and adrenal disorders. We test TSH, T3, and T4 levels. Cortisol testing happens for suspected adrenal insufficiency.
+
+Oncology patients undergo chemotherapy under close supervision. Neutropenia is monitored via weekly blood counts. Antiemetics are prescribed to manage nausea.
+
+Our radiology suite offers MRI, CT, and ultrasound. Contrast agents require a kidney function check first. Gadolinium is avoided in patients with renal impairment.
+
+Physical therapy addresses musculoskeletal injuries. We treat tendinitis, bursitis, and rotator cuff tears. Rehabilitation plans are customized per patient.
+
+Every department follows evidence-based clinical guidelines. Documentation is thorough and standardized. Quality metrics are reviewed quarterly by our compliance team.
+
+Our laboratory runs standard hematology panels. We check hemoglobin, platelets, and white cell counts. Abnormal results trigger a physician callback same day.
+
+Dermatology handles eczema, psoriasis, and dermatitis cases. Biopsies are read by our pathology team. Results are usually ready within a week.
+
+Gastroenterology covers colonoscopy and endoscopy procedures. We screen for polyps and ulcers routinely. Sedation is managed by our anesthesia team.
+
+Pediatrics follows standard immunization schedules. We track growth curves at every visit. Developmental screening happens at key milestones.
+
+Ophthalmology handles cataract and glaucoma cases. We measure intraocular pressure at each visit. Surgical referrals go out within two weeks.
+

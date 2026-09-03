@@ -1,0 +1,19 @@
+User-agent: *
+Disallow: /admin/
+
+User-agent: GPTBot
+User-agent: ClaudeBot
+User-agent: Google-Extended
+User-agent: CCBot
+User-agent: Applebot-Extended
+User-agent: meta-externalagent
+User-agent: Bytespider
+User-agent: OAI-SearchBot
+User-agent: PerplexityBot
+User-agent: Claude-SearchBot
+User-agent: DuckAssistBot
+User-agent: ChatGPT-User
+User-agent: Claude-User
+User-agent: Perplexity-User
+User-agent: Meta-ExternalFetcher
+Disallow: /

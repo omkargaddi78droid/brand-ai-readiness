@@ -1,0 +1,8 @@
+# Example Corp
+
+> Inventory software for independent hardware retailers.
+
+## Documentation
+
+- [Getting started](https://example.com/docs/start)
+- [API reference](https://example.com/docs/api)

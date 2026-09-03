@@ -1,0 +1,24 @@
+Our team ships new features every two weeks. Each release goes through a short review before it goes live. We post the full changelog on our blog.
+
+Signing up takes less than a minute. Just enter your email and pick a password. You can start using the app right away.
+
+Support is open Monday through Friday. Send us a message and we will reply within a day. Most questions get answered the same day.
+
+We back up your data every night. Backups are kept for thirty days. You can restore an older version at any time from your account settings.
+
+The mobile app works on both phones and tablets. It syncs with the web app automatically. Any change you make shows up everywhere within seconds.
+
+Billing is simple and clear. You pick a plan and pay once a month. You can switch plans or cancel at any time from your account page.
+
+Our help center has short guides for every feature. Each guide has screenshots and step by step instructions. Most users find what they need in under a minute.
+
+We take security seriously. All data is encrypted both in transit and at rest. Our team runs regular checks to catch problems early.
+
+New users often ask how to invite teammates. Just go to the team page and enter their email. They will get a link to join right away.
+
+If something breaks, we want to know fast. There is a report button on every page. Our team looks at every report within a few hours.
+
+Exporting your data is easy too. Just click export on the settings page. You will get a file with everything in it.
+
+We also offer a free trial. It lasts fourteen days and needs no credit card. You can upgrade at any point during the trial.
+

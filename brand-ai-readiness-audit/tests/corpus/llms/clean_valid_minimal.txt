@@ -1,0 +1,7 @@
+# Example Corp
+
+> One-line description of what the company sells and to whom.
+
+## Key pages
+
+- [Pricing](https://example.com/pricing): plans, limits, what each tier includes.

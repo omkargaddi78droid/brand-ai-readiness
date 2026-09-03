@@ -1,0 +1,8 @@
+User-agent: *
+Disallow:
+
+User-agent: ChatGPT-User
+User-agent: Claude-User
+User-agent: Perplexity-User
+User-agent: Meta-ExternalFetcher
+Disallow: /

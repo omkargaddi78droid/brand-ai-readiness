@@ -1,0 +1,5 @@
+> Example Corp builds inventory software for independent hardware retailers.
+
+## Documentation
+
+- [Getting started](https://example.com/docs/start): install, configure, first sync.

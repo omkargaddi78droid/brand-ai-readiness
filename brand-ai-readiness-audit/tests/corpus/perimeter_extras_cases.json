@@ -1,0 +1,124 @@
+{
+  "description": "Labelled ground-truth corpus for PER-05/06/07/08 — perimeter-access-audit's second half, added after PER-01/02/03/04 were frozen. Kept separate from cases.json (PER-01/02/04) rather than merged into it, since that corpus's fixtures were never designed to also carry llms-full.txt/sitemap.xml/.md inputs.",
+  "cases": [
+    {
+      "id": "clean-substantial-llms-full",
+      "label": "clean",
+      "inputs": {"llms_full_file": "llms_full_substantial.txt", "llms_full_status": "present"},
+      "note": "A real, substantial llms-full.txt.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-llms-full-absent",
+      "label": "clean",
+      "inputs": {"llms_full_status": "absent"},
+      "note": "Absence alone is not worth a proactive note for this secondary, optional file.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-thin-llms-full",
+      "label": "defect",
+      "inputs": {"llms_full_file": "llms_full_thin.txt", "llms_full_status": "present"},
+      "note": "Present but a near-empty stub.",
+      "expected_findings": ["PER-05-llms-full-txt-thin"]
+    },
+    {
+      "id": "clean-valid-sitemap",
+      "label": "clean",
+      "inputs": {
+        "robots_file": "robots_with_sitemap.txt", "robots_status": "present",
+        "sitemap_file": "sitemap_valid_urlset.xml", "sitemap_status": "present"
+      },
+      "note": "A conforming <urlset> with real <loc> entries. robots.txt references it, so PER-08 stays silent too and this case isolates PER-06.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-valid-sitemap-index",
+      "label": "clean",
+      "inputs": {
+        "robots_file": "robots_with_sitemap.txt", "robots_status": "present",
+        "sitemap_file": "sitemap_valid_index.xml", "sitemap_status": "present"
+      },
+      "note": "A conforming <sitemapindex>. robots.txt references it, isolating this case to PER-06.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-missing-sitemap",
+      "label": "defect",
+      "inputs": {"sitemap_status": "absent"},
+      "note": "No sitemap.xml at all.",
+      "expected_findings": ["PER-06-sitemap-missing"]
+    },
+    {
+      "id": "defect-sitemap-html-error",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "robots_with_sitemap.txt", "robots_status": "present",
+        "sitemap_file": "sitemap_html_error.txt", "sitemap_status": "present"
+      },
+      "note": "An HTML 404 page served at /sitemap.xml with status 200. robots.txt references the (broken) sitemap, isolating this case to PER-06.",
+      "expected_findings": ["PER-06-sitemap-malformed"]
+    },
+    {
+      "id": "defect-sitemap-empty",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "robots_with_sitemap.txt", "robots_status": "present",
+        "sitemap_file": "sitemap_empty.xml", "sitemap_status": "present"
+      },
+      "note": "A valid but empty <urlset>. robots.txt references it, isolating this case to PER-06.",
+      "expected_findings": ["PER-06-sitemap-empty"]
+    },
+    {
+      "id": "clean-real-md-variant",
+      "label": "clean",
+      "inputs": {"md_file": "md_variant_real.md", "md_status": "present"},
+      "note": "The .md suffix genuinely returns a markdown/text variant.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-md-variant-absent",
+      "label": "defect",
+      "inputs": {"md_status": "absent"},
+      "note": "No .md variant available; low-severity proactive suggestion.",
+      "expected_findings": ["PER-07-no-md-negotiation"]
+    },
+    {
+      "id": "defect-md-variant-soft-404",
+      "label": "defect",
+      "inputs": {"md_file": "md_variant_soft404.html", "md_status": "present"},
+      "note": "The .md path returns the site's own HTML error page rather than a real variant.",
+      "expected_findings": ["PER-07-no-md-negotiation"]
+    },
+    {
+      "id": "clean-sitemap-referenced-in-robots",
+      "label": "clean",
+      "inputs": {
+        "robots_file": "robots_with_sitemap.txt", "robots_status": "present",
+        "sitemap_file": "sitemap_valid_urlset.xml", "sitemap_status": "present"
+      },
+      "note": "robots.txt declares a Sitemap: directive.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-sitemap-not-referenced-in-robots",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "robots_without_sitemap.txt", "robots_status": "present",
+        "sitemap_file": "sitemap_valid_urlset.xml", "sitemap_status": "present"
+      },
+      "note": "A real sitemap exists but robots.txt never mentions it.",
+      "expected_findings": ["PER-08-sitemap-not-in-robots"]
+    },
+    {
+      "id": "defect-per08-not-applicable-no-sitemap",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "robots_without_sitemap.txt", "robots_status": "present",
+        "sitemap_status": "absent"
+      },
+      "note": "No sitemap exists at all — PER-06 correctly fires (a real defect); PER-08 must NOT also fire for the same root cause, since 'not referenced in robots' is meaningless once there is nothing to reference. Exactly one finding, not two, proves PER-08's applicability guard.",
+      "expected_findings": ["PER-06-sitemap-missing"]
+    }
+  ]
+}

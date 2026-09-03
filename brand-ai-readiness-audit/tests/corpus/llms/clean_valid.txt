@@ -1,0 +1,12 @@
+# Example Corp
+
+> Example Corp builds inventory software for independent hardware retailers.
+
+## Documentation
+
+- [Getting started](https://example.com/docs/start): install, configure, first sync.
+- [API reference](https://example.com/docs/api): endpoints, auth, rate limits.
+
+## Company
+
+- [About](https://example.com/about): who we are, where we operate, how to reach us.

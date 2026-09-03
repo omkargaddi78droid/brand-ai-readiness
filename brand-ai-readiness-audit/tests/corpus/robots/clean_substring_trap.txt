@@ -1,0 +1,13 @@
+# Minimised from a real site. `Fetch` is a historical crawler token; under
+# substring group matching it captures Meta-ExternalFetcher, which it must not.
+User-agent: *
+Disallow: /private/
+
+User-agent: Fetch
+Disallow: /
+
+User-agent: Claude
+Disallow: /
+
+User-agent: Search
+Disallow: /

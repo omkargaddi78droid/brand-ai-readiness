@@ -1,0 +1,61 @@
+{
+  "description": "Labelled ground-truth corpus for engagement-audit's deterministic checks (EN-05, EN-06, EN-07, EN-09). EN-01/EN-03 are agent-judged and have no script verdict to measure this way — see references/engagement-judgement-rubric.md for their calibration examples instead. expected_findings entries are matched as ID PREFIXES (not exact equality) because EN-06's id includes a content hash suffix. Every fixture carries a valid viewport meta tag unless a case is specifically testing EN-05, so EN-05 does not pollute unrelated cases.",
+  "cases": [
+    {
+      "id": "clean-labeled-form",
+      "label": "clean",
+      "file": "clean_labeled_form.html",
+      "note": "Every field has an explicit or implicit label.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-dismissible-cookie-banner",
+      "label": "clean",
+      "file": "clean_dismissible_cookie_banner.html",
+      "note": "A normal, GDPR-style cookie banner with both Accept and Reject options. Not a defect.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-announcement-modal",
+      "label": "clean",
+      "file": "clean_announcement_modal.html",
+      "note": "A modal-classed element with no wall language at all (a feature announcement, not a consent/subscribe gate).",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-unlabelled-form",
+      "label": "defect",
+      "file": "defect_unlabelled_form.html",
+      "note": "Every field relies on a placeholder only.",
+      "expected_findings": ["EN-09-unlabelled-form-fields"]
+    },
+    {
+      "id": "defect-consent-wall-no-dismiss",
+      "label": "defect",
+      "file": "defect_consent_wall_no_dismiss.html",
+      "note": "role=dialog + subscribe-wall language + no reject/close option. Also trips EN-09 since its own input has no label.",
+      "expected_findings": ["EN-06-interstitial-wall-", "EN-09-unlabelled-form-fields"]
+    },
+    {
+      "id": "defect-login-wall-no-dismiss",
+      "label": "defect",
+      "file": "defect_login_wall_no_dismiss.html",
+      "note": "class=modal-overlay + login-wall language + no dismiss option.",
+      "expected_findings": ["EN-06-interstitial-wall-", "EN-09-unlabelled-form-fields"]
+    },
+    {
+      "id": "defect-missing-viewport-and-overflow",
+      "label": "defect",
+      "file": "defect_missing_viewport_and_overflow.html",
+      "note": "No viewport meta tag at all, plus a 900px fixed-width element with no responsive override.",
+      "expected_findings": ["EN-05-missing-viewport", "EN-05-fixed-width-overflow"]
+    },
+    {
+      "id": "defect-heavy-page",
+      "label": "defect",
+      "file": "defect_heavy_page.html",
+      "note": "Valid viewport (isolates EN-05); 6 render-blocking head resources, 4 unsized images, ~328KB HTML document.",
+      "expected_findings": ["EN-07-render-blocking-resources", "EN-07-unsized-images", "EN-07-heavy-html-payload"]
+    }
+  ]
+}

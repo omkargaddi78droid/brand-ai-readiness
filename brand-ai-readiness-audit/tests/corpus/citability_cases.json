@@ -1,0 +1,61 @@
+{
+  "description": "Labelled ground-truth corpus for citability-audit's three deterministic checks (CIT-01, CIT-02, CIT-06). CIT-04 is agent-judged and has no script verdict to measure this way.",
+  "cases": [
+    {
+      "id": "clean-full-citability",
+      "label": "clean",
+      "file": "clean_full_citability.html",
+      "note": "About link, substantial content with an external citation.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-short-page",
+      "label": "clean",
+      "file": "clean_short_page.html",
+      "note": "About link present; too short to trip CIT-02 (which is scoped to substantial pages only).",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-superlative-with-number",
+      "label": "clean",
+      "file": "clean_superlative_with_number.html",
+      "note": "\"the fastest\" is qualified by a number in the same sentence.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-mediawiki-style-about",
+      "label": "clean",
+      "file": "clean_mediawiki_style_about.html",
+      "note": "MediaWiki namespace-prefixed About link (/wiki/Wikipedia:About), found live against en.wikipedia.org.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-sphinx-style-link-tag-about",
+      "label": "clean",
+      "file": "clean_sphinx_style_link_tag_about.html",
+      "note": "About referenced only via <link rel=\"author\"> in <head>, no visible <a>, found live against docs.python.org.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-no-about-link",
+      "label": "defect",
+      "file": "defect_no_about_link.html",
+      "note": "No link anywhere on the page resolves to a conventional About/company path.",
+      "expected_findings": ["CIT-01-no-about-link"]
+    },
+    {
+      "id": "defect-no-source-attribution",
+      "label": "defect",
+      "file": "defect_no_source_attribution.html",
+      "note": "500+ words, zero links to any other domain (the internal /pricing link doesn't count).",
+      "expected_findings": ["CIT-02-no-source-attribution"]
+    },
+    {
+      "id": "defect-unverifiable-superlatives",
+      "label": "defect",
+      "file": "defect_unverifiable_superlatives.html",
+      "note": "Three unqualified superlatives, none backed by a number in their sentence.",
+      "expected_findings": ["CIT-06-unverifiable-superlatives"]
+    }
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "description": "Labelled ground-truth corpus for entity-audit (ENT-01/02/03/04). Clean cases carry an empty expectation on purpose: they are the false-positive control.",
+  "cases": [
+    {
+      "id": "clean-full-identity",
+      "label": "clean",
+      "file": "clean_full_identity.html",
+      "note": "Organization with sameAs, Product with matching aggregateRating text, single self-referencing canonical.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-graph-form",
+      "label": "clean",
+      "file": "clean_graph_form.html",
+      "note": "Organization and WebSite nested inside @graph rather than top-level; sameAs to github.com.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-no-rating-claim",
+      "label": "clean",
+      "file": "clean_no_rating_claim.html",
+      "note": "aggregateRating present in markup but no rating number stated in visible text — nothing to disagree with, so ENT-03 must stay silent rather than guess.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-no-structured-data",
+      "label": "defect",
+      "file": "defect_no_structured_data.html",
+      "note": "No JSON-LD at all, but a valid canonical — isolates ENT-01 from ENT-04.",
+      "expected_findings": ["ENT-01-no-structured-data"]
+    },
+    {
+      "id": "defect-malformed-json-ld",
+      "label": "defect",
+      "file": "defect_malformed_json_ld.html",
+      "note": "Trailing comma makes the JSON-LD block invalid.",
+      "expected_findings": ["ENT-01-malformed-json-ld"]
+    },
+    {
+      "id": "defect-no-sameas",
+      "label": "defect",
+      "file": "defect_no_sameas.html",
+      "note": "Organization with name+url but no sameAs at all.",
+      "expected_findings": ["ENT-02-no-knowledge-graph-link"]
+    },
+    {
+      "id": "defect-rating-mismatch",
+      "label": "defect",
+      "file": "defect_rating_mismatch.html",
+      "note": "Markup says 4.8, visible text says 3.2 out of 5.",
+      "expected_findings": ["ENT-03-rating-markup-text-mismatch"]
+    },
+    {
+      "id": "defect-conflicting-canonical",
+      "label": "defect",
+      "file": "defect_conflicting_canonical.html",
+      "note": "Two different canonical hrefs on one page.",
+      "expected_findings": ["ENT-04-canonical-conflicting"]
+    },
+    {
+      "id": "defect-off-domain-canonical",
+      "label": "defect",
+      "file": "defect_off_domain_canonical.html",
+      "note": "Canonical points to a different hostname than the page itself.",
+      "expected_findings": ["ENT-04-canonical-off-domain"]
+    }
+  ]
+}

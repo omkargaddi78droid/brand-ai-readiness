@@ -1,0 +1,242 @@
+{
+  "description": "Labelled ground-truth corpus for the perimeter-access-audit skill. Each case names the exact findings the audit must emit and, by omission, every finding it must not. Clean cases carry an empty expectation on purpose: they are the false-positive control, and a detector without one has no measured precision.",
+  "cases": [
+    {
+      "id": "clean-allow-all",
+      "label": "clean",
+      "note": "Ordinary permissive robots.txt and a conforming llms.txt.",
+      "robots": "clean_allow_all.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-scoped-paths",
+      "label": "clean",
+      "note": "Scoped disallows plus Crawl-delay. A path rule is not a root block.",
+      "robots": "clean_scoped_paths.txt",
+      "llms": "clean_valid_minimal.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-messy-formatting",
+      "label": "clean",
+      "note": "BOM, CRLF, lowercase directives, odd spacing, and a comment naming GPTBot. Parsing must be structural, not substring matching.",
+      "robots": "clean_messy_formatting.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-seo-tools-blocked",
+      "label": "clean",
+      "note": "SEO crawlers blocked at the root; no AI agent affected.",
+      "robots": "clean_seo_tools_blocked.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-html-error-page",
+      "label": "clean",
+      "note": "A misconfigured host serving an HTML 404 body at /robots.txt with status 200.",
+      "robots": "clean_html_error_page.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-robots-absent",
+      "label": "clean",
+      "note": "No robots.txt. Under the exclusion protocol absence permits everything, so it is neither a finding nor an unknown.",
+      "robots": "absent",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-substring-trap",
+      "label": "clean",
+      "note": "Groups named Fetch, Claude and Search disallow the root. Under substring group matching these capture Meta-ExternalFetcher, Claude-User, Claude-SearchBot and OAI-SearchBot. Under RFC 9309 exact-token matching they capture nothing. Minimised from a real site that triggered exactly this.",
+      "robots": "clean_substring_trap.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "clean-asterisk-bullets",
+      "label": "clean",
+      "note": "A conforming llms.txt using `*` list markers. Markdown treats `-`, `*` and `+` identically; accepting only one reported a correct real-world file as malformed.",
+      "robots": "clean_allow_all.txt",
+      "llms": "clean_asterisk_bullets.txt",
+      "expected_findings": [],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-llms-soft-404",
+      "label": "defect",
+      "note": "The host answers /llms.txt with its own HTML page. No file is published, so this is an absence, not a malformed file.",
+      "robots": "clean_allow_all.txt",
+      "llms": "defect_soft_404_html.txt",
+      "expected_findings": [
+        {"check_id": "PER-04-llms-txt-missing", "severity": "low"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-ai-search-partial",
+      "label": "defect",
+      "note": "Two of four real-time AI search crawlers blocked.",
+      "robots": "defect_ai_search_partial.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-01-ai-search-blocked", "severity": "critical"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-all-ai-blocked",
+      "label": "defect",
+      "note": "Every AI agent disallowed while conventional crawlers stay allowed. One finding, not three.",
+      "robots": "defect_all_ai_blocked.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-02-all-ai-agents-blocked", "severity": "critical"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-site-wide-block",
+      "label": "defect",
+      "note": "Wildcard root disallow. Everything is blocked, conventional crawlers included.",
+      "robots": "defect_site_wide.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-02-all-ai-agents-blocked", "severity": "critical"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-training-only",
+      "label": "defect",
+      "note": "Training crawlers only. Real, but often deliberate, so medium rather than critical.",
+      "robots": "defect_training_only.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-01-training-blocked", "severity": "medium"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-on-demand-only",
+      "label": "defect",
+      "note": "User-triggered fetchers only. High, with reduced confidence.",
+      "robots": "defect_on_demand_only.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-01-on-demand-blocked", "severity": "high"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-training-and-search",
+      "label": "defect",
+      "note": "Two tiers partially blocked. Two findings with different severities, not one merged verdict.",
+      "robots": "defect_training_and_search.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-01-ai-search-blocked", "severity": "critical"},
+        {"check_id": "PER-01-training-blocked", "severity": "medium"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-wildcard-block-with-one-allow",
+      "label": "defect",
+      "note": "Root disallow for the wildcard group with one AI agent explicitly allowed. Group precedence must be honoured: 14 of 15 blocked is not a blanket block.",
+      "robots": "defect_wildcard_block_one_allow.txt",
+      "llms": "clean_valid.txt",
+      "expected_findings": [
+        {"check_id": "PER-01-ai-search-blocked", "severity": "critical"},
+        {"check_id": "PER-01-on-demand-blocked", "severity": "high"},
+        {"check_id": "PER-01-training-blocked", "severity": "medium"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-llms-missing",
+      "label": "defect",
+      "note": "No llms.txt. Low severity, proactive track.",
+      "robots": "clean_allow_all.txt",
+      "llms": "absent",
+      "expected_findings": [
+        {"check_id": "PER-04-llms-txt-missing", "severity": "low"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-llms-no-h1",
+      "label": "defect",
+      "note": "Published but missing the H1 title line.",
+      "robots": "clean_allow_all.txt",
+      "llms": "defect_no_h1.txt",
+      "expected_findings": [
+        {"check_id": "PER-04-llms-txt-malformed", "severity": "low"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-llms-bare-links",
+      "label": "defect",
+      "note": "Bare URLs with no summary, sections or annotated entries.",
+      "robots": "clean_allow_all.txt",
+      "llms": "defect_bare_links.txt",
+      "expected_findings": [
+        {"check_id": "PER-04-llms-txt-malformed", "severity": "low"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "defect-llms-links-without-descriptions",
+      "label": "defect",
+      "note": "Structurally close to valid; only the per-link descriptions are missing.",
+      "robots": "clean_allow_all.txt",
+      "llms": "defect_links_without_descriptions.txt",
+      "expected_findings": [
+        {"check_id": "PER-04-llms-txt-malformed", "severity": "low"}
+      ],
+      "expected_unknown": []
+    },
+    {
+      "id": "unknown-robots-unavailable",
+      "label": "unknown",
+      "note": "robots.txt timed out. Neither pass nor fail is knowable.",
+      "robots": "unavailable",
+      "llms": "clean_valid.txt",
+      "expected_findings": [],
+      "expected_unknown": ["PER-01", "PER-02"]
+    },
+    {
+      "id": "unknown-llms-unavailable",
+      "label": "unknown",
+      "note": "llms.txt returned 503.",
+      "robots": "clean_allow_all.txt",
+      "llms": "unavailable",
+      "expected_findings": [],
+      "expected_unknown": ["PER-04"]
+    },
+    {
+      "id": "defect-blocked-and-no-llms",
+      "label": "defect",
+      "note": "Two independent defects in one audit; both must survive composition.",
+      "robots": "defect_all_ai_blocked.txt",
+      "llms": "absent",
+      "expected_findings": [
+        {"check_id": "PER-02-all-ai-agents-blocked", "severity": "critical"},
+        {"check_id": "PER-04-llms-txt-missing", "severity": "low"}
+      ],
+      "expected_unknown": []
+    }
+  ]
+}

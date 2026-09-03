@@ -1,0 +1,5 @@
+# Example Corp
+
+https://example.com/docs/start
+https://example.com/docs/api
+https://example.com/about

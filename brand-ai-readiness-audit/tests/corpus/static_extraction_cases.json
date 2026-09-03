@@ -1,0 +1,75 @@
+{
+  "description": "Labelled ground-truth corpus for static-extraction-audit (REN-02/04/05/06/07/08/10/11). Clean cases carry an empty expectation on purpose: they are the false-positive control.",
+  "cases": [
+    {
+      "id": "clean-fully-covered",
+      "label": "clean",
+      "file": "clean_fully_covered.html",
+      "note": "Hydration text restated, price restated, freshness signal present, main/article boundary with high ratio, alt text and track present, no bare phone in script, no PDF.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-decorative-image",
+      "label": "clean",
+      "file": "clean_decorative_image.html",
+      "note": "Images marked decorative (role=presentation / aria-hidden=true) with no alt — the correct pattern, must not fire REN-08.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-hydration-gap",
+      "label": "defect",
+      "file": "defect_hydration_gap.html",
+      "note": "__NEXT_DATA__ carries a description string never restated in visible text.",
+      "expected_findings": ["REN-02-hydration-content-not-in-text"]
+    },
+    {
+      "id": "defect-price-gap",
+      "label": "defect",
+      "file": "defect_price_gap.html",
+      "note": "JSON-LD Offer.price (49.95) never appears in visible text.",
+      "expected_findings": ["REN-04-price-not-in-text"]
+    },
+    {
+      "id": "defect-no-freshness",
+      "label": "defect",
+      "file": "defect_no_freshness.html",
+      "note": "Offer declares availability, no dateModified and no freshness phrase anywhere.",
+      "expected_findings": ["REN-05-no-freshness-signal"]
+    },
+    {
+      "id": "defect-no-boundary",
+      "label": "defect",
+      "file": "defect_no_boundary.html",
+      "note": "150+ words of visible text, no <main>/<article> anywhere.",
+      "expected_findings": ["REN-06-no-semantic-boundary"]
+    },
+    {
+      "id": "defect-low-content-ratio",
+      "label": "defect",
+      "file": "defect_low_content_ratio.html",
+      "note": "<main> exists but most of the page's text sits in nav/footer chrome outside it.",
+      "expected_findings": ["REN-07-low-content-ratio"]
+    },
+    {
+      "id": "defect-missing-alt-and-track",
+      "label": "defect",
+      "file": "defect_missing_alt_and_track.html",
+      "note": "One <img> with no alt (not decorative), one <video> with no <track>.",
+      "expected_findings": ["REN-08-missing-alt-text", "REN-08-missing-media-track"]
+    },
+    {
+      "id": "defect-phone-only-in-script",
+      "label": "defect",
+      "file": "defect_phone_only_in_script.html",
+      "note": "Phone number assembled by inline script, absent from visible text ('click to reveal' pattern).",
+      "expected_findings": ["REN-10-phone-only-in-script"]
+    },
+    {
+      "id": "proactive-pdf-link",
+      "label": "defect",
+      "file": "proactive_pdf_link.html",
+      "note": "A PDF link exists — REN-11 always fires as a proactive suggestion, never a confirmed defect, when a PDF link is present.",
+      "expected_findings": ["REN-11-pdf-content-unverified"]
+    }
+  ]
+}

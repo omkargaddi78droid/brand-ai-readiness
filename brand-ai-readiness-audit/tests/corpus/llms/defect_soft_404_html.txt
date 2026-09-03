@@ -1,0 +1,5 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head><title>Example Corp</title></head>
+  <body><div id="app">Client-rendered marketing site</div></body>
+</html>

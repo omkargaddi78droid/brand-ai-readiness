@@ -1,0 +1,41 @@
+{
+  "name": "brand-ai-readiness-audit",
+  "version": "0.22.0",
+  "description": "Audits a website for the problems that keep it out of AI-assistant answers and the problems that lose the visitors who arrive, and emits one report of evidence-backed findings with prioritized suggested actions.",
+  "license": "MIT",
+  "skills": [
+    {
+      "id": "audit-orchestrator",
+      "path": "skills/audit-orchestrator",
+      "entrypoint": true
+    },
+    {
+      "id": "perimeter-access-audit",
+      "path": "skills/perimeter-access-audit"
+    },
+    {
+      "id": "content-quality-audit",
+      "path": "skills/content-quality-audit"
+    },
+    {
+      "id": "entity-audit",
+      "path": "skills/entity-audit"
+    },
+    {
+      "id": "engagement-audit",
+      "path": "skills/engagement-audit"
+    },
+    {
+      "id": "citability-audit",
+      "path": "skills/citability-audit"
+    },
+    {
+      "id": "retrieval-readiness-audit",
+      "path": "skills/retrieval-readiness-audit"
+    },
+    {
+      "id": "static-extraction-audit",
+      "path": "skills/static-extraction-audit"
+    }
+  ]
+}

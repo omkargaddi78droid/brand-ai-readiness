@@ -1,0 +1,5 @@
+Customer ratings: 5, 4, 3, 5, 2
+Average rating: 4.8 out of 5.
+
+Delivery times (days): 2, 3, 2, 4, 3
+Mean delivery time: 5 days.

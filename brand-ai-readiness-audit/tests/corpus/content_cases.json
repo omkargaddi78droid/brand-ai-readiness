@@ -1,0 +1,82 @@
+{
+  "description": "Labelled ground-truth corpus for content-quality-audit's script-decided capabilities (CQ-03/05/07/08/11). Clean cases carry an empty expectation on purpose: they are the false-positive control. Every clean case here was chosen because it resembles a defect closely enough to have tripped an earlier version of the detector during development — see docs/phase-4-completion-2.md for CQ-03/05/07/08 and docs/phase-4-completion-8.md for CQ-11, including one case (defect_dense_jargon_short_sentences) that was drafted as an intended 'clean' fixture and reclassified to 'defect' after it turned out to genuinely cross CQ-11's threshold — a real finding from building this corpus, not a hypothetical.",
+  "cases": [
+    {
+      "id": "clean-normal-page",
+      "label": "clean",
+      "file": "clean_normal_page.txt",
+      "note": "Ordinary prose, a repeated-but-identical metric (not ambiguous), a correctly-computed average, and an absolutely-dated change.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-code-block",
+      "label": "clean",
+      "file": "clean_code_block.html",
+      "note": "Template syntax shown as a teaching example inside <pre><code>. Must be stripped before matching.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-qualified-metrics",
+      "label": "clean",
+      "file": "clean_qualified_metrics.txt",
+      "note": "Two metrics repeated with different values, each carrying a qualifier ('up to') that explains the difference; one weighted average.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-dated-changes",
+      "label": "clean",
+      "file": "clean_dated_changes.txt",
+      "note": "Changes anchored to absolute dates, plus relative-time phrases with no claim verb attached (must not fire on their own).",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-template-leakage",
+      "label": "defect",
+      "file": "defect_template_leakage.html",
+      "note": "Unrendered {{ }} and {% %} tokens in the visible page body.",
+      "expected_findings": ["CQ-03-template-leakage"]
+    },
+    {
+      "id": "defect-relative-dates",
+      "label": "defect",
+      "file": "defect_relative_dates.txt",
+      "note": "Four changes described only in relative time, no absolute date in any sentence.",
+      "expected_findings": ["CQ-05-relative-date-anchors"]
+    },
+    {
+      "id": "defect-scope-ambiguous",
+      "label": "defect",
+      "file": "defect_scope_ambiguous.txt",
+      "note": "Two independently labeled metrics, each stated twice with different values and no qualifier. Regression fixture for the 'per' substring bug ('Warranty period' was being wrongly suppressed by a naive substring match on the qualifier word 'per').",
+      "expected_findings": ["CQ-07-scope-ambiguous-battery-life", "CQ-07-scope-ambiguous-warranty-period"]
+    },
+    {
+      "id": "defect-computed-stat",
+      "label": "defect",
+      "file": "defect_computed_stat.txt",
+      "note": "Two independent labeled lists whose stated averages contradict the arithmetic of their own listed numbers. Regression fixture for the singular/plural keyword-matching gap ('ratings' vs 'rating') and the parenthesised-label parsing gap ('Delivery times (days)').",
+      "expected_findings": ["CQ-08-computed-stat-customer-ratings", "CQ-08-computed-stat-delivery-times-days"]
+    },
+    {
+      "id": "clean-plain-prose",
+      "label": "clean",
+      "file": "clean_plain_prose.txt",
+      "note": "302 words of ordinary short-sentence, plain-vocabulary prose (a typical product FAQ). The false-positive control for CQ-11: long enough to be scored, plain enough to stay well above the 'very difficult' threshold.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-low-readability",
+      "label": "defect",
+      "file": "defect_low_readability.txt",
+      "note": "331 words of long, syllable-dense sentences (avg. 36.8 words/sentence). Scores well below the CQ-11 threshold on both axes the formula weighs.",
+      "expected_findings": ["CQ-11-low-readability"]
+    },
+    {
+      "id": "defect-dense-jargon-short-sentences",
+      "label": "defect",
+      "file": "defect_dense_jargon_short_sentences.txt",
+      "note": "309 words of short, simple medical-clinic sentences (avg. 6.9 words/sentence) built from syllable-dense clinical vocabulary. Drafted as an intended CQ-11 false-positive control and reclassified after it genuinely crossed the threshold (score 9.9) — Flesch's syllable-per-word term dominates its sentence-length term heavily enough that short sentences alone do not protect against dense jargon. See content-anti-patterns.md's CQ-11 section.",
+      "expected_findings": ["CQ-11-low-readability"]
+    }
+  ]
+}

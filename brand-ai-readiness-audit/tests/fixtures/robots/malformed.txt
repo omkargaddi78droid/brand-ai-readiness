@@ -1,0 +1,3 @@
+<!DOCTYPE html>
+<html><head><title>404 Not Found</title></head>
+<body>this host returns an HTML error page with a 200 status</body></html>

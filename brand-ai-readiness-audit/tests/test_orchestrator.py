@@ -1,0 +1,290 @@
+"""End-to-end tests for the audit-orchestrator entrypoint.
+
+Every prior cycle's test suite exercises exactly one real skill's output
+through `compose_report.py` (confirmed by grep across all nine prior call
+sites before this file was written). This file is the first to compose more
+than one real skill's output together, across more than one page, the way
+the entrypoint's own documented Procedure actually runs in production —
+closing the gap identified in the orchestrator end-to-end validation pass
+(`docs/phase-4-completion-15.md`).
+
+Offline and deterministic throughout: every skill function is called
+in-process with inline fixture text, never over the network, matching this
+project's `README.md` no-network-in-tests guarantee.
+"""
+
+import importlib.util
+import json
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(REPO_ROOT / "shared"))
+
+from finding_contract import validate_floor_shape  # noqa: E402
+
+
+def _load(name: str, relative_path: str):
+    spec = importlib.util.spec_from_file_location(name, REPO_ROOT / relative_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+orchestrator = _load("compose_report", "skills/audit-orchestrator/scripts/compose_report.py")
+perimeter = _load("check_perimeter", "skills/perimeter-access-audit/scripts/check_perimeter.py")
+content_quality = _load(
+    "check_content_quality", "skills/content-quality-audit/scripts/check_content_quality.py"
+)
+entity = _load("check_entity", "skills/entity-audit/scripts/check_entity.py")
+
+FIXED_TIMESTAMP = "2026-09-20T14:32:00Z"
+
+# A robots.txt that blocks every known AI user agent while leaving the
+# wildcard group open to conventional crawlers — PER-02, one real,
+# unambiguous critical finding (same shape as
+# tests/fixtures/robots/blanket_block_ai.txt).
+_BLOCKING_ROBOTS = "\n".join(
+    [
+        "User-agent: *",
+        "Disallow: /admin/",
+        "",
+        "User-agent: GPTBot",
+        "User-agent: ClaudeBot",
+        "User-agent: Google-Extended",
+        "User-agent: CCBot",
+        "User-agent: Applebot-Extended",
+        "User-agent: meta-externalagent",
+        "User-agent: Bytespider",
+        "User-agent: OAI-SearchBot",
+        "User-agent: PerplexityBot",
+        "User-agent: Claude-SearchBot",
+        "User-agent: DuckAssistBot",
+        "User-agent: ChatGPT-User",
+        "User-agent: Claude-User",
+        "User-agent: Perplexity-User",
+        "User-agent: Meta-ExternalFetcher",
+        "Disallow: /",
+    ]
+)
+
+# Two distinct sampled pages for content-quality-audit, which runs once per
+# page rather than once per site. Page 1 carries a real CQ-05 relative-date
+# defect; page 2 is clean prose with no defect at all.
+_PAGE_1_TEXT = (
+    "Pricing — Example Inc. We recently updated our pricing to better reflect "
+    "the value we deliver to customers across every plan we offer today."
+)
+_PAGE_2_TEXT = (
+    "Shipping Times — Example Inc. Standard shipping takes 3-5 business days "
+    "within the continental US. Expedited orders ship within 1-2 business days."
+)
+
+# Minimal HTML for entity-audit: no canonical link at all, a real ENT-04
+# medium finding, on a third distinct real skill.
+_ENTITY_HTML = "<html><head><title>Example Inc.</title></head><body><p>Hi.</p></body></html>"
+
+
+def _write(workdir: str, name: str, data: dict) -> str:
+    path = Path(workdir) / name
+    path.write_text(json.dumps(data), encoding="utf-8")
+    return str(path)
+
+
+class MultiSkillMultiPageCompositionTests(unittest.TestCase):
+    """A real compose across 3 skills and 2 sampled pages for one of them —
+    the shape the entrypoint's own Procedure runs in production, never
+    exercised by any test before this file."""
+
+    def _compose(self):
+        perimeter_out = perimeter.audit(
+            "example.com",
+            _BLOCKING_ROBOTS,
+            "present",
+            None,
+            "absent",
+            llms_full_status="absent",
+            sitemap_status="absent",
+            md_status="absent",
+        )
+        page1_out = content_quality.audit_text(
+            "example.com", _PAGE_1_TEXT, page_url="https://example.com/pricing"
+        )
+        page2_out = content_quality.audit_text(
+            "example.com", _PAGE_2_TEXT, page_url="https://example.com/shipping"
+        )
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+
+        # The calling Procedure resolves every agent_judgement_required entry
+        # before composition; content-quality-audit always emits 5 (one per
+        # agent-judged capability) and entity-audit 1 (ENT-09), regardless of
+        # whether any candidate fired. Every candidate list here is empty, so
+        # the correct resolution is to remove the key entirely without
+        # authoring a finding.
+        for out in (page1_out, page2_out, entity_out):
+            for pending in out["agent_judgement_required"]:
+                caps_with_candidates = pending["observations"].get("candidates")
+                if caps_with_candidates:
+                    raise AssertionError("fixture text unexpectedly produced a judgement candidate")
+            del out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [
+                ("perimeter-access-audit", _write(workdir, "perimeter.json", perimeter_out)),
+                ("content-quality-audit", _write(workdir, "cq-pricing.json", page1_out)),
+                ("content-quality-audit", _write(workdir, "cq-shipping.json", page2_out)),
+                ("entity-audit", _write(workdir, "entity-home.json", entity_out)),
+            ]
+            return orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+    def test_multi_skill_multi_page_compose_is_a_valid_floor_report(self):
+        report = self._compose()
+        self.assertEqual(validate_floor_shape(report), [])
+        self.assertEqual(report["site"], "example.com")
+        self.assertEqual(report["audited_at"], FIXED_TIMESTAMP)
+
+    def test_findings_from_every_skill_and_both_pages_are_present(self):
+        report = self._compose()
+        owner_skills = {f["owner_skill"] for f in report["findings"]}
+        self.assertEqual(
+            owner_skills, {"perimeter-access-audit", "content-quality-audit", "entity-audit"}
+        )
+        cq_pages = {
+            f["structured_evidence"]["page_url"]
+            for f in report["findings"]
+            if f["owner_skill"] == "content-quality-audit"
+        }
+        self.assertEqual(cq_pages, {"https://example.com/pricing"})
+        self.assertEqual(report["summary"]["checks_unknown"], 0)
+
+    def test_severity_and_ordering_are_correct_across_skills_not_just_within_one(self):
+        """Extends sort_findings's existing per-skill coverage: defects before
+        proactive suggestions, then severity, then id — verified here on a set
+        assembled from three different skills, not one skill's own findings."""
+        report = self._compose()
+        findings = report["findings"]
+
+        # PER-02 (critical, defect) must lead: it is more severe than every
+        # other finding in this set regardless of which skill produced it.
+        self.assertEqual(findings[0]["owner_skill"], "perimeter-access-audit")
+        self.assertEqual(findings[0]["severity"], "critical")
+
+        # Ids are sequential in the same order as the sort.
+        self.assertEqual([f["id"] for f in findings], [f"F-{i:03d}" for i in range(1, len(findings) + 1)])
+
+        # Every defect sorts before every proactive suggestion, and within
+        # each track severity is non-increasing — checked across the whole
+        # mixed-skill list, not one skill's slice of it.
+        severity_rank = {"critical": 0, "high": 1, "medium": 2, "low": 3}
+        seen_proactive = False
+        last_rank = -1
+        for f in findings:
+            if f["track"] == "proactive":
+                seen_proactive = True
+            else:
+                self.assertFalse(seen_proactive, "a defect sorted after a proactive suggestion")
+            rank = severity_rank[f["severity"]]
+            if not seen_proactive:
+                self.assertGreaterEqual(rank, last_rank)
+                last_rank = rank
+
+        self.assertGreaterEqual(len(findings), 2)
+
+
+class UnresolvedJudgementAlongsideCleanSkillsTests(unittest.TestCase):
+    """One skill's agent_judgement_required entry is left unresolved; several
+    other skills' clean output composes alongside it without disruption."""
+
+    def test_one_unresolved_entry_becomes_exactly_one_unknown_check(self):
+        skill_with_pending_judgement = {
+            "owner_skill": "engagement-audit",
+            "capability_ids": ["EN-01"],
+            "site": "example.com",
+            "findings": [],
+            "agent_judgement_required": [
+                {
+                    "capability_id": "EN-01",
+                    "instructions": "Read the rubric and judge orientation.",
+                    "observations": {"h1_text": "Welcome", "first_150_words": "..."},
+                }
+            ],
+            "unknown_checks": [],
+        }
+
+        perimeter_out = perimeter.audit(
+            "example.com",
+            "User-agent: *\nAllow: /",
+            "present",
+            None,
+            "absent",
+            llms_full_status="absent",
+            sitemap_status="absent",
+            md_status="absent",
+        )
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        page_out = content_quality.audit_text(
+            "example.com", _PAGE_2_TEXT, page_url="https://example.com/shipping"
+        )
+        del page_out["agent_judgement_required"]
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [
+                ("perimeter-access-audit", _write(workdir, "perimeter.json", perimeter_out)),
+                ("entity-audit", _write(workdir, "entity.json", entity_out)),
+                ("content-quality-audit", _write(workdir, "cq.json", page_out)),
+                (
+                    "engagement-audit",
+                    _write(workdir, "engagement.json", skill_with_pending_judgement),
+                ),
+            ]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertEqual(validate_floor_shape(report), [])
+        self.assertEqual(report["summary"]["checks_unknown"], 1)
+        self.assertEqual(len(report["unknown_checks"]), 1)
+        unknown = report["unknown_checks"][0]
+        self.assertEqual(unknown["capability_id"], "EN-01")
+        self.assertEqual(unknown["owner_skill"], "engagement-audit")
+
+        # The rest of composition is unaffected: entity-audit's real
+        # ENT-04-missing-canonical finding still comes through untouched.
+        other_owners = {f["owner_skill"] for f in report["findings"]}
+        self.assertIn("entity-audit", other_owners)
+
+
+class Inf08NotBuiltTests(unittest.TestCase):
+    """INF-08 (cross-skill dedup) stays NOT_STARTED per this pass's own
+    checked negative result (docs/phase-4-completion-15.md, docs/capability-
+    matrix.md): no genuine cross-skill redundancy was found in either of the
+    two real composed reports produced during Part 1. This test documents
+    that two distinct skills' findings about unrelated defects on the same
+    page are never merged or suppressed — the current, correct behaviour in
+    the absence of INF-08."""
+
+    def test_two_distinct_skills_findings_on_the_same_page_both_survive(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        page_out = content_quality.audit_text(
+            "example.com", _PAGE_1_TEXT, page_url="https://example.com/"
+        )
+        del page_out["agent_judgement_required"]
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [
+                ("entity-audit", _write(workdir, "entity.json", entity_out)),
+                ("content-quality-audit", _write(workdir, "cq.json", page_out)),
+            ]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertEqual(validate_floor_shape(report), [])
+        owner_skills = [f["owner_skill"] for f in report["findings"]]
+        self.assertIn("entity-audit", owner_skills)
+        self.assertIn("content-quality-audit", owner_skills)
+        self.assertEqual(len(report["findings"]), len(entity_out["findings"]) + len(page_out["findings"]))
+
+
+if __name__ == "__main__":
+    unittest.main()

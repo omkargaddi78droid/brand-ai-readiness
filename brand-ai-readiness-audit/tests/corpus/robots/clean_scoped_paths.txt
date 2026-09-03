@@ -1,0 +1,7 @@
+User-agent: *
+Disallow: /staging/
+Disallow: /cart/
+Disallow: /search?
+Crawl-delay: 5
+
+Sitemap: https://example.com/sitemap.xml

@@ -1,0 +1,8 @@
+﻿# Comments, CRLF, lowercase agents, odd spacing.
+# GPTBot is welcome here.
+user-agent:   *
+Disallow:  /private/
+
+USER-AGENT: googlebot
+allow: /
+disallow: /nogoogle/

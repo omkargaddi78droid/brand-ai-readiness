@@ -1,0 +1,7 @@
+# Negative fixture: a scoped disallow is not a site-wide block.
+User-agent: *
+Disallow: /staging/
+Disallow: /cgi-bin/
+Disallow: /search?
+
+Sitemap: https://example.com/sitemap.xml

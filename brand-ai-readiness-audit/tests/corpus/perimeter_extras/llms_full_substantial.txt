@@ -1,0 +1,8 @@
+# Example Corp — Full Content
+
+This is the concatenated full-text payload of every page linked from
+llms.txt, intended to let an agent ingest the complete site content in a
+single fetch without needing to crawl each page individually. It should
+contain enough real prose to be useful rather than a stub placeholder file
+that exists only to satisfy the convention without providing real value to
+anything that fetches it.
