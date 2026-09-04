@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure PER-05/06/07/08 detection accuracy against their labelled corpus.
+"""Measure PER-05/06/07/08/09 detection accuracy against their labelled corpus.
 
 Kept separate from measure_detection.py (PER-01/02/04): that corpus's
 fixtures were designed before these four capabilities existed and were never
@@ -61,12 +61,40 @@ def _load_input(inputs: dict, file_key: str, status_key: str, default_text: str 
     return (CORPUS / "perimeter_extras" / filename).read_text(encoding="utf-8"), status
 
 
+def _load_page_results(inputs: dict) -> list[dict]:
+    """PER-09's page_results: a JSON array of {"url", "headers", "meta"}
+    fixtures. `meta.robots_tokens` is stored as a JSON list (JSON has no set
+    type) and converted back to a set here, matching what
+    `parse_meta_directives` returns live."""
+    filename = inputs.get("page_results_file")
+    if not filename:
+        return []
+    raw = json.loads((CORPUS / "perimeter_extras" / filename).read_text(encoding="utf-8"))
+    pages = []
+    for page in raw:
+        meta = dict(page.get("meta") or {})
+        if "robots_tokens" in meta:
+            meta["robots_tokens"] = set(meta["robots_tokens"])
+        pages.append({"url": page["url"], "headers": page.get("headers") or {}, "meta": meta})
+    return pages
+
+
+def _load_tdmrep(inputs: dict) -> tuple[dict | None, str]:
+    status = inputs.get("tdmrep_status", "unavailable")
+    if status != "present":
+        return None, status
+    filename = inputs["tdmrep_file"]
+    return json.loads((CORPUS / "perimeter_extras" / filename).read_text(encoding="utf-8")), status
+
+
 def run_case(case: dict) -> dict:
     inputs = case["inputs"]
     robots_text, robots_status = _load_input(inputs, "robots_file", "robots_status", _DEFAULT_ROBOTS_TEXT)
     llms_full_text, llms_full_status = _load_input(inputs, "llms_full_file", "llms_full_status")
     sitemap_text, sitemap_status = _load_input(inputs, "sitemap_file", "sitemap_status")
     md_text, md_status = _load_input(inputs, "md_file", "md_status")
+    page_results = _load_page_results(inputs)
+    tdmrep_data, tdmrep_status = _load_tdmrep(inputs)
 
     start = time.perf_counter()
     output = perimeter.audit(
@@ -81,6 +109,9 @@ def run_case(case: dict) -> dict:
         sitemap_status,
         md_text,
         md_status,
+        page_results,
+        tdmrep_data,
+        tdmrep_status,
     )
     elapsed_ms = (time.perf_counter() - start) * 1000
 

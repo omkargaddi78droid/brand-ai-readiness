@@ -215,7 +215,7 @@
       "robots": "unavailable",
       "llms": "clean_valid.txt",
       "expected_findings": [],
-      "expected_unknown": ["PER-01", "PER-02"]
+      "expected_unknown": ["PER-01", "PER-02", "PER-09"]
     },
     {
       "id": "unknown-llms-unavailable",

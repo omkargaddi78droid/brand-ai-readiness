@@ -297,10 +297,10 @@ class ContractComplianceTests(unittest.TestCase):
             self.assertEqual(restored.owner_skill, "perimeter-access-audit")
             self.assertEqual(restored.gate, 1)
 
-    def test_capability_ids_include_all_eight(self):
+    def test_capability_ids_include_all_nine(self):
         self.assertEqual(
             per.CAPABILITY_IDS,
-            ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08"],
+            ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09"],
         )
 
     def test_audit_defaults_the_new_capabilities_to_an_honest_unknown(self):

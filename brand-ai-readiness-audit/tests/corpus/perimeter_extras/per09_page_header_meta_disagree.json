@@ -1,0 +1,7 @@
+[
+  {
+    "url": "https://example.com/",
+    "headers": {"x-robots-tag": "noindex"},
+    "meta": {"robots_tokens": ["index", "follow"], "noai": false}
+  }
+]

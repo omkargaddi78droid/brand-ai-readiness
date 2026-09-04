@@ -6,12 +6,15 @@ description: >
   user-triggered fetchers; the blanket-block anti-pattern where every AI agent
   is disallowed at the root; CDN/WAF edge blocking that diverges from what
   robots.txt permits; llms.txt and llms-full.txt presence and validity;
-  sitemap.xml discovery, validity and its discoverability from robots.txt; and
-  Markdown content negotiation. Use when a brand is absent from AI-assistant
-  answers, when a site with good content is never cited, or as the first gate
-  of a wider AI-readiness audit — a perimeter block makes every downstream
-  content finding moot. Not for anything past gate 1: rendering, structured
-  data, retrieval, citability, content quality, engagement.
+  sitemap.xml discovery, validity and its discoverability from robots.txt;
+  Markdown content negotiation; and whether the site's own access
+  declarations agree with each other across robots.txt, response headers,
+  meta tags, TDMRep, llms.txt and sitemap.xml. Use when a brand is absent
+  from AI-assistant answers, when a site with good content is never cited, or
+  as the first gate of a wider AI-readiness audit — a perimeter block makes
+  every downstream content finding moot. Not for anything past gate 1:
+  rendering, structured data, retrieval, citability, content quality,
+  engagement.
 license: MIT
 allowed-tools: Bash
 ---
@@ -38,10 +41,12 @@ site, and does it publish a machine-readable index?*
 
 No credentials, no authenticated paths, no crawl. Five GETs to well-known
 files/paths (`robots.txt`, `llms.txt`, `llms-full.txt`, `sitemap.xml`, the
-page's `.md` variant), plus up to four more in `--url` mode for PER-03 (one
-reachability control, one per bot tier, fewer whenever robots.txt already
-covers a tier) — nine requests worst case, still comfortably inside the
-5-minute audit budget.
+page's `.md` variant), two more for PER-09 (the root page with its response
+headers, `/.well-known/tdmrep.json`), plus up to four more in `--url` mode
+for PER-03 (one reachability control, one per bot tier, fewer whenever
+robots.txt already covers a tier) — eleven requests worst case, still
+comfortably inside the 5-minute audit budget. Each repeated `--page-url`
+widens PER-09's header/meta comparison by one more GET.
 
 ## Procedure
 
@@ -53,9 +58,14 @@ covers a tier) — nine requests worst case, still comfortably inside the
 
    For a fixture or an already-fetched file, pass `--site example.com
    --robots-file PATH --llms-file PATH [--llms-full-file PATH]
-   [--sitemap-file PATH] [--md-file PATH]` instead — this skips PER-03. Use
-   `--*-absent` (`--robots-absent`, `--llms-absent`, `--llms-full-absent`,
-   `--sitemap-absent`, `--md-absent`) to represent a 404 for any of them, and
+   [--sitemap-file PATH] [--md-file PATH] [--headers-file PATH]
+   [--tdmrep-file PATH]` instead — this skips PER-03. `--headers-file` points
+   at a JSON file (`{"url": ..., "headers": {...}, "html": "..."}`) standing
+   in for the root page PER-09 would otherwise fetch. Use `--*-absent`
+   (`--robots-absent`, `--llms-absent`, `--llms-full-absent`,
+   `--sitemap-absent`, `--md-absent`, `--tdmrep-absent`) to represent a 404
+   for any of them, `--page-url URL` (repeatable) to widen PER-09's
+   header/meta comparison beyond the root page in live `--url` mode, and
    `--no-edge-probe` to run live but skip PER-03's extra requests. See
    `--help` for the full flag list.
 
@@ -67,7 +77,7 @@ covers a tier) — nine requests worst case, still comfortably inside the
 3. Hand the `findings` and `unknown_checks` arrays to the entrypoint skill
    unchanged. This skill does not build reports and does not renumber findings.
 
-4. If step 1 exits non-zero or emits no parseable JSON, report all eight
+4. If step 1 exits non-zero or emits no parseable JSON, report all nine
    capabilities as unknown with the error text. Never substitute a judgement
    for a check that did not run.
 
@@ -87,6 +97,7 @@ covers a tier) — nine requests worst case, still comfortably inside the
 | PER-06 | sitemap.xml discovery | Missing; not recognisable as `<urlset>`/`<sitemapindex>`; or valid but lists zero `<loc>` URLs |
 | PER-07 | Markdown content negotiation | Requesting `<path>.md` (or `/index.md` for the root) does not return a real Markdown/text variant — a 404, or an HTML soft-404 |
 | PER-08 | Sitemap discoverability | A sitemap exists (PER-06 confirms this) but robots.txt has no `Sitemap:` directive pointing to it; or llms.txt (curated, PER-04) links a same-host page the sitemap doesn't know about — the reverse (sitemap has more URLs than the curated llms.txt) is the intended pattern, not a defect. A `<sitemapindex>` sitemap reports `unknown` rather than a fabricated comparison, since this project doesn't recurse into sub-sitemaps |
+| PER-09 | Cross-layer access-signal contradiction | The site's own access declarations disagree across robots.txt, `X-Robots-Tag`, `<meta name="robots">`, TDMRep, llms.txt and sitemap.xml — see below |
 
 Three tiers, because a block on one means something different from a block on
 another. Real-time AI search crawlers are the citation path and rate as
@@ -131,6 +142,35 @@ regex has no entity-expansion attack surface at all — the same reasoning that
 keeps JSON-LD parsing elsewhere in this marketplace on `json.loads` and HTML
 parsing on a restricted `HTMLParser` rather than a fuller, riskier parser.
 
+**PER-09 asks a different kind of question than PER-01 through PER-08: not
+"is X present and valid?" but "do the site's own declarations agree with each
+other?"** A site declares its access policy in up to six independent places
+— robots.txt, the `X-Robots-Tag` response header, `<meta name="robots">` /
+`<meta name="googlebot">` / `noai` / `noimageai`, `/.well-known/tdmrep.json`
+(TDMRep, the W3C mechanism the EU CDSM Art. 4 / AI Act TDM opt-out expects),
+llms.txt and sitemap.xml — and they routinely disagree, because the header
+layer wins silently and nothing before PER-09 ever read it. Five rules, each
+a literal set/flag comparison rather than an interpretive judgement:
+
+- **A sitemap-declared URL disallowed for an AI tier by a path-specific
+  robots.txt rule** (the crawl-free slice of "is this page actually
+  reachable", scoped to what a site's own files can answer without a crawl).
+  Excludes any bot already blocked at the root — that is PER-01/02's
+  finding, not a new one.
+- **A page declared canonical in sitemap.xml or llms.txt that carries a
+  noindex/noai signal** (header or meta) — the site simultaneously
+  advertises the page and tells every indexer to drop it.
+- **A TDM reservation that robots.txt doesn't back up** — `tdmrep.json`
+  reserves training rights while GPTBot/ClaudeBot/CCBot can still crawl the
+  root, leaving the reservation unenforced in practice.
+- **`X-Robots-Tag` and `<meta name="robots">` disagreeing on the same page**
+  — the header always wins, and content authors who only edit the page
+  usually don't know a server-level header is overriding them.
+- **No TDMRep declaration despite robots.txt already naming specific AI
+  agents** (proactive, `low`) — gated behind demonstrated engagement with AI
+  access at all, so it never fires as generic noise on a site that has never
+  named an AI agent.
+
 ## Excludes
 
 Named so the boundary is checkable, not implied:
@@ -148,7 +188,7 @@ One JSON object on stdout:
 ```json
 {
   "owner_skill": "perimeter-access-audit",
-  "capability_ids": ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08"],
+  "capability_ids": ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09"],
   "site": "example.com",
   "findings": [
     {
@@ -192,15 +232,21 @@ always a counted observation naming the exact agents, never an adjective.
 | `llms.txt` / `llms-full.txt` / `sitemap.xml` / the `.md` variant unreachable | `unknown` for that capability specifically (PER-04/05/06/07) |
 | `sitemap.xml`'s status could not be determined at all | PER-08 `unknown` — distinct from a *confirmed-absent* sitemap, which PER-08 correctly stays silent on since PER-06 already covers it |
 | The optional accelerator package is absent or errors | Identical result. The built-in taxonomy is the working implementation; the accelerator can only widen the agent list |
+| `robots.txt` unavailable | PER-09 `unknown` too — every one of its five rules reads robots.txt groups in some form, so there is nothing to compare |
+| `tdmrep.json` status was never checked (a caller predating PER-09, or the default `--url` run before the fetch completes) | The "no TDM declaration" rule (C5) stays silent — it requires *confirmed* absence (a real 404), not "unknown", so a caller that never attempted the fetch does not have a finding fabricated from an unknown state |
+| `tdmrep.json` is present but not valid JSON | Treated as "no usable reservation signal", not a crash — the malformed-but-present file still counts as engagement for C5's silence, but contributes nothing to C3's contradiction check |
+| No page HTML/headers were fetched for PER-09 (offline `--robots-file` mode without `--headers-file`) | C2 and C4, which need a page's header/meta signals, silently have nothing to compare — C1, C3 and C5 (robots.txt/sitemap/llms.txt/tdmrep-only) still evaluate normally |
 
 ## Safety
 
 Read-only: every request is a plain GET, no query strings, no credentials, no
 form submission, no crawling. Nothing this skill runs can modify the audited
-site. `--url` mode sends at most nine requests total (`/robots.txt`,
-`/llms.txt`, `/llms-full.txt`, `/sitemap.xml`, the page's `.md` variant, plus
-up to four PER-03 probes to `/`, spaced with a short delay so they never
-burst), fewer whenever robots.txt already covers a tier.
+site. `--url` mode sends at most eleven requests total (`/robots.txt`,
+`/llms.txt`, `/llms-full.txt`, `/sitemap.xml`, the page's `.md` variant, the
+root page with headers and `/.well-known/tdmrep.json` for PER-09, plus up to
+four PER-03 probes to `/`, spaced with a short delay so they never burst),
+fewer whenever robots.txt already covers a tier. Each repeated `--page-url`
+adds one more read-only GET.
 
 PER-03 sends real AI-bot user-agent strings on purpose — that is the only way
 to observe edge-layer behaviour that diverges from robots.txt — plus an

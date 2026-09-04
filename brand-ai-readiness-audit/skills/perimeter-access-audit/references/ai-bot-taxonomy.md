@@ -205,9 +205,83 @@ was silently treated the same as `"absent"` (confirmed no sitemap, PER-08
 correctly has nothing to say), losing a genuine unknown. Fixed to report
 `unknown` for the former and stay silent only for the latter.
 
+## PER-09 — cross-layer access-signal contradiction
+
+PER-01 through PER-08 each ask "is X present and valid?" of one file or
+header at a time. PER-09 asks a structurally different question: "do the
+site's own declarations agree with each other?" A site states its access
+policy in up to six places — robots.txt, `X-Robots-Tag`, `<meta
+name="robots">`/`<meta name="googlebot">`/`noai`/`noimageai`, TDMRep
+(`/.well-known/tdmrep.json`), llms.txt, sitemap.xml — and nothing before
+PER-09 ever compared them.
+
+**Why this needed new infrastructure.** Response headers were fetched and
+discarded everywhere in this skill until `fetch_page_with_headers` was added
+specifically for PER-09. `<meta name="robots">` was never parsed at all. Both
+gaps are why PER-01 through PER-08 could not have caught any of PER-09's five
+rules, however thorough each individually is.
+
+**C1 — sitemap URL vs. a path-specific robots.txt rule.** The one place this
+reference's taxonomy widens past root-only reachability: a sitemap-declared
+URL can be checked against a robots.txt `Disallow` rule for its *own path*,
+not just `/`. `can_fetch_path` (a sibling of `can_fetch_root`, same
+group-selection contract) does this. **Overlap control is load-bearing
+here**: a bot only counts as a C1 contradiction if it *can* fetch the root
+but *cannot* fetch this specific path — a bot with no root access at all is
+already PER-01/02's finding, and re-reporting it under a new ID would be the
+same root cause counted twice. Severity is TIER_SEVERITY degraded one notch:
+a weaker claim than a whole-tier root block, since only one path is affected.
+
+**C2 — noindex/noai on a page declared canonical.** A sitemap or llms.txt
+entry advertises a page as content an AI answer engine should retrieve from.
+If that same page's response carries `X-Robots-Tag: noindex` or a `<meta
+name="robots" content="noindex">` (or a `noai` signal in either channel),
+the site is simultaneously advertising and un-indexing the same URL.
+`severity: high` — the header/meta layer always wins in practice, so this is
+not a stylistic disagreement, it is a page that will not appear.
+
+**C3 — a TDM reservation robots.txt doesn't back up.** TDMRep expresses
+something robots.txt structurally cannot: "index me, do not train on me."
+When `tdmrep.json` (or a page-level `tdm-reservation` header/meta) reserves
+rights while GPTBot, ClaudeBot or CCBot can still crawl the root, the
+reservation is unenforced in practice, since crawling and training happen
+through the same fetch these three agents make. Scoped to exactly these
+three names — the crawlers TDMRep's own spec discussion names — not this
+project's broader `training` tier, so the claim never outruns what TDMRep is
+understood to govern.
+
+**C4 — header and meta robots tag disagreeing.** Requires both channels to
+carry an explicit, comparable signal — an *absent* meta tag is C2's
+contradiction (against sitemap/llms.txt), not this one, since there is
+nothing to disagree with a header that was simply never restated. When both
+are present and one says noindex while the other doesn't, the header always
+wins, and a content author who only edits the page's own meta tag usually
+has no visibility into that.
+
+**C5 — no TDMRep declaration, despite named AI-agent rules.** Proactive,
+`low`, and gated behind a precision guard stated as a hard requirement in
+the implementing plan: only suggest TDMRep to a site that has *already*
+engaged with AI access, by naming a specific agent in its own robots.txt
+group (not just the wildcard). A site that has never named an AI agent gets
+no suggestion — the guard exists specifically so this does not read as
+generic noise on every report. Requires *confirmed* absence
+(`tdmrep_status == "absent"`, a real 404); a caller that never attempted the
+fetch (`"unavailable"`) is not the same as "missing" and must not have a
+finding fabricated from an unknown state — the same default-is-unknown
+discipline PER-05 through PER-08 already follow.
+
+**No `sameAs`-style liveness fetching anywhere in PER-09.** Every rule reads
+data already fetched for another capability, or one of exactly two new GETs
+(the root page with headers, `tdmrep.json`) plus whatever `--page-url`
+widens explicitly. Nothing here follows a link to check if it resolves.
+
 ## What this reference does not cover
 
 - **Crawl-delay and rate limits.** Not modelled here.
-- **Per-path rules.** Only root reachability is evaluated. A site that allows
-  `/` while disallowing its documentation tree has a real problem that this
-  check does not see; that belongs with sitemap and coverage analysis.
+- **Per-path rules for PER-01/02/03.** Those three stay root-only by design.
+  PER-09's C1 is the one exception: it checks path-specific robots.txt rules,
+  but only for URLs a sitemap actually declares, and only to detect a
+  contradiction with that declaration — it is not a general per-path
+  reachability scan, and a site that allows `/` while disallowing an
+  undeclared documentation tree still has a real problem this reference does
+  not see.

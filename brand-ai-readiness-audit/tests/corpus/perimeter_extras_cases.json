@@ -119,6 +119,75 @@
       },
       "note": "No sitemap exists at all — PER-06 correctly fires (a real defect); PER-08 must NOT also fire for the same root cause, since 'not referenced in robots' is meaningless once there is nothing to reference. Exactly one finding, not two, proves PER-08's applicability guard.",
       "expected_findings": ["PER-06-sitemap-missing"]
+    },
+    {
+      "id": "clean-per09-fully-consistent-site",
+      "label": "clean",
+      "inputs": {
+        "robots_file": "per09_robots_wildcard_only.txt", "robots_status": "present",
+        "sitemap_file": "per09_sitemap.xml", "sitemap_status": "present",
+        "page_results_file": "per09_page_clean.json",
+        "tdmrep_status": "absent"
+      },
+      "note": "Wildcard-only robots.txt (no named AI groups), a sitemap that agrees with a clean, non-noindexed page, and no TDM reservation anywhere. C5 must also stay silent here since robots.txt never named an AI agent — the precision guard.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-per09-blanket-block-c1-suppressed-by-overlap-control",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "per09_robots_blanket_block.txt", "robots_status": "present",
+        "sitemap_file": "per09_sitemap.xml", "sitemap_status": "present",
+        "tdmrep_status": "absent"
+      },
+      "note": "Every AI agent is blocked at the root — PER-02 correctly fires (a real defect). PER-09's C1 must NOT also fire for the sitemap-declared URLs under the same root cause: a root-wide block is PER-01/02's finding, not a new path-specific PER-09 contradiction (the absence of a C1 finding here proves the overlap-control guard at the corpus level, not just in isolated unit tests). C5 is orthogonal and legitimately still fires: the site named specific AI agents (even to block them), which is exactly the demonstrated-engagement precision guard C5 requires, and no TDM declaration exists.",
+      "expected_findings": ["PER-02-all-ai-agents-blocked", "PER-09-no-tdm-declaration"]
+    },
+    {
+      "id": "defect-per09-sitemap-url-ai-disallowed",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "per09_robots_named_ai_path_block.txt", "robots_status": "present",
+        "sitemap_file": "per09_sitemap.xml", "sitemap_status": "present",
+        "tdmrep_status": "absent"
+      },
+      "note": "GPTBot may fetch the root but is disallowed from /pricing specifically, and the sitemap declares /pricing as canonical. C5 also fires here since named AI groups exist and no TDM declaration is published — two distinct, legitimate PER-09 findings from one fixture.",
+      "expected_findings": ["PER-09-sitemap-url-ai-disallowed", "PER-09-no-tdm-declaration"]
+    },
+    {
+      "id": "defect-per09-noindex-on-declared-url",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "per09_robots_wildcard_only.txt", "robots_status": "present",
+        "sitemap_file": "per09_sitemap.xml", "sitemap_status": "present",
+        "page_results_file": "per09_page_noindex_declared.json",
+        "tdmrep_status": "absent"
+      },
+      "note": "/pricing is declared canonical in sitemap.xml but its response carries X-Robots-Tag: noindex, nofollow.",
+      "expected_findings": ["PER-09-noindex-on-declared-url"]
+    },
+    {
+      "id": "defect-per09-tdm-reservation-contradicts-robots",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "per09_robots_named_ai_path_block.txt", "robots_status": "present",
+        "sitemap_status": "absent",
+        "tdmrep_file": "per09_tdmrep_reserved.json", "tdmrep_status": "present"
+      },
+      "note": "tdmrep.json reserves TDM rights, but robots.txt still allows GPTBot/ClaudeBot/CCBot to crawl the root. C5 stays silent here since tdmrep.json IS present. sitemap_status is absent, so PER-06 legitimately also fires (a real, separate defect) — included in expected_findings rather than isolated by a fixture that would obscure how PER-09 composes alongside an unrelated PER-06 finding.",
+      "expected_findings": ["PER-06-sitemap-missing", "PER-09-tdm-reservation-contradicts-robots"]
+    },
+    {
+      "id": "defect-per09-header-meta-robots-disagree",
+      "label": "defect",
+      "inputs": {
+        "robots_file": "per09_robots_wildcard_only.txt", "robots_status": "present",
+        "sitemap_status": "absent",
+        "page_results_file": "per09_page_header_meta_disagree.json",
+        "tdmrep_status": "absent"
+      },
+      "note": "The root page's X-Robots-Tag header says noindex while its own <meta name=\"robots\"> tag says index, follow. sitemap_status is absent, so PER-06 legitimately also fires alongside PER-09's own finding.",
+      "expected_findings": ["PER-06-sitemap-missing", "PER-09-header-meta-robots-disagree"]
     }
   ]
 }

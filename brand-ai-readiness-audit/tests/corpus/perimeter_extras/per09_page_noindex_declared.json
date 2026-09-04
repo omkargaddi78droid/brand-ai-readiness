@@ -1,0 +1,7 @@
+[
+  {
+    "url": "https://example.com/pricing",
+    "headers": {"x-robots-tag": "noindex, nofollow"},
+    "meta": {"robots_tokens": [], "noai": false}
+  }
+]
