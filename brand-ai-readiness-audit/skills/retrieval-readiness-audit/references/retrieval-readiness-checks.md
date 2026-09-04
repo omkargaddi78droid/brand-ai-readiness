@@ -291,6 +291,122 @@ exactly the retrieval-structure gap this capability exists to name, on a
 site that is otherwise a model of good markup elsewhere in this project's
 own validation history (its `docs.python.org` subdomain, PEP pages, etc.).
 
+---
+
+## RET-09 — Positional fact interment
+
+**What it catches.** A page with 800+ words of prose whose load-bearing
+values — currency amounts, unit-bearing numbers (`%`, weights, distances,
+durations, data sizes), explicit dates, and dimension/spec patterns
+(`52x38x12`) — sit only in the document's middle band (normalized position
+`0.25 < p < 0.75`) and are never restated anywhere a reader or a
+retrieval/attention mechanism is likely to land first: the `<title>`, any
+`h1`/`h2`, the opening or closing 15% of prose, a `<dt>`/`<dd>` definition,
+a `<td>`/`<th>` table cell, or the page's own JSON-LD. Fires when at least
+3 distinct such values are found and at least 40% of all extracted values
+meet that "interred" condition.
+
+**Why this mechanism, and why it is scored `confidence: medium` rather than
+`high`.** Liu et al. ("Lost in the Middle", TACL 2024) demonstrate a
+U-shaped accuracy curve for LLMs retrieving facts from long contexts —
+information in the middle is measurably more likely to be dropped from a
+synthesized answer than the same information at either end, independent of
+whether retrieval itself succeeds. Hsieh et al. (2024) give the
+architectural explanation (positional attention bias, RoPE long-term
+decay), and Chroma's 2025 "Context Rot" study replicates the degradation
+across 18 frontier models including GPT-4.1, Claude 4 and Gemini 2.5 — this
+is not a solved problem, but it is also a *probabilistic* mechanism, not a
+guarantee of omission on any single page. `confidence: medium` says so
+directly in the finding's own field rather than burying the hedge in
+evidence wording, the same convention this project already uses for other
+genuinely contested mechanisms.
+
+**Why an 800-word gate.** Below 800 words there is no meaningful "middle"
+for a value to be lost in — a short page's values are inherently close to
+both margins regardless of where they sit. The gate is intentionally high
+relative to RET-04's (80 words) and RET-07's (300 words): this capability's
+entire premise depends on there being enough distance between a value's
+position and either margin for "buried in the middle" to mean anything.
+
+**Why these value patterns, and why a fresh extractor.** Currency, unit-
+bearing numbers, dates, and dimension/spec patterns are the load-bearing
+figure shapes the plan's own worked example names (`$1,299`, `40%`, `18
+months`, `2.4 GB`). This is a deliberately fresh, narrow regex extractor —
+not reused from `extract_prose_text` (RET-04's structured-region exclusion
+is the wrong corpus here: a value inside a spec table is exactly the kind
+of anchor RET-09 wants to credit, not exclude) or `extract_json_ld_and_text`
+(RET-09 reuses that function's already-flattened `json_ld_nodes` output
+directly rather than re-parsing JSON-LD a third way). The unit list is
+broader than the plan's own worked example implies is required (currency,
+`%`, weight/distance/time/data units, degrees, a bare multiplier like
+`2.4x`) — narrow enough to keep false-positive risk low (a preceding digit
+and a trailing word boundary are both required for every alphabetic unit),
+wide enough to catch the plan's own "18 months" example, which is a time
+unit outside its algorithm section's literal `hrs`-only list.
+
+**Why a value is deduplicated to one representative position.** The same
+figure can appear more than once in a document; the margin-restatement test
+below is a *global* presence check (is this value present anywhere among
+the anchor sites), not tied to a specific occurrence, so tracking more than
+one offset per distinct value adds no information the check would use.
+
+**The margin-restatement test is global, not proximity-based.** A value
+counts as anchored if it appears *anywhere* in the combined text of the
+title, h1/h2 headings, the opening 15% of prose, the closing 15% of prose,
+every `<dt>`/`<dd>`, every `<td>`/`<th>`, or any JSON-LD leaf value —
+regardless of where in the document the anchor site itself sits relative to
+the buried occurrence. This is deliberate: a spec table placed in the
+document's own middle still functions as an anchor (the reader or model
+encounters the value structurally, not just positionally), which is exactly
+why the plan's own adversarial test case requires a mid-document spec table
+to suppress the finding.
+
+**The three required false-positive guards:**
+
+1. **Chronology guard.** If 70%+ of a page's extracted values are bare
+   4-digit years appearing in non-decreasing document order, the page is a
+   timeline (a history page, a changelog, a "company milestones" section),
+   not a page burying facts — silent regardless of the other thresholds.
+   This directly answers the mechanism research's own named false-positive
+   risk.
+2. **Summary-block guard.** A heading matching `summary`, `tl;dr`, `key
+   takeaways`, `at a glance`, or `overview` anchors every value in the
+   block under it, even if that block itself sits in the document's middle
+   third — a summary section is functionally a second opening, not buried
+   text.
+3. **The 800-word gate itself** (see above) is the third required guard per
+   the plan — restated here because it is load-bearing, not merely a
+   performance floor.
+
+**Why the overlap with CQ-01 (`content-quality-audit`) is intentional, not
+a duplicate.** CQ-01 (agent-judged) asks whether a *canonical answer* sits
+near the top of a page; its own documented blind spot is that the opening
+block is document-start and is frequently nav chrome, not real content.
+RET-09 asks a narrower, fully deterministic question over the *whole*
+document: are load-bearing *values* anchored at either margin, a heading, a
+table, a definition, or JSON-LD — never whether the opening itself reads
+well. Different trigger (position of values vs. quality of the opening),
+different remedy (restate the number vs. write a lede), different owning
+skill and capability id — both can legitimately fire on the same page, and
+`tests/test_retrieval_readiness.py::OverlapControlTests` proves composing
+both skills' outputs never trips `compose_report.py`'s duplicate-finding-id
+guard.
+
+**What was left out, and why.** Abbreviated month names ("Jan 15, 2024")
+are not matched — only full month names, ISO dates, and slash-form dates —
+narrower than it could be, to avoid the false-positive surface a 3-letter
+abbreviation pattern would open against ordinary capitalized words. Ranges
+("$50-$100", "10-20%") are matched as their component values, not as a
+single range value — a deliberate simplification, not a bug: each endpoint
+is independently load-bearing and independently checked for restatement.
+Numeric equality (matching "$1,299" against a JSON-LD `"1299.00"`) is not
+attempted — the margin-restatement test is literal substring containment,
+case-insensitive, mirroring RET-01's own exact-token-survival philosophy
+rather than adding a normalization layer with its own false-positive
+surface.
+
+---
+
 ## What extraction does not handle (known, accepted limits)
 
 - **Malformed HTML with mismatched or improperly nested heading tags** can
@@ -323,3 +439,17 @@ own validation history (its `docs.python.org` subdomain, PEP pages, etc.).
   live positive shows). Distinguishing a genuine visual-only label from
   incidental bold text would need render/CSS inspection, the same gate-2
   boundary this project draws everywhere else.
+- **RET-09's value extractor does not attempt every conceivable
+  load-bearing-value shape.** Abbreviated month names, numeric ranges
+  collapsed to a single value, and any value expressed only in prose
+  without a currency symbol/unit/date pattern (e.g. a number spelled out
+  as a word) are all outside this extractor's scope — a fresh, narrow
+  regex set per the plan, not the general-purpose numeric-entity extraction
+  a full NLP pipeline would attempt.
+- **RET-09's margin-restatement test is literal substring containment,
+  not numeric equivalence.** `"$1,299"` in prose is not credited as
+  restated by a JSON-LD value of `"1299.00"` or `"1299"` — the two strings
+  differ. This mirrors RET-01's own exact-token-survival design rather than
+  adding a normalization layer with its own false-positive surface, at the
+  cost of occasionally under-crediting a genuinely present but
+  differently-formatted restatement.

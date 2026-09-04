@@ -1,0 +1,40 @@
+{
+  "description": "Labelled ground-truth corpus for retrieval-readiness-audit's RET-09 (positional fact interment). Clean cases carry an empty expectation on purpose: they are the false-positive control.",
+  "cases": [
+    {
+      "id": "clean-well-anchored-long-page",
+      "label": "clean",
+      "file": "clean_ret09_well_anchored.html",
+      "note": "880-word page whose four load-bearing figures are restated in the title, the h1, and a closing summary block — every value is anchored, so RET-09 stays silent despite clearing the 800-word gate.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-short-page-under-gate",
+      "label": "clean",
+      "file": "clean_ret09_short_page_under_gate.html",
+      "note": "A 197-word page with two buried, unrestated values — well under the 800-word gate, so there is no meaningful 'middle' and RET-09 stays silent regardless.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-buried-currency-and-units",
+      "label": "defect",
+      "file": "defect_ret09_buried_currency_and_units.html",
+      "note": "864-word review page; four load-bearing figures (currency, a unit-bearing duration, a percentage, a weight) sit only in the middle of the document and are never restated anywhere.",
+      "expected_findings": ["RET-09-facts-interred-mid-document"]
+    },
+    {
+      "id": "defect-buried-dates-and-dimensions",
+      "label": "defect",
+      "file": "defect_ret09_buried_dates_and_dimensions.html",
+      "note": "857-word forum-thread page; a release date, a box-dimension spec, and a clamp-range measurement are buried mid-thread with no restatement, exercising the date and dimension extractors.",
+      "expected_findings": ["RET-09-facts-interred-mid-document"]
+    },
+    {
+      "id": "defect-buried-facts-with-unrelated-table",
+      "label": "defect",
+      "file": "defect_ret09_buried_facts_with_unrelated_table.html",
+      "note": "820-word buying-guide page with a decoy table near the top (color/finish only, not the buried figures) — presence of a table alone does not suppress the finding when the table doesn't contain the actual buried values.",
+      "expected_findings": ["RET-09-facts-interred-mid-document"]
+    }
+  ]
+}

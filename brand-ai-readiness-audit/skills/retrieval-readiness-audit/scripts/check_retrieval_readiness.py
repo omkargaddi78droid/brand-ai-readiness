@@ -2,7 +2,13 @@
 """Gate-3 retrieval-readiness audit: does a single page's own markup structure
 serve sparse retrieval, or actively work against it?
 
-Owns eight capabilities — four script-decided, four agent-judged:
+Owns nine capabilities — five script-decided, four agent-judged:
+  RET-09  Positional fact interment — a page's load-bearing figures (price,
+          spec, headline statistic) appear only in the middle third of a long
+          document and are never restated in the title, a heading, either
+          margin, a table cell, a definition, or JSON-LD, which published
+          attention-bias research ties to a measurably higher omission rate
+          during synthesis.
   RET-08  Heading hierarchy integrity — a skipped heading level (h2 -> h4 with
           no h3 in between) or an empty heading element, either of which
           destroys the document outline a retrieval system uses to segment
@@ -65,7 +71,22 @@ rule that isn't actually settled — so only the *skip between two headings
 that are both present* is checked, not the starting level.
 
 Cluster D (retrieval readiness) is now fully shipped in this one skill —
-the eight capabilities above are all of RET-01 through RET-08.
+the nine capabilities above are all of RET-01 through RET-09.
+
+**RET-09's own scope, and its overlap control vs CQ-01.** CQ-01
+(`content-quality-audit`, agent-judged) asks whether a *canonical answer*
+sits near the top of the page; its documented blind spot is that the opening
+block is document-start and is often nav chrome, not real content. RET-09
+asks a narrower, fully deterministic question over the *whole* document:
+are load-bearing *values* (prices, specs, dates, measurements) anchored at
+**either** margin, a heading, a table, a definition, or JSON-LD — not
+whether the page opens well. Different trigger (position of values vs.
+quality of the opening), different remedy (restate the number vs. write a
+lede), different owner. Both can legitimately fire on the same page — a
+weak opening *and* buried mid-document figures are independent defects —
+and `tests/test_retrieval_readiness.py::OverlapControlTests` proves that
+composing both skills' outputs does not trip `compose_report.py`'s
+duplicate-finding-id guard, since the two capabilities never share an id.
 
 **RET-01's own scope, narrowed on purpose.** The matrix's "Detects" column
 for RET-01 names product SKUs, model numbers, statute names and technical
@@ -228,9 +249,12 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from text_spans import Block, extract_blocks, normalized_position  # noqa: E402
 
 OWNER_SKILL = "retrieval-readiness-audit"
-CAPABILITY_IDS = ["RET-01", "RET-02", "RET-03", "RET-04", "RET-05", "RET-06", "RET-07", "RET-08"]
+CAPABILITY_IDS = [
+    "RET-01", "RET-02", "RET-03", "RET-04", "RET-05", "RET-06", "RET-07", "RET-08", "RET-09",
+]
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 FETCH_TIMEOUT_SECONDS = 10
 MAX_PAGE_BYTES = 5_000_000
@@ -1151,6 +1175,316 @@ def find_skipped_heading_levels(headings: list[dict]) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# RET-09 — Positional fact interment
+# ---------------------------------------------------------------------------
+#
+# A page's load-bearing values (price, spec, headline statistic) can be
+# genuinely present in the extracted text and still be effectively invisible
+# to an LLM synthesizing an answer, if the only place they appear is the
+# middle of a long document with no restatement anywhere a reader (or a
+# retrieval/attention mechanism) is likely to land first. Liu et al. ("Lost
+# in the Middle", TACL 2024), Hsieh et al. (2024, positional attention bias /
+# RoPE long-term decay) and Chroma's 2025 "Context Rot" study all document
+# this as a live, unsolved property of long-context LLMs, not a retrieval
+# failure — the fact can be retrieved and still get under-weighted purely by
+# where it sits in the context window.
+#
+# This is a fresh value extractor and a fresh HTML anchor-text scan,
+# deliberately not reusing `extract_prose_text` (RET-04's structured-region
+# exclusion is the wrong corpus here — a value inside a spec table is exactly
+# the kind of anchor RET-09 wants to credit, not exclude) or
+# `extract_json_ld_and_text`'s own flattener (this file's `_flatten_json_ld`
+# already does the job `extract_json_ld_and_text` needs; RET-09 reuses that
+# same already-flattened `json_ld_nodes` list rather than re-parsing JSON-LD
+# a third way).
+
+_RET09_MIN_PROSE_WORDS = 800
+_RET09_MAX_VALUES = 20
+_RET09_MIN_DISTINCT_INTERRED = 3
+_RET09_MIN_INTERRED_RATIO = 0.40
+_RET09_MARGIN_FRACTION = 0.15
+_RET09_MIDDLE_BAND_LOW = 0.25
+_RET09_MIDDLE_BAND_HIGH = 0.75
+_RET09_CHRONOLOGY_YEAR_RATIO = 0.70
+_RET09_SUMMARY_HEADING_RE = re.compile(r"summary|tl;?dr|key takeaways|at a glance|overview", re.IGNORECASE)
+
+_RET09_MONTHS = (
+    "January|February|March|April|May|June|July|August|September|October|November|December"
+)
+
+# Patterns run in this priority order and claim non-overlapping spans in the
+# prose stream, so e.g. "January 15, 2024" is captured once as a date, never
+# again as a bare year, and "$1,299" is never also re-captured by the
+# unit-word pattern. Each entry is (compiled pattern, kind) — `kind` drives
+# only the chronology guard below (it needs to know which values are bare
+# 4-digit years).
+_RET09_VALUE_PATTERNS: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"[$£€]\s?\d(?:[\d,]*\d)?(?:\.\d+)?"), "currency"),
+    (
+        re.compile(
+            rf"\b(?:{_RET09_MONTHS})\s+\d{{1,2}}(?:st|nd|rd|th)?,?\s+\d{{4}}\b"
+            rf"|\b\d{{4}}-\d{{2}}-\d{{2}}\b"
+            rf"|\b\d{{1,2}}/\d{{1,2}}/\d{{4}}\b"
+        ),
+        "date",
+    ),
+    (re.compile(r"\b\d+(?:\.\d+)?\s?[x×]\s?\d+(?:\.\d+)?(?:\s?[x×]\s?\d+(?:\.\d+)?)?\b"), "dimension"),
+    (re.compile(r"\b\d(?:[\d,]*\d)?(?:\.\d+)?\s?(?:%|°[CF]?)"), "unit"),
+    (
+        re.compile(
+            r"\b\d(?:[\d,]*\d)?(?:\.\d+)?\s?(?:kg|g|lbs?|mi|km|m|cm|mm|ft|inch(?:es)?|hrs?|"
+            r"hours?|mins?|minutes?|secs?|seconds?|ms|days?|weeks?|months?|years?|yrs?|"
+            r"GB|MB|TB|KB)\b"
+        ),
+        "unit",
+    ),
+    (re.compile(r"\b\d+(?:\.\d+)?x\b"), "unit"),
+    (re.compile(r"\b(?:19|20)\d{2}\b"), "year"),
+)
+
+
+def extract_load_bearing_values(prose_stream: str) -> list[dict]:
+    """Up to 20 distinct load-bearing values from `prose_stream` — the same
+    concatenated-with-single-space text stream `shared.text_spans.extract_blocks`
+    builds, so a returned `char_offset` is directly usable with
+    `normalized_position`. Currency amounts, explicit dates (month-name,
+    ISO, or slash-form), dimension/spec patterns (`1920x1080`), and numbers
+    carrying a unit (`%`, degrees, weight/distance/time/data units, or a
+    bare multiplier like `2.4x`) are all in scope; a bare 4-digit year is
+    also captured (tagged `kind: "year"`) purely so the chronology FP guard
+    below has something to reason about.
+
+    A value is deduplicated by its exact matched string, keeping the first
+    occurrence's offset — the margin-restatement test that follows is a
+    global presence check, not tied to a specific occurrence, so only one
+    representative position per distinct value is needed."""
+    claimed: list[tuple[int, int]] = []
+
+    def _overlaps(start: int, end: int) -> bool:
+        return any(start < c_end and end > c_start for c_start, c_end in claimed)
+
+    raw_matches: list[tuple[int, str, str]] = []
+    for pattern, kind in _RET09_VALUE_PATTERNS:
+        for match in pattern.finditer(prose_stream):
+            start, end = match.start(), match.end()
+            if _overlaps(start, end):
+                continue
+            claimed.append((start, end))
+            raw_matches.append((start, match.group(0).strip(), kind))
+
+    raw_matches.sort(key=lambda item: item[0])
+
+    seen: set[str] = set()
+    values: list[dict] = []
+    for offset, value, kind in raw_matches:
+        if value in seen:
+            continue
+        seen.add(value)
+        values.append({"value": value, "char_offset": offset, "kind": kind})
+        if len(values) >= _RET09_MAX_VALUES:
+            break
+    return values
+
+
+def _is_chronology_page(values: list[dict]) -> bool:
+    """Chronology FP guard. A page whose extracted values are overwhelmingly
+    bare years, in non-decreasing document order, is a timeline — the thing
+    RET-09's own mechanism research names as its stated false-positive risk —
+    not a page burying facts. Silent in that case, regardless of the other
+    thresholds."""
+    if not values:
+        return False
+    years = [v for v in values if v["kind"] == "year"]
+    if len(years) / len(values) < _RET09_CHRONOLOGY_YEAR_RATIO:
+        return False
+    ordered = [int(v["value"]) for v in sorted(years, key=lambda v: v["char_offset"])]
+    return ordered == sorted(ordered)
+
+
+class _RET09MarginAnchorExtractor(HTMLParser):
+    """Single pass collecting the text of every structural anchor site RET-09
+    checks that isn't already covered by `extract_headings` (h1/h2) or the
+    prose stream's own opening/closing 15%: `<title>`, every `<dt>`/`<dd>`,
+    and every `<td>`/`<th>` table cell. `<dt>`/`<dd>` and `<td>`/`<th>` share
+    one depth counter — RET-09 only needs "inside any of these anchor tags
+    or not", the same aggregate-depth pattern `_ProseTextExtractor` already
+    uses for its own, unrelated boolean."""
+
+    _ANCHOR_TAGS = {"dt", "dd", "td", "th"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._title_parts: list[str] = []
+        self._anchor_parts: list[str] = []
+        self._in_title = False
+        self._anchor_depth = 0
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "title":
+            self._in_title = True
+        elif tag in self._ANCHOR_TAGS:
+            self._anchor_depth += 1
+
+    def handle_startendtag(self, tag, attrs):
+        pass
+
+    def handle_endtag(self, tag):
+        if tag == "title":
+            self._in_title = False
+        elif tag in self._ANCHOR_TAGS:
+            self._anchor_depth = max(0, self._anchor_depth - 1)
+
+    def handle_data(self, data):
+        if self._in_title:
+            self._title_parts.append(data)
+        if self._anchor_depth > 0:
+            self._anchor_parts.append(data)
+
+    def title_text(self) -> str:
+        return " ".join("".join(self._title_parts).split())
+
+    def anchor_text(self) -> str:
+        return " ".join("".join(self._anchor_parts).split())
+
+
+def extract_margin_anchor_text(html: str) -> tuple[str, str]:
+    """Returns (title_text, dt_dd_and_table_cell_text) for `html`."""
+    parser = _RET09MarginAnchorExtractor()
+    parser.feed(html)
+    parser.close()
+    return parser.title_text(), parser.anchor_text()
+
+
+def _json_ld_leaf_strings(json_ld_nodes: list[dict]) -> list[str]:
+    """Every string/number leaf value anywhere in `json_ld_nodes`, flattened
+    into a flat list — used only as a text corpus to search a value against,
+    so structure/nesting doesn't matter, only whether the literal value
+    appears anywhere in the page's own structured data."""
+    leaves: list[str] = []
+
+    def _walk(value):
+        if isinstance(value, dict):
+            for v in value.values():
+                _walk(v)
+        elif isinstance(value, list):
+            for v in value:
+                _walk(v)
+        elif isinstance(value, str):
+            leaves.append(value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
+            leaves.append(str(value))
+
+    for node in json_ld_nodes:
+        _walk(node)
+    return leaves
+
+
+def _summary_block_ranges(blocks: list[Block]) -> list[tuple[int, int]]:
+    return [
+        (block.start_char, block.end_char)
+        for block in blocks
+        if block.nearest_heading and _RET09_SUMMARY_HEADING_RE.search(block.nearest_heading)
+    ]
+
+
+def _in_any_range(offset: int, ranges: list[tuple[int, int]]) -> bool:
+    return any(start <= offset < end for start, end in ranges)
+
+
+def find_interred_facts(html: str, headings: list[dict], json_ld_nodes: list[dict]) -> list[Finding]:
+    """RET-09. Needs raw `html` directly (not only pre-extracted structures,
+    unlike this file's other `find_*` functions) because the margin-anchor
+    scan — `<title>`, `<dt>`/`<dd>`, `<td>`/`<th>` — has no other extraction
+    pass in this file to reuse; `headings` and `json_ld_nodes` are still
+    accepted as already-extracted arguments since `audit_html` computes both
+    anyway for other capabilities."""
+    blocks = extract_blocks(html)
+    prose_word_count = sum(block.word_count for block in blocks)
+    if prose_word_count < _RET09_MIN_PROSE_WORDS:
+        return []
+
+    prose_stream = " ".join(block.text for block in blocks)
+    total_chars = len(prose_stream)
+    values = extract_load_bearing_values(prose_stream)
+    if not values or _is_chronology_page(values):
+        return []
+
+    title_text, dt_dd_table_text = extract_margin_anchor_text(html)
+    h1_h2_text = " ".join(h["text"] for h in headings if h["level"] in (1, 2) and h["text"])
+    margin_len = max(0, round(total_chars * _RET09_MARGIN_FRACTION))
+    opening_text = prose_stream[:margin_len]
+    closing_text = prose_stream[max(0, total_chars - margin_len):]
+    json_ld_text = " ".join(_json_ld_leaf_strings(json_ld_nodes))
+    anchor_blob = "\n".join(
+        [title_text, h1_h2_text, opening_text, closing_text, dt_dd_table_text, json_ld_text]
+    ).lower()
+
+    summary_ranges = _summary_block_ranges(blocks)
+
+    interred = []
+    for entry in values:
+        offset = entry["char_offset"]
+        position = normalized_position(offset, total_chars)
+        if not (_RET09_MIDDLE_BAND_LOW < position < _RET09_MIDDLE_BAND_HIGH):
+            continue
+        if entry["value"].lower() in anchor_blob:
+            continue
+        if _in_any_range(offset, summary_ranges):
+            continue
+        interred.append({"value": entry["value"], "normalized_position": round(position, 4), "restated_at": None})
+
+    if len(interred) < _RET09_MIN_DISTINCT_INTERRED:
+        return []
+    interred_ratio = len(interred) / len(values)
+    if interred_ratio < _RET09_MIN_INTERRED_RATIO:
+        return []
+
+    examples = interred[:8]
+    quoted = ", ".join(item["value"] for item in examples)
+    more = f" (+{len(interred) - 8} more)" if len(interred) > 8 else ""
+
+    return [
+        Finding(
+            id="RET-09-facts-interred-mid-document",
+            title="Load-bearing values appear only in the middle of the page, restated nowhere",
+            severity="medium",
+            evidence=(
+                f"This page runs {prose_word_count} word(s). {len(interred)} of its {len(values)} "
+                f"extracted load-bearing figure(s) — {quoted}{more} — each appear only in the "
+                f"document's middle band (normalized position between {_RET09_MIDDLE_BAND_LOW} and "
+                f"{_RET09_MIDDLE_BAND_HIGH}), with no restatement in the title, any h1/h2, the "
+                f"opening or closing 15% of prose, a table cell, a definition, or JSON-LD. "
+                f"Published attention-bias research (Liu et al. 2024; Chroma 2025) identifies this "
+                f"band as the highest-risk zone for omission during synthesis."
+            ),
+            suggested_action=SuggestedAction(
+                summary="Restate the key figure(s) in a heading, the page's opening or closing section, a spec table, or JSON-LD — not only in the middle of the body copy.",
+                priority="medium",
+            ),
+            category="discoverability",
+            capability_id="RET-09",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "Published research (Liu et al., 'Lost in the Middle', TACL 2024; Hsieh et al. "
+                "2024; Chroma's 'Context Rot' study, 2025) shows LLMs systematically under-attend "
+                "to information positioned in the middle of a long context, with the degradation "
+                "replicated across frontier models including GPT-4.1, Claude 4 and Gemini 2.5. A "
+                "fact that exists only at normalized depth ~0.5 is measurably more likely to be "
+                "omitted from a synthesized answer than the same fact restated at either margin, "
+                "independent of retrieval succeeding."
+            ),
+            gate=3,
+            confidence="medium",
+            structured_evidence={
+                "prose_word_count": prose_word_count,
+                "values": interred,
+                "interred_ratio": round(interred_ratio, 4),
+            },
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Orchestration within the skill
 # ---------------------------------------------------------------------------
 
@@ -1182,7 +1516,8 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
         + find_skipped_heading_levels(headings)
         + find_token_survival_gaps(tokens, visible_text)
         + find_keyword_stuffing(prose_text)
-        + find_missing_retrieval_structure(headings, json_ld_nodes, has_dt_dd, content_word_count),
+        + find_missing_retrieval_structure(headings, json_ld_nodes, has_dt_dd, content_word_count)
+        + find_interred_facts(html, headings, json_ld_nodes),
         page_url,
     )
 

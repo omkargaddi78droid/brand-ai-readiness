@@ -1,4 +1,4 @@
-"""Unit tests for retrieval-readiness-audit (RET-01, RET-04, RET-08).
+"""Unit tests for retrieval-readiness-audit (RET-01, RET-04, RET-08, RET-09).
 
 Each detector is tested as a positive/negative pair, per project convention.
 """
@@ -11,13 +11,19 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared"))
 
-from finding_contract import Finding  # noqa: E402
+from finding_contract import Finding, SuggestedAction  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "check_retrieval_readiness", REPO_ROOT / "skills/retrieval-readiness-audit/scripts/check_retrieval_readiness.py"
 )
 ret = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(ret)
+
+_spec_orchestrator = importlib.util.spec_from_file_location(
+    "compose_report", REPO_ROOT / "skills/audit-orchestrator/scripts/compose_report.py"
+)
+orchestrator = importlib.util.module_from_spec(_spec_orchestrator)
+_spec_orchestrator.loader.exec_module(orchestrator)
 
 
 class ExtractHeadingsTests(unittest.TestCase):
@@ -769,6 +775,417 @@ class PageAttributionTests(unittest.TestCase):
     def test_no_page_url_leaves_evidence_unstamped(self):
         output = ret.audit_html("example.com", "<h1>Title</h1><h3>Skip</h3>")
         self.assertFalse(output["findings"][0]["evidence"].startswith("On "))
+
+
+# Literal, hand-varied filler sentences (no two share a repeated 4-word
+# run) — used, never repeated, to pad a fixture past RET-09's 800-word gate
+# without tripping RET-04's own keyword-stuffing check, which a templated
+# or rotated-word generator kept doing here in an earlier draft (every
+# fixed template produced at least one repeated 4-gram across enough
+# sentences to cross RET-04's threshold).
+_FILLER_SENTENCES = (
+    "Long-time owners often mention that daily use feels different from what the initial unboxing suggested. "
+    "Several independent reviewers spent multiple weeks with the product before publishing any conclusions. "
+    "A small but vocal group of early adopters reported no issues at all after several months of regular use. "
+    "Customer support response times varied noticeably between weekday requests and weekend requests. "
+    "Packaging quality earned praise from reviewers who compared it directly against several older competitors. "
+    "Return rates for this category tend to be lower once buyers actually try the product firsthand. "
+    "A handful of forum threads collect firsthand accounts from people who upgraded from an older model. "
+    "Manufacturing quality control seems to have improved steadily across several recent production runs. "
+    "Several owners praised how straightforward the setup process turned out to be for first-time buyers. "
+    "Online communities dedicated to this category tend to share detailed troubleshooting advice freely. "
+    "A dedicated support page answers most common questions without requiring a call to a representative. "
+    "People switching from a competing brand often comment on how different the overall experience feels. "
+    "Longevity claims from the manufacturer generally hold up according to owners surveyed after a full year. "
+    "Several buyers specifically researched independent lab results before finalizing their purchase decision. "
+    "A noticeable minority of reviewers wished the included documentation covered more advanced use cases. "
+    "Community-run comparison spreadsheets track pricing history across several retailers over recent months. "
+    "Shipping delays were rare according to most buyers who tracked their order from checkout to delivery. "
+    "A recurring theme among reviews is how much personal habits shape day-to-day satisfaction with a purchase. "
+    "Several owners in colder climates reported no meaningful difference in performance during winter months. "
+    "Warranty claims processed smoothly for the small number of buyers who needed to use that coverage. "
+    "A few reviewers compared unboxing videos from several creators before deciding which version to buy. "
+    "People buying as a gift frequently asked whether assembly would be difficult for someone unfamiliar with it. "
+    "Several long threads discuss whether paying for expedited shipping is worth it for this category. "
+    "Owners who travel frequently commented on how well the product held up across repeated trips. "
+    "A modest number of reviewers noted the included accessories felt like an afterthought compared to the main item. "
+    "Several buyers mentioned discovering the product through a recommendation from an unrelated online community. "
+    "Aftermarket accessories from third parties expanded quickly once the product gained wider popularity. "
+    "A small subset of reviewers focused entirely on sustainability claims made during the original announcement. "
+    "Several owners eventually wrote long-term follow-up reviews after living with the product for over a year. "
+    "Comparison articles from independent outlets generally ranked this option near the top of its category. "
+    "A few skeptical reviewers changed their initial opinion after extended use over several subsequent months. "
+    "Several buyers appreciated that pricing stayed relatively stable rather than fluctuating during seasonal sales. "
+    "People upgrading from a much older generation reported the biggest noticeable improvements overall. "
+    "A handful of reviewers documented the entire process from ordering through several weeks of daily use. "
+    "Several owners recommended reading the full manual rather than skimming it, citing a few less obvious features. "
+    "Community moderators pin a running list of known issues alongside official responses from the manufacturer. "
+    "A few reviewers specifically praised how quickly firmware or software updates addressed early complaints. "
+    "Several long-term owners eventually formed informal local meetups centered entirely around this product. "
+    "People researching alternatives before buying often cross-reference several independent testing labs. "
+    "A modest number of buyers reported needing a replacement part, with mixed experiences getting one shipped. "
+    "Several reviewers highlighted a specific detail nobody else in the category seemed to prioritize. "
+    "A few owners mentioned the resale value held up better than they initially expected after a couple of years. "
+    "Several buyers described the overall experience as quietly reliable rather than flashy or attention-grabbing. "
+    "People who researched extensively beforehand generally reported fewer surprises after the purchase arrived. "
+    "A handful of detailed teardown videos examined the internal build quality more closely than any review. "
+    "Several owners eventually recommended the product unprompted to friends facing a similar purchase decision. "
+    "A recurring complaint among a small minority centered entirely on how the included charging cable felt cheap. "
+    "Several long-form written reviews included side-by-side photos taken under identical lighting conditions. "
+    "A handful of owners specifically tested performance in unusually humid conditions before writing a review. "
+    "People who bought a second unit for a family member often mentioned it as a gift that was well received. "
+    "Several forum participants maintained running spreadsheets tracking failure rates reported by other members. "
+    "A modest number of reviewers compared the included warranty terms against similar products in adjacent categories. "
+    "Several buyers who contacted support directly described the experience as noticeably better than expected. "
+    "A few long-term owners eventually replaced a worn component themselves rather than filing a warranty claim. "
+    "Several independent testing labs published raw data alongside their summarized conclusions for transparency. "
+    "People researching this category for the first time often start with a handful of well-known comparison sites. "
+    "A small number of owners documented unboxing an unusually early production batch with minor cosmetic differences. "
+    "Several reviewers eventually updated their original write-up after using the product for a considerably longer stretch. "
+    "A handful of buyers specifically praised how the manufacturer handled an early, publicly acknowledged defect. "
+    "Several long threads collect tips for extending the usable lifespan well beyond the original warranty period."
+)
+_FILLER_SENTENCES = tuple(
+    s.strip().rstrip(".") + "." for s in _FILLER_SENTENCES.split(". ") if s.strip()
+)
+
+
+def _split_filler(word_budget: int) -> tuple[str, list[str]]:
+    """Consumes leading sentences from `_FILLER_SENTENCES` until `word_budget`
+    words are used, returning the consumed sentences and the remainder."""
+    used: list[str] = []
+    remaining = list(_FILLER_SENTENCES)
+    words_so_far = 0
+    while remaining and words_so_far < word_budget:
+        sentence = remaining.pop(0)
+        used.append(sentence)
+        words_so_far += len(sentence.split())
+    return " ".join(used), remaining
+
+
+def _long_page(middle_html: str, *, word_target: int = 850, title: str = "Untitled", h1: str = "Untitled") -> str:
+    """Builds a page with `middle_html` roughly centered between two
+    non-overlapping slices of `_FILLER_SENTENCES`, long enough in total to
+    clear RET-09's 800-word gate. Opening and closing filler never share a
+    sentence, so nothing here can itself trip RET-04's keyword-stuffing
+    check."""
+    filler_words_needed = max(0, word_target - len(middle_html.split()))
+    opening_text, remaining = _split_filler(filler_words_needed // 2)
+    closing_text, _ = (
+        (" ".join(remaining), [])
+        if remaining
+        else _split_filler(filler_words_needed // 2)
+    )
+    opening = f"<p>{opening_text}</p>"
+    closing = f"<p>{closing_text}</p>"
+    return f"<html><head><title>{title}</title></head><body><h1>{h1}</h1>{opening}{middle_html}{closing}</body></html>"
+
+
+class LoadBearingValueExtractionTests(unittest.TestCase):
+    def test_currency_amount_is_extracted(self):
+        values = ret.extract_load_bearing_values("The price is $1,299 today.")
+        self.assertEqual([v["value"] for v in values], ["$1,299"])
+        self.assertEqual(values[0]["kind"], "currency")
+
+    def test_currency_does_not_swallow_a_trailing_comma_before_a_new_clause(self):
+        values = ret.extract_load_bearing_values("It costs $89, and ships free.")
+        self.assertEqual(values[0]["value"], "$89")
+
+    def test_percentage_is_extracted(self):
+        values = ret.extract_load_bearing_values("Battery life improved by 40% this year.")
+        self.assertIn("40%", [v["value"] for v in values])
+
+    def test_unit_bearing_number_is_extracted(self):
+        values = ret.extract_load_bearing_values("The device weighs 2.4 kg fully loaded.")
+        self.assertIn("2.4 kg", [v["value"] for v in values])
+
+    def test_explicit_month_name_date_is_extracted(self):
+        values = ret.extract_load_bearing_values("It launched on March 14, 2022 to strong reviews.")
+        self.assertIn("March 14, 2022", [v["value"] for v in values])
+        self.assertEqual([v["kind"] for v in values if v["value"] == "March 14, 2022"], ["date"])
+
+    def test_iso_date_is_extracted(self):
+        values = ret.extract_load_bearing_values("Released 2022-03-14 after months of testing.")
+        self.assertIn("2022-03-14", [v["value"] for v in values])
+
+    def test_dimension_pattern_is_extracted(self):
+        values = ret.extract_load_bearing_values("The box measures 52x38x12 centimeters overall.")
+        self.assertIn("52x38x12", [v["value"] for v in values])
+
+    def test_bare_four_digit_year_is_extracted_and_tagged(self):
+        values = ret.extract_load_bearing_values("Founded in 2015, the company grew steadily.")
+        year_values = [v for v in values if v["kind"] == "year"]
+        self.assertEqual([v["value"] for v in year_values], ["2015"])
+
+    def test_a_year_inside_a_full_date_is_not_also_extracted_as_a_bare_year(self):
+        values = ret.extract_load_bearing_values("It shipped on March 14, 2022 as planned.")
+        self.assertEqual([v["value"] for v in values], ["March 14, 2022"])
+
+    def test_duplicate_values_are_deduplicated_keeping_first_offset(self):
+        values = ret.extract_load_bearing_values("It costs $50. Later, it still costs $50.")
+        matches = [v for v in values if v["value"] == "$50"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0]["char_offset"], 9)
+
+    def test_values_are_capped_at_twenty(self):
+        text = " ".join(f"{n} kg" for n in range(1, 30))
+        values = ret.extract_load_bearing_values(text)
+        self.assertLessEqual(len(values), 20)
+
+    def test_no_values_present_returns_empty_list(self):
+        self.assertEqual(ret.extract_load_bearing_values("Just ordinary prose with no numbers."), [])
+
+    def test_values_are_returned_in_document_order(self):
+        values = ret.extract_load_bearing_values("First $10, then 20 kg, then 30%.")
+        self.assertEqual([v["value"] for v in values], ["$10", "20 kg", "30%"])
+
+
+class ChronologyGuardTests(unittest.TestCase):
+    def test_ascending_years_are_flagged_as_a_chronology_page(self):
+        values = [
+            {"value": "1998", "char_offset": 0, "kind": "year"},
+            {"value": "2005", "char_offset": 10, "kind": "year"},
+            {"value": "2012", "char_offset": 20, "kind": "year"},
+        ]
+        self.assertTrue(ret._is_chronology_page(values))
+
+    def test_years_out_of_order_are_not_a_chronology_page(self):
+        values = [
+            {"value": "2012", "char_offset": 0, "kind": "year"},
+            {"value": "1998", "char_offset": 10, "kind": "year"},
+            {"value": "2005", "char_offset": 20, "kind": "year"},
+        ]
+        self.assertFalse(ret._is_chronology_page(values))
+
+    def test_below_the_seventy_percent_year_ratio_is_not_a_chronology_page(self):
+        values = [
+            {"value": "1998", "char_offset": 0, "kind": "year"},
+            {"value": "$50", "char_offset": 10, "kind": "currency"},
+            {"value": "20 kg", "char_offset": 20, "kind": "unit"},
+        ]
+        self.assertFalse(ret._is_chronology_page(values))
+
+    def test_no_values_is_not_a_chronology_page(self):
+        self.assertFalse(ret._is_chronology_page([]))
+
+
+class MarginAnchorExtractionTests(unittest.TestCase):
+    def test_title_text_is_extracted(self):
+        title, _ = ret.extract_margin_anchor_text("<html><head><title>My Page $50</title></head></html>")
+        self.assertEqual(title, "My Page $50")
+
+    def test_dt_dd_text_is_extracted(self):
+        _, anchor = ret.extract_margin_anchor_text("<dl><dt>Price</dt><dd>$50</dd></dl>")
+        self.assertIn("$50", anchor)
+
+    def test_table_cell_text_is_extracted(self):
+        _, anchor = ret.extract_margin_anchor_text("<table><tr><td>$50</td></tr></table>")
+        self.assertIn("$50", anchor)
+
+    def test_no_title_or_anchor_tags_returns_empty_strings(self):
+        title, anchor = ret.extract_margin_anchor_text("<p>Just a paragraph.</p>")
+        self.assertEqual(title, "")
+        self.assertEqual(anchor, "")
+
+
+class InterredFactsPositionTests(unittest.TestCase):
+    def test_a_value_at_the_document_midpoint_has_normalized_position_near_half(self):
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        findings = ret.find_interred_facts(html, ret.extract_headings(html), [])
+        self.assertEqual(len(findings), 1)
+        positions = [v["normalized_position"] for v in findings[0].structured_evidence["values"]]
+        for position in positions:
+            self.assertGreater(position, 0.25)
+            self.assertLess(position, 0.75)
+
+
+class InterredFactsGuardTests(unittest.TestCase):
+    """The five adversarial scenarios required by the plan: each must stay silent."""
+
+    def test_a_chronology_page_does_not_fire(self):
+        years_prose = " ".join(f"In {1990 + i} the company reached a new milestone." for i in range(20))
+        html = _long_page(f"<p>{years_prose}</p>", word_target=850, title="History", h1="History")
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
+    def test_a_page_under_the_word_gate_with_buried_facts_does_not_fire(self):
+        html = (
+            "<html><head><title>Short</title></head><body><h1>Short</h1>"
+            "<p>A short page. The price is $1,299, it lasts 18 hours, "
+            "improved 40%, and weighs 2.4 kg, none restated anywhere.</p>"
+            "</body></html>"
+        )
+        blocks = ret.extract_blocks(html)
+        self.assertLess(sum(b.word_count for b in blocks), 800)
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
+    def test_values_restated_only_in_json_ld_do_not_fire(self):
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        json_ld_nodes = [
+            {
+                "@type": "Product",
+                "price": "$1,299",
+                "battery": "18 hours",
+                "improvement": "40%",
+                "weight": "2.4 kg",
+            }
+        ]
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), json_ld_nodes), [])
+
+    def test_one_buried_value_out_of_eight_does_not_fire(self):
+        # Seven of the eight values are restated in the opening 15% (right
+        # after the title/h1, guaranteed by placing them as the very first
+        # sentence of the opening filler block); only the 40% boost is
+        # truly buried, with no restatement anywhere — 1/8 clears neither
+        # the >=3-distinct-value nor the >=40%-ratio threshold.
+        restated = "Specs at a glance: 1 kg, 2 kg, 3 kg, 4 kg, 5 kg, 6 kg, 7 kg models."
+        buried = "<p>Specs: 1 kg, 2 kg, 3 kg, 4 kg, 5 kg, 6 kg, 7 kg, and a hidden 40% boost buried here.</p>"
+        opening_text, remaining = _split_filler(400)
+        closing_text = " ".join(remaining)
+        html = (
+            f"<html><head><title>Specs</title></head><body><h1>Specs</h1>"
+            f"<p>{restated} {opening_text}</p>{buried}<p>{closing_text}</p></body></html>"
+        )
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
+    def test_a_spec_table_in_the_middle_counts_as_an_anchor(self):
+        table = (
+            "<table><tr><td>Price</td><td>$1,299</td></tr>"
+            "<tr><td>Battery</td><td>18 hours</td></tr>"
+            "<tr><td>Boost</td><td>40%</td></tr>"
+            "<tr><td>Weight</td><td>2.4 kg</td></tr></table>"
+        )
+        html = _long_page(table, word_target=850, title="Specs", h1="Specs")
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
+
+class InterredFactsPositiveTests(unittest.TestCase):
+    def test_buried_unrestated_values_fire(self):
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        findings = ret.find_interred_facts(html, ret.extract_headings(html), [])
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "RET-09-facts-interred-mid-document")
+        self.assertEqual(findings[0].capability_id, "RET-09")
+        self.assertEqual(findings[0].severity, "medium")
+        self.assertEqual(findings[0].confidence, "medium")
+
+    def test_a_summary_block_heading_anchors_its_values(self):
+        summary = "<h2>Summary</h2><p>The price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>"
+        html = _long_page(summary, word_target=850, title="Widget", h1="Widget")
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
+    def test_evaluation_is_deterministic(self):
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        headings = ret.extract_headings(html)
+        first = ret.find_interred_facts(html, headings, [])
+        second = ret.find_interred_facts(html, headings, [])
+        self.assertEqual([f.to_dict() for f in first], [f.to_dict() for f in second])
+
+    def test_finding_satisfies_the_contract(self):
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        findings = ret.find_interred_facts(html, ret.extract_headings(html), [])
+        for finding in findings:
+            self.assertEqual(Finding.from_dict(finding.to_dict()).validate(), [])
+
+    def test_wired_into_audit_html(self):
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        output = ret.audit_html("example.com", html)
+        ids = [f["id"] for f in output["findings"]]
+        self.assertIn("RET-09-facts-interred-mid-document", ids)
+
+
+class OverlapControlTests(unittest.TestCase):
+    """RET-09 (this skill, deterministic) and CQ-01 (content-quality-audit,
+    agent-judged) can both fire on the same page — different trigger,
+    different remedy, different owning skill. This proves composing both
+    skills' outputs never trips compose_report.py's duplicate-finding-id
+    guard, since the two ids never collide."""
+
+    def test_ret09_and_a_hand_authored_cq01_finding_compose_without_a_duplicate_id_abort(self):
+        import json
+        import tempfile
+
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        ret09_output = ret.audit_html("example.com", html, page_url="https://example.com/widget")
+
+        cq01_finding = Finding(
+            id="CQ-01-no-canonical-answer-near-top",
+            title="No concise canonical answer appears near the top of the page",
+            severity="medium",
+            evidence="The opening block is navigation chrome; no answer-shaped sentence appears in it.",
+            suggested_action=SuggestedAction(summary="Add a lede sentence answering the page's core question.", priority="medium"),
+            category="discoverability",
+            capability_id="CQ-01",
+            owner_skill="content-quality-audit",
+            mechanism="A synthesizing model weights the opening of a document heavily; nav chrome there wastes that weight.",
+            gate=3,
+            confidence="medium",
+        )
+        cq01_output = {
+            "owner_skill": "content-quality-audit",
+            "capability_ids": ["CQ-01"],
+            "site": "example.com",
+            "page_url": "https://example.com/widget",
+            "findings": [cq01_finding.to_dict()],
+            "agent_judgement_required": [],
+            "unknown_checks": [],
+        }
+
+        with tempfile.TemporaryDirectory() as workdir:
+            ret09_path = Path(workdir) / "retrieval.json"
+            cq01_path = Path(workdir) / "content_quality.json"
+            ret09_path.write_text(json.dumps(ret09_output), encoding="utf-8")
+            cq01_path.write_text(json.dumps(cq01_output), encoding="utf-8")
+
+            report = orchestrator.compose(
+                "example.com",
+                [
+                    ("retrieval-readiness-audit", str(ret09_path)),
+                    ("content-quality-audit", str(cq01_path)),
+                ],
+                audited_at="2026-09-20T14:32:00Z",
+            )
+
+        errors = orchestrator.validate_floor_shape(report)
+        self.assertEqual(errors, [])
+        # compose() renumbers each finding's report-facing `id` to a
+        # sequential F-NNN and moves the original semantic id to `check_id`
+        # (see finding_contract.assign_sequential_ids) — no abort either way,
+        # and both semantic ids survive composition distinctly.
+        self.assertEqual(len(report["findings"]), 2)
+        check_ids = {f["check_id"] for f in report["findings"]}
+        self.assertIn("RET-09-facts-interred-mid-document", check_ids)
+        self.assertIn("CQ-01-no-canonical-answer-near-top", check_ids)
+        capability_ids = {f["capability_id"] for f in report["findings"]}
+        self.assertIn("RET-09", capability_ids)
+        self.assertIn("CQ-01", capability_ids)
 
 
 class SsrfGuardTests(unittest.TestCase):
