@@ -6,10 +6,12 @@ positive control, and false positives are named in the rubric, so they are not
 optional garnish.
 """
 
+import http.server
 import importlib.util
 import json
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -250,6 +252,100 @@ class EndToEndCompositionTests(unittest.TestCase):
             self.assertIn("mechanism", finding)
             restored = Finding.from_dict(finding)
             self.assertEqual(restored.validate(), [])
+
+
+class _HeaderScriptedHandler(http.server.BaseHTTPRequestHandler):
+    """Serves one fixed (status, headers, body) response. Local only,
+    127.0.0.1, no external network — same pattern as test_edge_access.py's
+    `_ScriptedHandler`, extended to send extra response headers so
+    `fetch_page_with_headers` has something real to capture."""
+
+    status = 200
+    body = b"ok"
+    extra_headers: dict[str, str] = {}
+
+    def do_GET(self):  # noqa: N802 (stdlib method name)
+        self.send_response(self.status)
+        self.send_header("Content-Type", "text/plain")
+        for name, value in self.extra_headers.items():
+            self.send_header(name, value)
+        self.end_headers()
+        self.wfile.write(self.body)
+
+    def log_message(self, *args):
+        pass  # silence per-request stderr logging
+
+
+class _HeaderLocalServer:
+    def __init__(self, status: int, body: bytes, extra_headers: dict[str, str] | None = None):
+        handler = type(
+            "Handler",
+            (_HeaderScriptedHandler,),
+            {"status": status, "body": body, "extra_headers": extra_headers or {}},
+        )
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}/"
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=2)
+
+
+class FetchPageWithHeadersTests(unittest.TestCase):
+    """PER-09's future data source. A real local HTTP server, not a mock, so
+    these exercise the actual urllib round trip — same convention as
+    test_edge_access.py's ProbeWithUserAgentReturnShapeTests."""
+
+    def test_a_present_page_returns_headers_with_case_insensitive_lookup(self):
+        with _HeaderLocalServer(200, b"hello", {"X-Robots-Tag": "noai"}) as server:
+            text, headers, status = perimeter.fetch_page_with_headers(server.url)
+        self.assertEqual(status, "present")
+        self.assertEqual(text, "hello")
+        # The header was sent on the wire as "X-Robots-Tag"; lookup must not
+        # depend on the caller matching that exact casing.
+        self.assertEqual(headers.get("x-robots-tag"), "noai")
+        self.assertNotIn("X-Robots-Tag", headers, "keys must be normalized to lowercase")
+
+    def test_404_is_absent_with_empty_headers(self):
+        with _HeaderLocalServer(404, b"not found", {"X-Robots-Tag": "noai"}) as server:
+            text, headers, status = perimeter.fetch_page_with_headers(server.url)
+        self.assertEqual(status, "absent")
+        self.assertIsNone(text)
+        self.assertEqual(headers, {})
+
+    def test_410_is_absent_with_empty_headers(self):
+        with _HeaderLocalServer(410, b"gone", {"X-Robots-Tag": "noai"}) as server:
+            text, headers, status = perimeter.fetch_page_with_headers(server.url)
+        self.assertEqual(status, "absent")
+        self.assertIsNone(text)
+        self.assertEqual(headers, {})
+
+    def test_a_non_404_http_error_is_unavailable_with_headers_populated(self):
+        """The one behavior that diverges from fetch_text's pattern: a 403's
+        response headers are still available on the error object and carry
+        real signal (e.g. X-Robots-Tag), so they must not be discarded."""
+        with _HeaderLocalServer(403, b"Forbidden", {"X-Robots-Tag": "noai"}) as server:
+            text, headers, status = perimeter.fetch_page_with_headers(server.url)
+        self.assertEqual(status, "unavailable")
+        self.assertIsNotNone(text)
+        self.assertIn("403", text)
+        self.assertEqual(headers.get("x-robots-tag"), "noai")
+        self.assertNotEqual(headers, {})
+
+    def test_a_generic_fetch_failure_is_unavailable_with_empty_headers(self):
+        """Connection refused (nothing listening on this port) exercises the
+        generic exception branch — same unreachable-host pattern as
+        test_edge_access.py's probe_with_user_agent test."""
+        text, headers, status = perimeter.fetch_page_with_headers("http://127.0.0.1:1/")
+        self.assertEqual(status, "unavailable")
+        self.assertIsNotNone(text)
+        self.assertEqual(headers, {})
 
 
 if __name__ == "__main__":

@@ -1247,6 +1247,47 @@ def fetch_text(url: str) -> tuple[str | None, str]:
         return f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
 
 
+def fetch_page_with_headers(url: str) -> tuple[str | None, dict[str, str], str]:
+    """GET a page and capture its response headers alongside the body.
+
+    Returns (text_or_error, headers, status). status is the same three-value
+    contract as `fetch_text`: "present", "absent" (404/410) or "unavailable"
+    (anything else, including network failure).
+
+    `headers` is built as a plain dict with every header name lowercased —
+    chosen over a dedicated case-insensitive mapping type because the only
+    thing a caller needs is `.get("some-header")` lookups regardless of the
+    casing seen on the wire, and a lowercased-key dict gives that directly
+    without adding a new type to the module.
+
+    On "absent" there is no page to have headers from, so headers is `{}`.
+    On "unavailable" from a non-HTTPError failure (timeout, DNS, TLS), the
+    fetch never completed enough to have any headers, so headers is also
+    `{}`. The one case that diverges from `fetch_text`'s pattern: an
+    HTTPError that isn't 404/410 still carries response headers on the error
+    object (`error.headers`), and those are captured here — a 403 or 500
+    response's headers can still carry `X-Robots-Tag` or similar signal a
+    later capability needs.
+    """
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+            raw = response.read(2_000_000)
+            content_encoding = response.headers.get("Content-Encoding", "")
+            headers = {key.lower(): value for key, value in response.headers.items()}
+        raw = decode_content_encoding(raw, content_encoding)
+        return raw.decode("utf-8", errors="replace"), headers, "present"
+    except urllib.error.HTTPError as error:
+        code = error.code
+        error_headers = {key.lower(): value for key, value in error.headers.items()} if error.headers else {}
+        error.close()
+        if code in (404, 410):
+            return None, {}, "absent"
+        return f"{url} returned HTTP {code}", error_headers, "unavailable"
+    except Exception as error:  # timeout, DNS, TLS, redirect loop
+        return f"{url} could not be fetched: {type(error).__name__}: {error}", {}, "unavailable"
+
+
 def site_label(url_or_domain: str) -> str:
     value = url_or_domain.strip()
     for scheme in ("https://", "http://"):
