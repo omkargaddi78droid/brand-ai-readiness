@@ -257,20 +257,39 @@ this file.)
 ## Next
 
 The capability set is unfrozen exactly once, for exactly these five, per
-the plan's own framing — it refreezes after this cycle. Remaining open
-items, untouched by this cycle:
+the plan's own framing — it refreezes after this cycle.
+
+**Resolved after initial cycle-22 completion, same cycle:**
 
 - The `measure_perimeter_extras.py` false-positive regression flagged in
-  `docs/phase-4-completion-20.md` (3 false positives, PER-06/08 —
-  pre-existing, confirmed via `git stash` to predate all of this cycle's
-  work, deliberately left untouched rather than fixed as an out-of-scope
-  drive-by).
-- A live orchestrator end-to-end pass exercising all five new capabilities
-  together against real, previously-unseen sites has not been run this
-  cycle — the corpus/unit coverage above is thorough, but per this
-  project's own stated bar ("every false positive this project has found
-  came from a real site, not a fixture"), a live pass remains open work
-  for whoever picks this up next.
+  `docs/phase-4-completion-20.md` (3 false positives, all
+  `PER-08-llms-sitemap-disagreement`) is fixed. Root cause: the harness's
+  fixed default llms.txt fixture declares a link to `https://example.com/a`
+  that three PER-06/PER-08-robots-reference corpus cases' shared sitemap
+  fixture (`sitemap_valid_urlset.xml`) never listed — a test-fixture gap,
+  not a `check_perimeter.py` logic bug. Fixed by adding that one URL to the
+  sitemap fixture (used by no other case). `measure_perimeter_extras.py`
+  now reports precision/recall 1.000, and all eight `measure_*.py`
+  harnesses in this project are clean.
+- A live pass (not the full three-site orchestrator run the plan
+  envisioned, but a real, previously-unseen-site check) ran against
+  `docs.python.org/3/library/re.html` and `stripe.com/pricing` across all
+  four touched skills (`perimeter-access-audit`, `entity-audit`,
+  `retrieval-readiness-audit`, `static-extraction-audit`). Zero crashes.
+  PER-09/ENT-11/RET-10/REN-12 all stayed silent on both real pages — no
+  false positives on legitimate content. **RET-09 fired a genuine live
+  true positive on `stripe.com/pricing`**: 15 of 19 extracted load-bearing
+  figures (fee percentages — 0.4%, 3.5%, 4.3%, uptime 99.999%, etc.) sit
+  only in the page's middle band with no restatement anywhere, exactly the
+  mechanism this capability targets. Composed cleanly through
+  `compose_report.py` into a schema-valid report (9 findings, 5
+  `unknown_checks` — all agent-judged capabilities correctly deferred, no
+  errors). A broader multi-site pass (the plan's original 3-site ask, plus
+  coverage for PER-09/ENT-11 firing live, not just staying silent) remains
+  open for a future cycle.
+
+**Still open:**
+
 - REN-12's own flagged concern (see `.superpowers/sdd/01-project-plan/
   task-9-report.md`): a legitimate SEO meta description containing
   phrasing that happens to match the Self-authority language family at
