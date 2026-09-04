@@ -1,6 +1,6 @@
 {
   "name": "brand-ai-readiness-audit",
-  "version": "0.22.0",
+  "version": "0.23.0",
   "description": "Audits a website for the problems that keep it out of AI-assistant answers and the problems that lose the visitors who arrive, and emits one report of evidence-backed findings with prioritized suggested actions.",
   "license": "MIT",
   "skills": [

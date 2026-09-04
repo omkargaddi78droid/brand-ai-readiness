@@ -1,7 +1,7 @@
 # Capability Matrix
 
 The project's central capability ledger. Started as a Phase 0.2 inventory-only
-snapshot; as of cycle 21, 53 capabilities below are marked IMPLEMENTED.
+snapshot; as of cycle 22, 58 capabilities below are marked IMPLEMENTED.
 **Status is tracked per row — see each capability's Status column for its
 actual current state (IMPLEMENTED, PARTIALLY_COVERED, NOT_STARTED, etc.),
 not a single blanket claim for the whole file.**
@@ -68,19 +68,129 @@ CQ-10 specifically, a user scope decision after selection rather than a
 feasibility problem). This freeze is final for this phase — no further
 capability additions without a new, explicit unfreeze decision.
 
+## Capability unfreeze — cycle 22
+
+Cycle 21 froze the capability set explicitly: "no further capability
+additions without a new, explicit unfreeze decision." `docs/01-project-plan.md`
+is that explicit unfreeze decision. Two deep-research passes (`research1.md`,
+`Research2.md`) were commissioned against `prompt2.txt` to find capabilities
+*outside* the existing PER/REN/ENT/RET/CIT/CQ/EN set — the research had
+already been mined once (cycle 19-20's ENT-05/06/CIT-13 reopening); this pass
+looked for genuinely new analysis dimensions, not more rows in existing
+clusters. It returned **27 serious candidates**, scored against the same
+five criteria cycle 21 used (core-problem impact, differentiation,
+feasibility within this project's non-negotiable constraints,
+complementary/no-overlap, concrete findings not scores). **5 selected, 4
+deferred, 19 rejected** — full per-candidate scoring and reasoning in
+`docs/01-project-plan.md` §2.
+
+**Shipped, all five, folded into existing skills — marketplace stays at 8
+skills, no new skill file for any of them:**
+
+- **PER-09** — cross-layer access-signal contradiction (`perimeter-access-
+  audit`). robots.txt / `X-Robots-Tag` response header / `<meta
+  name="robots">` / TDMRep / llms.txt / sitemap.xml checked against each
+  other for literal disagreement, not presence/validity alone (every other
+  PER-0x row asks "is X present and valid?"; this asks "do the site's own
+  declarations agree with each other?"). See `docs/phase-4-completion-22.md`.
+- **ENT-11** — JSON-LD graph referential integrity (`entity-audit`). Walks
+  `@id` edges across the structured-data graph — dangling references, a
+  cross-page reference the page's own sitemap can confirm is broken,
+  orphan identity nodes. Every existing ENT-0x row validates a node in
+  isolation; this is the first to validate the graph *as a graph*. See
+  `docs/phase-4-completion-22.md`.
+- **RET-09** — positional fact interment (`retrieval-readiness-audit`).
+  Load-bearing figures (price, spec, headline statistic) that exist only in
+  a long page's middle band, restated nowhere — the strongest-evidenced
+  mechanism in either research document (Liu et al.'s "Lost in the
+  Middle", TACL 2024; Chroma's 2025 "Context Rot" study). See
+  `docs/phase-4-completion-22.md`.
+- **RET-10** — chunk self-containment (`retrieval-readiness-audit`,
+  strictly after RET-09 — reuses and hardens the same `shared/text_spans.
+  extract_blocks` infrastructure). A content block opening with an
+  unresolved pronoun/demonstrative/generic-definite reference that never
+  names its own subject inside the block — the unit a RAG pipeline
+  actually retrieves. See `docs/phase-4-completion-22.md`.
+- **REN-12** — concealed agent-directed instruction scanner
+  (`static-extraction-audit`). Text invisible to a visitor (CSS-hidden, an
+  HTML comment, or embedded only in JSON-LD/meta content) but fully
+  present in the static text a fetcher reads, carrying an instruction
+  addressed at an AI system — concealment alone never fires, a language
+  trigger is always required too. Highest complexity and highest FP risk
+  of the five; widens this skill's stated concern to both directions of
+  the human/machine view gap (REN-02/04/10 find facts hidden *from*
+  machines, REN-12 finds text hidden *from* humans). See
+  `docs/phase-4-completion-22.md`.
+
+**Deferred, 4** (a real defect, blocked on complexity or infrastructure,
+not policy — distinct from a rejection): chunk-fracture simulation (folded
+into RET-10's own mechanism instead — a fixed window offset is arbitrary,
+RET-10's anchor test captures the same underlying risk without one);
+AI-reachable subgraph orphan detection in its full graph form (needs a
+link-graph crawl this project does not have; its cheap, crawl-free 80% —
+robots path rules ∩ sitemap inventory — is absorbed into PER-09's own
+contradiction check); cross-page near-duplicate/template dilution
+(methodologically broken against this project's own agent-chosen,
+variety-biased page sample, which systematically hides exactly the
+clusters this would look for); `.md`-variant-vs-canonical-HTML drift
+(a genuine defect, reachable on <1% of sites that serve a `.md` variant at
+all — a cheap PER-07 extension for a future cycle, not its own capability).
+
+**Rejected, 19**, across five named failure classes (full per-candidate
+reasoning in `docs/01-project-plan.md` §2's table and "The pattern in the
+rejections"):
+
+- **Banned dependency or absent infrastructure**: GraphRAG k-core density
+  (needs `networkx`, banned), internal PageRank starvation (same two
+  blockers), OpenIE triple-extraction yield (needs a dependency parser,
+  banned), self-reflective API validation (near-zero hit rate — needs a
+  published OpenAPI spec).
+- **Fires on everything**: Accept-header content negotiation (~99.9% of
+  sites answer "no"), W3C PROV-O lineage (research states plainly almost
+  all sites will flag), byte-range fetch survivability (near-universal and
+  irrelevant to HTML), HTTP `Link` header relations (absent on nearly
+  every site, appropriately).
+- **Unfalsifiable threshold**: redirect-hop/latency vs. fetcher tolerance
+  (thresholds from blog observation, not vendor specs; not reproducible
+  from our network), BM25 length-normalization trap (the corpus average
+  document length is unknowable, so the computed score drop is
+  unfalsifiable).
+- **Already shipped under another name**: semantic distractor density
+  (≈ CQ-07, same defect with a similarity score attached), identifier-vs-
+  prose vocabulary divergence (≈ RET-01 + RET-05), sectioning containment
+  hierarchy (the intersection of RET-08 + REN-06, both already shipped),
+  NCD semantic redundancy standalone (≈ REN-07's content ratio, within a
+  page).
+- **Conventional SEO in new clothing**: cross-page near-dup via SimHash
+  (presentation, not question, novelty — also the methodology-broken case
+  above), URL semantic entropy (opaque IDs are a legitimate engineering
+  choice, not a defect), IndexNow adoption (absence proves nothing —
+  server-side pings leave no artifact).
+- **Other, each its own reason**: edge-cache staleness skew bot-vs-browser
+  (highest FP risk in the pool — mechanism is inference from general CDN
+  practice, not a study); Common Crawl CDX footprint (third-party service
+  dependency, breaks manifest self-containment); ETag volatility vs.
+  content hash (costs a 30-second sleep for a rare, low-impact signal).
+
+This freeze is unfrozen exactly once, for exactly these five. It refreezes
+after this cycle — no further capability additions without another
+explicit unfreeze decision, the same discipline cycle 21 established.
+
+---
+
 Resource keys: `GEO` = Auriti-Labs/geo-optimizer-skill · `C4A` = crawl4ai
 (**excluded — headless browser, hard constraint 1 above; kept as a table label for
 history, never a real dependency**) · `TRA` = trafilatura · `ADV` = advertools ·
 `BM25` = bm25s/rank_bm25 · `SQ*` = squirrelscan (prior art only, not a dependency) ·
 `AZ*` = aaron-he-zhu (patterns only) · `—` = build from scratch.
 
-Totals: **84 capabilities** — 73 audit + 11 infrastructure (corrected in cycle 10;
-the original "62" header was stale against the table's own row count — a
-documentation-hygiene bug the same class as Cluster E's stale status column
-below, both caught by re-reading primary sources instead of trusting inherited
-figures). 47 from the research spec, 11 engagement (authored), the remainder
-folded/added across phases. Build-from-scratch: **31** (unverified against the
-current row count this cycle; flagged, not recounted, to keep this fix scoped).
+Totals: **89 capabilities** — 78 audit + 11 infrastructure (84 as of cycle 21,
++5 cycle 22: PER-09, ENT-11, RET-09, RET-10, REN-12, per the unfreeze above).
+47 from the research spec, 11 engagement (authored), the remainder
+folded/added across phases. Build-from-scratch: **31 as of cycle 21**
+(unverified against the current row count this cycle; flagged, not
+recounted, to keep this fix scoped — the same disposition the cycle-21
+figure itself carried forward from cycle 10).
 
 ---
 
@@ -98,6 +208,7 @@ current row count this cycle; flagged, not recounted, to keep this fix scoped).
 | PER-06 | sitemap.xml discovery audit | Missing, stale, or incomplete sitemap; orphaned fact-dense pages unreachable from it | — (built locally, regex not ADV) | None | — | PARTIALLY_COVERED — `perimeter-access-audit` covers presence/validity/emptiness of the sitemap itself; completeness (orphaned pages not listed) needs a crawl to compare against, not built |
 | PER-07 | Markdown content negotiation | Server does not serve `.md` variants under content negotiation — a cheap, high-leverage win | — | None | ✘ | IMPLEMENTED — `perimeter-access-audit`. Path-suffix negotiation (`<path>.md`), not `Accept`-header content negotiation |
 | PER-08 | AI-discoverability of the sitemap itself | Sitemap not referenced from robots.txt; llms.txt and sitemap disagree on the canonical URL set | — (built locally) | None | — | IMPLEMENTED — `perimeter-access-audit`. Both halves built cycle 18: robots.txt-reference, and llms.txt/sitemap URL-set disagreement (a llms.txt link the sitemap doesn't know about — the reverse direction, sitemap URLs llms.txt omits, is the intended curated-subset pattern, not a defect). Live-validated on 6 real sites; a `<sitemapindex>` sitemap (vercel.com, supabase.com) reports `unknown` rather than comparing against the index's own pointer URLs — sub-sitemap recursion not built, same class of gap as PER-06's completeness limitation |
+| PER-09 | Cross-layer access-signal contradiction | The site's own declared-access surface disagreeing with itself across robots.txt, the `X-Robots-Tag` response header, `<meta name="robots">`, TDMRep (`tdm-reservation`), llms.txt, and sitemap.xml — not presence/validity of any one layer alone | — (built locally) | None | — | IMPLEMENTED — `perimeter-access-audit`, cycle 22. Fetches the page once for `X-Robots-Tag`/`<meta name="robots">`/`tdm-reservation` (`fetch_page_with_headers`, Phase 1.3 shared infra — the response-header-capture gap every other PER-0x row had been discarding). Five contradiction rules: a sitemap-declared URL AI crawlers are disallowed from reaching (C1); a page declared in the sitemap that also carries `noindex` (C2); a TDM reservation that contradicts robots.txt's own training-bot allowance (C3, scoped to GPTBot/ClaudeBot/CCBot); the `X-Robots-Tag` header and `<meta name="robots">` tag disagreeing with each other; and — the inverse of C3 — a training-relevant page with no TDM declaration at all where one is expected. See `docs/phase-4-completion-22.md` |
 
 **Detail.** Deps: stdlib HTTP + `advertools` (optional). Security: read-only GETs only;
 respect robots for our own fetching; never probe authenticated paths. Runtime: <5 s
@@ -128,6 +239,7 @@ HTML, JSON-LD, and any hydration-state JSON blob the page embeds itself (`__NEXT
 | REN-09 | Image-of-text facts | Prices, specs, hours rendered inside images with no text restatement | — | None | ✘ | NOT_STARTED — no OCR/vision capability in this project; unrelated to the browser constraint, blocked on a different missing capability. Considered cycle 21, discarded: needs OCR/vision this project does not have |
 | REN-10 | NAP render asymmetry | Phone/address only assembled by client-side JS (e.g. concatenated from `data-*` fragments or a JS string) with no plain-text equivalent | — | None | ✘ | IMPLEMENTED — `static-extraction-audit` (cycle 19), script-decided. Narrowed to phone numbers only — free-form street-address pattern matching needs a real address parser to keep FP low, deferred. See docs/phase-4-completion-19.md |
 | REN-11 | PDF-only fact lock | Decision-critical figures only inside linked PDFs with no HTML restatement | — | None | ✘ | IMPLEMENTED — `static-extraction-audit` (cycle 19). Presence-only, always `track: proactive`, never a confirmed defect: this project has no PDF-parsing library (stdlib-only dependency rule), so it can note a PDF link exists but not verify its content. Narrower than the matrix's original "fetch + parse the PDF's text layer" framing — that framing is corrected here, not deferred. See docs/phase-4-completion-19.md |
+| REN-12 | Concealed agent-directed instruction scanner | Text invisible to a visitor (CSS-hidden, an HTML comment, or embedded only in JSON-LD/`<meta content>`) but fully readable by a text extractor, carrying an instruction addressed at an AI system — indirect prompt injection, independently documented in the wild by Zscaler ThreatLabz, Unit 42, Forcepoint X-Labs, and Brave's Perplexity Comet red-team work | — | None | ✘ | IMPLEMENTED — `static-extraction-audit`, cycle 22, script-decided. A second, tree-based DOM parse (ancestor-aware concealment resolution and `<style>`-block rule matching don't fit the skill's existing single-pass parser). Concealment map: `hidden` attribute, `aria-hidden="true"`, inline style, or a matching `<style>`-block rule (last-matching-rule-per-property wins, no cascade/specificity engine — conservative, silent when ambiguous), an HTML comment, or JSON-LD/meta content (concealed by construction). Fires only on concealment **and** a language trigger — Override phrase (critical), an imperative verb near an agent noun (high), or a self-authority phrase 40+ chars (medium); concealment alone never fires. Required exclusions: `<code>`/`<pre>`/`<kbd>`/`<samp>` skipped entirely, `<noscript>` is not concealment. Per-instance finding, capped at 5. Highest complexity and highest FP risk of the five cycle-22 capabilities; widens this skill's stated concern to both directions of the human/machine view gap. See `docs/phase-4-completion-22.md` |
 
 **Detail.** Deps: stdlib HTTP only — no `trafilatura`, no PDF-parsing library; both
 were named as this cluster's resources before cycle 19's build and turned out
@@ -165,6 +277,7 @@ paragraph's FP-risk note about "approximated rows" no longer covers them.
 | ENT-08 | NAP consistency | Name/address/phone disagreeing across the site's own pages and its markup | — | None | ✘ | NOT_STARTED — considered cycle 21, discarded: needs multi-page context, no crawl infra; phone-half overlaps REN-10 |
 | ENT-09 | Specialty/taxonomy consistency | A page's assigned category tag contradicting its own body text | — | None | ✘ | IMPLEMENTED — `entity-audit`, agent-judged. Single-page, no off-site/cross-page reasoning needed (an earlier phase-4 note incorrectly grouped it with ENT-07/08, corrected in cycle 9). Script extracts a declared category/breadcrumb label + zero-keyword-overlap candidates only; agent judges against references/entity-judgement-rubric.md |
 | ENT-10 | Same-listing address drift | Unstable address text across snapshots of one listing → trust demotion | — | None | ✘ | **DEFERRED** — requires historical snapshots we cannot obtain in a single <5 min read-only audit. Documented as a limitation, not faked |
+| ENT-11 | JSON-LD graph referential integrity | The structured-data graph as a graph, not isolated nodes — a `@id` reference pointing at nothing on the page; a cross-page `@id` reference the site's own sitemap can confirm is broken; an identity-bearing node (Organization/Person/Product) no other node ever references | — (built locally) | None | — | IMPLEMENTED — `entity-audit`, cycle 22. Three findings: `dangling-id-reference` (an `@id` cited within the page's own graph that resolves to nothing in it), `cross-page-id-reference` (an `@id` reference to a URL confirmed absent from an agent-supplied sitemap), `orphan-identity-node` (an identity node present but never referenced by anything else in the graph). Caller-side overlap control against ENT-01: only invoked when `nodes` is non-empty, so a page ENT-01 already flags `no-structured-data`/`malformed-json-ld` never also fires ENT-11 for the trivial reason that an empty/unparseable graph has no edges to check. See `docs/phase-4-completion-22.md` |
 
 **Detail.** Deps: an HTML/JSON-LD parser; optional `advertools` for crawl-wide
 canonical maps. ENT-05/06 needed an off-site lookup — **scope decision, open since
@@ -206,6 +319,8 @@ which is a semantic call, not an off-site or cross-page one.
 | RET-06 | Chunk quality / atomic paragraphs | Paragraphs blending several ideas → muddied embeddings, low relevance per chunk | — (was seoscoreapi) | None | ✘ | IMPLEMENTED — `retrieval-readiness-audit` (cycle 14), agent-judged. Script flags paragraphs ≥80 words/≥5 sentences as candidates; agent judges genuine idea-blending. Live-validated clean on docs.python.org (10 long-but-atomic candidates, correctly no finding). See docs/phase-4-completion-14.md |
 | RET-07 | Retrieval-oriented structure | Absent headings, Q&A framing, or definition blocks that make chunks self-contained | — | None | ✘ | IMPLEMENTED — `retrieval-readiness-audit` (cycle 13), script-decided. Narrowed to the structural half only: a substantial page (≥300 words) with zero of the three named aids present at all; whether existing chunks are semantically self-contained is out of scope (judgement call). See docs/phase-4-completion-13.md |
 | RET-08 | Heading hierarchy integrity | Skipped or decorative heading levels destroying document structure | — | None | ✘ | IMPLEMENTED — `retrieval-readiness-audit` (new skill, cycle 10), script-decided. Scoped to skipped heading levels and empty headings only; "decorative" heading levels excluded (needs render/CSS inspection, gate 2, not built). See docs/phase-4-completion-10.md |
+| RET-09 | Positional fact interment | Load-bearing figures (price, spec, headline statistic) that exist only in a long document's middle band and are never restated at either margin — LLMs systematically under-attend to mid-context information (Liu et al., "Lost in the Middle", TACL 2024; Chroma's 2025 "Context Rot" study) | — | None | ✘ | IMPLEMENTED — `retrieval-readiness-audit`, cycle 22, script-decided. Gate: 800+ words. Extracts up to 20 distinct load-bearing values (currency, unit-bearing numbers, dates, dimension patterns); fires when 3+ distinct values, and 40%+ of all extracted values, sit only at normalized position 0.25-0.75 with no restatement in the title, any h1/h2, the opening/closing 15% of prose, a table cell, a definition, or JSON-LD. Three required FP guards: an 800-word floor, a chronology-page guard (mostly-ascending years → silent), and a summary-block-heading guard. `confidence: medium` — the mechanism is probabilistic, not asserted as certain. See `docs/phase-4-completion-22.md` |
+| RET-10 | Chunk self-containment | A content block opening with an unresolved reference ("It cut onboarding time by 40%") that never names its own subject inside the block — the unit a RAG pipeline actually retrieves, not the page as authored | — | None | ✘ | IMPLEMENTED — `retrieval-readiness-audit`, cycle 22, script-decided, strictly after RET-09 (reuses `shared/text_spans.extract_blocks`). Judges every block of 25+ words: fires once per page when 25%+ of judged blocks (across 4+) open with an unresolved personal/possessive pronoun, a demonstrative not immediately followed by a proper-noun-like word, or a generic definite description ("the company"/"the team"), and never name their subject via a proper noun, a shared `<title>`/`<h1>` word, or a repeated heading term. Required exemption: self-referential deixis ("This guide explains...") never fires. `confidence` drops to `high` only when none of a page's context-dependent blocks have any heading anchor at all. See `docs/phase-4-completion-22.md` |
 
 **Detail.** The matrix names `bm25s`/`rank_bm25` and `advertools` as RET-01/04's
 resources, but cycle 10 rejects both as actual dependencies — the same disposition

@@ -14,13 +14,13 @@ alters an audited site.
 | Skill | Entrypoint | What it does |
 |---|---|---|
 | `audit-orchestrator` | **yes** | Accepts the audit request, runs the audit skills in gate order, merges their findings into one validated report. Owns no detection of its own. |
-| `perimeter-access-audit` | no | Gate 1: whether AI crawlers can reach the site at all. robots.txt access across the three AI-agent tiers, the blanket-block anti-pattern, CDN/WAF edge blocking that diverges from robots.txt, llms.txt/llms-full.txt, sitemap.xml discovery/validity/discoverability, and Markdown content negotiation (PER-01…PER-08 — all eight of Cluster A). Runs once per site. |
+| `perimeter-access-audit` | no | Gate 1: whether AI crawlers can reach the site at all. robots.txt access across the three AI-agent tiers, the blanket-block anti-pattern, CDN/WAF edge blocking that diverges from robots.txt, llms.txt/llms-full.txt, sitemap.xml discovery/validity/discoverability, Markdown content negotiation, and a cross-layer access-signal contradiction across robots.txt/`X-Robots-Tag`/meta-robots/TDMRep/llms.txt/sitemap.xml (PER-01…PER-09 — all nine of Cluster A). Runs once per site. |
 | `content-quality-audit` | no | Gate 3: content anti-patterns on a single page — unrendered template syntax, changes dated only in relative time, the same labeled metric stated twice with different values, a stated average that contradicts its own listed numbers, very-difficult-to-read prose (script-decided); no concise answer near the top, boilerplate hedging, vague magnitude words, marketing interleaved into how-to steps, and filler-heavy prose (agent-decided). Runs once per sampled page. |
-| `entity-audit` | no | Gate 3: is the brand a resolved entity, and does its markup agree with itself — schema.org/JSON-LD presence and validity, a link to an authoritative identity source (Wikidata, LinkedIn, ...), agreement between a marked-up rating and the page's own text, and canonical-link hygiene (script-decided); a declared category contradicting the page's own body text, and — given agent-supplied off-site URLs — brand-name collision or lookalike-domain impersonation on public sites (agent-decided). Runs once per sampled page, plus an optional once-per-site `--sitemap-file` mode (trailing-slash/`www.`/scheme forks) and an optional off-site `--offsite-url`/`--brand-name` mode. |
+| `entity-audit` | no | Gate 3: is the brand a resolved entity, and does its markup agree with itself — schema.org/JSON-LD presence and validity, a link to an authoritative identity source (Wikidata, LinkedIn, ...), agreement between a marked-up rating and the page's own text, canonical-link hygiene, and JSON-LD graph referential integrity — dangling/cross-page `@id` references, orphan identity nodes (script-decided); a declared category contradicting the page's own body text, and — given agent-supplied off-site URLs — brand-name collision or lookalike-domain impersonation on public sites (agent-decided). Runs once per sampled page, plus an optional once-per-site `--sitemap-file` mode (trailing-slash/`www.`/scheme forks) and an optional off-site `--offsite-url`/`--brand-name` mode. |
 | `engagement-audit` | no | On-site engagement, not discoverability: unlabelled form fields, consent/subscription walls with no dismiss option, a missing/non-responsive viewport tag or fixed-width overflow, render-blocking head resources/unsized images/an oversized HTML document (all script-decided); unclear visitor orientation and conversion-path friction (agent-decided, against a calibrated rubric). The first skill using `category: "engagement"`. Runs once per sampled page. |
 | `citability-audit` | no | Gate 3: how easy this page is to reach, read, and quote a fact from — missing About-page discoverability, substantial pages with zero outside sources, outbound citations buried in the last stretch of the page, unqualified superlative claims with no number (all script-decided); unsourced load-bearing numeric claims, and — given agent-supplied off-site URLs — a numeric claim uncorroborated by any of them (agent-decided). Runs once per sampled page, with an optional `--offsite-url` mode for the corroboration check. |
-| `retrieval-readiness-audit` | no | Gate 3: does a page's structure and text serve retrieval — a skipped heading level, a heading with no text content, a JSON-LD `Product` identifier that never appears in visible text, a phrase repeated at unnatural density (table/list/glossary regions excluded), or a substantial page with no headings/Q&A framing/definition block (all script-decided); single-phrasing-only coverage, unaddressed category-obvious questions, an all-jargon-or-all-layman skew, or a paragraph blending several ideas (all agent-decided). Runs once per sampled page. |
-| `static-extraction-audit` | no | Gate 2: does the page's static HTTP response carry the facts a non-JS fetcher needs — a hydration-state JSON fragment absent from visible text, a JSON-LD `Offer.price` not restated in text, a volatile availability fact with no freshness signal, no `<main>`/`<article>` boundary, a low content-to-chrome ratio, missing image alt/video captions, a phone number only assembled in inline script, a linked PDF with unverifiable restatement (all script-decided; PDF is always a proactive suggestion, never a confirmed defect). No headless browser anywhere. Runs once per sampled page. |
+| `retrieval-readiness-audit` | no | Gate 3: does a page's structure and text serve retrieval — a skipped heading level, a heading with no text content, a JSON-LD `Product` identifier that never appears in visible text, a phrase repeated at unnatural density (table/list/glossary regions excluded), a substantial page with no headings/Q&A framing/definition block, load-bearing figures buried only in the document's middle with no restatement anywhere, or a content block opening with an unresolved reference that never names its own subject (all script-decided); single-phrasing-only coverage, unaddressed category-obvious questions, an all-jargon-or-all-layman skew, or a paragraph blending several ideas (all agent-decided). Runs once per sampled page. |
+| `static-extraction-audit` | no | Gate 2: does the page's static HTTP response carry the facts a non-JS fetcher needs, and does it also carry text hidden from humans but readable by a machine — a hydration-state JSON fragment absent from visible text, a JSON-LD `Offer.price` not restated in text, a volatile availability fact with no freshness signal, no `<main>`/`<article>` boundary, a low content-to-chrome ratio, missing image alt/video captions, a phone number only assembled in inline script, a linked PDF with unverifiable restatement, or concealed text carrying an instruction addressed at an AI system (all script-decided; PDF is always a proactive suggestion, never a confirmed defect). No headless browser anywhere. Runs once per sampled page. |
 
 ## How the entrypoint composes them
 
@@ -161,29 +161,30 @@ tests/                            fixture pairs, corpora and contract tests
 ## Tests
 
 ```bash
-python3 -m unittest discover -s tests         # 597 tests
+python3 -m unittest discover -s tests         # 857 tests
 python3 tests/measure_detection.py            # perimeter-access-audit: PER-01/02/04
-python3 tests/measure_perimeter_extras.py     # perimeter-access-audit: PER-05/06/07/08
+python3 tests/measure_perimeter_extras.py     # perimeter-access-audit: PER-05/06/07/08/09
 python3 tests/measure_content_quality.py      # content-quality-audit: CQ-03/05/07/08/11
-python3 tests/measure_entity.py               # entity-audit accuracy
+python3 tests/measure_entity.py               # entity-audit accuracy (incl. ENT-11)
 python3 tests/measure_engagement.py           # engagement-audit accuracy (EN-06/EN-09 only)
 python3 tests/measure_citability.py           # citability-audit accuracy (CIT-01/02/06 only)
-python3 tests/measure_static_extraction.py    # static-extraction-audit accuracy
+python3 tests/measure_retrieval_readiness.py  # retrieval-readiness-audit accuracy (RET-09/RET-10)
+python3 tests/measure_static_extraction.py    # static-extraction-audit accuracy (incl. REN-12)
 ```
 
 Each measurement script reports true positives, false positives, false
-negatives, precision, recall and runtime against a labelled corpus — 23 + 14
-perimeter cases (kept as two corpora: PER-05/06/07/08 postdate PER-01/02/04's
-fixtures and were never designed to also carry sitemap/llms-full/.md inputs),
-11 content-quality cases (5 clean), 9 entity cases (3 clean), 8 engagement
-cases (3 clean), 8 citability cases (5 clean), 10 static-extraction cases
-(2 clean) — and exits non-zero on any regression, so all seven double as
-gates. Agent-judged capabilities
-(`engagement-audit`'s EN-01/EN-03, `citability-audit`'s CIT-04,
-`content-quality-audit`'s CQ-02/04/09/12, `retrieval-readiness-audit`'s
-RET-02/03/05/06) have no script verdict to measure this way; their
-calibration lives in worked examples in each skill's own reference doc
-instead.
+negatives, precision, recall and runtime against a labelled corpus — 23 + 20
+perimeter cases (kept as two corpora: PER-05/06/07/08/09 postdate
+PER-01/02/04's fixtures and were never designed to also carry
+sitemap/llms-full/.md/header inputs), 11 content-quality cases (5 clean), 14
+entity cases (5 clean), 8 engagement cases (3 clean), 8 citability cases (5
+clean), 11 retrieval-readiness cases (5 clean), 19 static-extraction cases (6
+clean) — and exits non-zero on any regression, so all eight double as gates.
+Agent-judged capabilities (`engagement-audit`'s EN-01/EN-03, `citability-
+audit`'s CIT-04, `content-quality-audit`'s CQ-02/04/09/12, `retrieval-
+readiness-audit`'s RET-02/03/05/06) have no script verdict to measure this
+way; their calibration lives in worked examples in each skill's own
+reference doc instead.
 
 Pure standard library: no third-party packages, no network access in the tests,
 no model weights.
