@@ -4,18 +4,18 @@ description: >
   Audits a single page for entity identity and structural consistency:
   schema.org/JSON-LD presence and validity, a link to an authoritative
   identity source (Wikidata, LinkedIn, Crunchbase, ...) in Organization
-  markup, agreement between a marked-up rating and the rating stated in the
-  page's visible text, and the presence, uniqueness and domain of
-  rel=canonical (script-decided); a declared category contradicting the
-  page's own body text, and — given agent-supplied off-site URLs —
-  brand-name collision or lookalike-domain impersonation on public sites
+  markup, agreement between a marked-up rating and the page's visible text,
+  rel=canonical presence/uniqueness/domain, and whether the JSON-LD graph's
+  own @id references resolve (script-decided); a declared category
+  contradicting the page's own body text, and — given agent-supplied
+  off-site URLs — brand-name collision or lookalike-domain impersonation
   (agent-decided against a rubric). Use when structured data is missing,
-  broken, or contradicts its own page, when duplicate URLs risk splitting
-  citation authority, or when checking off-site brand confusion or
-  impersonation. Not for cross-page or cross-domain consistency (NAP,
-  cross-domain attribution — needs comparing many pages), not for
-  reachability (perimeter-access-audit) or content anti-patterns unrelated
-  to structured data (content-quality-audit).
+  broken, contradicts its own page, or references an entity it never
+  defines, when duplicate URLs risk splitting citation authority, or when
+  checking off-site brand confusion or impersonation. Not for cross-page/
+  cross-domain consistency (NAP, cross-domain attribution), reachability
+  (perimeter-access-audit), or content anti-patterns unrelated to
+  structured data (content-quality-audit).
 license: MIT
 allowed-tools: Bash
 ---
@@ -129,6 +129,7 @@ judging impersonation; a wrong accusation is a serious false positive.
 | ENT-02 | Knowledge-graph grounding | Script | An Organization/LocalBusiness node exists but its `sameAs` is missing, empty, or points to no recognised authority (Wikidata, Wikipedia, LinkedIn, Crunchbase, verified social profiles) |
 | ENT-03 | Markup/text agreement | Script | JSON-LD `aggregateRating.ratingValue` disagrees (>0.3) with an explicit "N out of 5" / "N/5" / "rated N" pattern in the page's visible text |
 | ENT-04 | Canonicalisation | Script | No `rel=canonical`; an empty href; two or more different hrefs on one page; a canonical resolving to a different hostname than the page itself (`www.` doesn't count as different); or — `--sitemap-file` mode, once per site — two sitemap-listed URLs that are the same page under a trailing-slash/`www.`/scheme variant |
+| ENT-11 | JSON-LD graph referential integrity | Script | An entity-valued property (`brand`, `publisher`, `author`, ...) references an `@id` fragment no node on the page defines (medium); references a same-origin absolute URL not defined here, which may legitimately live on another page (low); or an Organization/Person/LocalBusiness node's `@id` is never referenced by anything, on a page that also carries a Product/Article/Review node with no brand/publisher/author link at all (medium) |
 | ENT-05 | Brand-name entity collision | Agent, against the rubric | An agent-supplied off-site URL mentions the brand name, and the agent judges the mention as a genuinely different entity sharing the name rather than the same brand |
 | ENT-06 | Lookalike domain impersonation | Agent, against the rubric | An agent-supplied off-site URL's own domain scores ≥0.75 string-similarity against the audited site's domain (and is not that domain or one of its own subdomains), and the agent judges the fetched page's content as plausible impersonation |
 | ENT-09 | Taxonomy consistency | Agent, against the rubric | A declared category (`Product.category`, `articleSection`, or a breadcrumb's deepest item) shares zero keywords with the page's own visible text, and the agent judges that as a genuine mismatch rather than an unseen synonym |
@@ -145,6 +146,16 @@ ENT-09 only evaluates a category label when the page has at least 50 words
 of visible text (too little text makes "no overlap" meaningless) and the
 label itself has a non-generic keyword ("Home", "Blog", "General" carry
 nothing specific to check).
+
+**ENT-11 is silent whenever ENT-01 already reports `no-structured-data` or
+`malformed-json-ld`** — a broken or absent graph has nothing to walk, and a
+second finding for the same root cause would be noise. It never fetches a
+`sameAs` URL to check liveness (that is a different, off-site question, and
+the extra fetch cost buys nothing this capability claims). Its two
+per-instance finding ids (`ENT-11-dangling-id-reference-*`,
+`ENT-11-cross-page-id-reference-*`) carry a deterministic content-hash
+suffix so the same page audited twice produces the same ids — capped at 5
+findings per class so a pathological page cannot flood the report.
 
 ## Excludes
 
@@ -180,7 +191,7 @@ One JSON object on stdout, same shape as the other audit skills:
 ```json
 {
   "owner_skill": "entity-audit",
-  "capability_ids": ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09"],
+  "capability_ids": ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11"],
   "site": "example.com",
   "page_url": "https://example.com/product/widget",
   "findings": [
@@ -222,7 +233,8 @@ came from.
 | The page cannot be fetched (any error) | ENT-01/02/03/04/09 `unknown` |
 | The URL resolves to a private, loopback, link-local or reserved address | Refused before connecting, `unknown` — SSRF guard |
 | Fetched content's `Content-Type` is neither HTML nor text | `unknown` |
-| A JSON-LD block fails to parse | Reported as `ENT-01-malformed-json-ld`, not silently skipped and not crashing the rest of the audit |
+| A JSON-LD block fails to parse | Reported as `ENT-01-malformed-json-ld`, not silently skipped and not crashing the rest of the audit; ENT-11 also stays silent on that page — nothing to walk |
+| A page's JSON-LD carries no `@id`s at all (inline-nested references only) | ENT-11 stays silent — there is nothing to dangle |
 | No `--url` or `--html-file` given | `unknown` |
 | An `--offsite-url` is disallowed by its own robots.txt, or cannot be fetched | One `unknown_checks` entry for that URL; the other URLs still run |
 | That URL's own robots.txt cannot be fetched at all | Treated as allow-all (RFC 9309 convention: no reachable robots.txt means unrestricted access) — the fetch is still attempted, and can still fail on its own |

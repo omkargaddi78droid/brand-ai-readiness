@@ -63,6 +63,41 @@
       "file": "defect_off_domain_canonical.html",
       "note": "Canonical points to a different hostname than the page itself.",
       "expected_findings": ["ENT-04-canonical-off-domain"]
+    },
+    {
+      "id": "clean-ent11-resolved-local-reference",
+      "label": "clean",
+      "file": "clean_ent11_resolved_local_reference.html",
+      "note": "Product.brand references an @id an Organization node on the same page actually defines — the reference resolves, so ENT-11 must stay silent.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-ent11-external-and-vocabulary-refs-ignored",
+      "label": "clean",
+      "file": "clean_ent11_external_and_vocabulary_refs_ignored.html",
+      "note": "A resolved local brand reference, plus a schema.org additionalType (not an entity-valued property, never walked) and an off-domain manufacturer URI (classified external, not dangling) — both correctly ignored.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-ent11-dangling-fragment",
+      "label": "defect",
+      "file": "defect_ent11_dangling_fragment.html",
+      "note": "Product.brand references @id '#organization-1', which no node on the page defines. Also isolates nothing: this fixture has no identity-type node at all, so ENT-01-no-identity-type legitimately fires alongside it.",
+      "expected_findings": ["ENT-01-no-identity-type", "ENT-11-dangling-id-reference-"]
+    },
+    {
+      "id": "defect-ent11-cross-page-dangling",
+      "label": "defect",
+      "file": "defect_ent11_cross_page_dangling.html",
+      "note": "Product.brand is a same-origin absolute URL fragment not defined on this page — a low-severity, medium-confidence cross-page reference, not a hard dangling-fragment defect.",
+      "expected_findings": ["ENT-01-no-identity-type", "ENT-11-cross-page-id-reference-"]
+    },
+    {
+      "id": "defect-ent11-orphan-identity-node",
+      "label": "defect",
+      "file": "defect_ent11_orphan_identity_node.html",
+      "note": "A grounded, well-formed Organization node (sameAs present, so ENT-02 stays silent) that nothing on the page references, alongside a Product node with no brand/publisher/author link at all.",
+      "expected_findings": ["ENT-11-orphan-identity-node"]
     }
   ]
 }

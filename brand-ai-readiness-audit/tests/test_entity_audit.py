@@ -1,4 +1,4 @@
-"""Unit tests for entity-audit (ENT-01/02/03/04/09).
+"""Unit tests for entity-audit (ENT-01/02/03/04/09/11).
 
 Each detector is tested as a positive/negative pair, per project convention.
 The empty-canonical regression test documents a bug caught during
@@ -310,6 +310,189 @@ class ContractComplianceTests(unittest.TestCase):
         first = ent.audit_html("example.com", html)
         second = ent.audit_html("example.com", html)
         self.assertEqual(first, second)
+
+
+class GraphIntegrityTests(unittest.TestCase):
+    """ENT-11: JSON-LD graph referential integrity. Migration check (Task 2's
+    shared/jsonld_graph.flatten replacing the old private _flatten_json_ld)
+    is covered implicitly — every ParsePageTests/SchemaValidityTests case
+    above still passes unmodified after the migration."""
+
+    def test_dangling_fragment_reference_fires(self):
+        html = ld(
+            '{"@type":"Product","name":"Widget","brand":{"@id":"#organization-1"}}'
+        )
+        nodes, errors, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        matches = [f for f in findings if f.id.startswith("ENT-11-dangling-id-reference-")]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].severity, "medium")
+        self.assertIn("#organization-1", matches[0].evidence)
+
+    def test_resolved_fragment_reference_is_silent(self):
+        html = ld(
+            '[{"@type":"Product","name":"Widget","brand":{"@id":"#organization-1"}},'
+            '{"@type":"Organization","@id":"#organization-1","name":"Acme"}]'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "dangling" in f.id], [])
+
+    def test_cross_page_same_origin_dangling_reference_fires_at_low_severity(self):
+        html = ld(
+            '{"@type":"Product","name":"Widget","brand":"https://example.com/#organization"}'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        matches = [f for f in findings if f.id.startswith("ENT-11-cross-page-id-reference-")]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].severity, "low")
+        self.assertEqual(matches[0].confidence, "medium")
+
+    def test_external_vocabulary_uri_in_additional_type_is_never_a_reference(self):
+        """additionalType is not one of the entity-valued properties, so a
+        bare vocabulary URI there is not walked as a reference at all —
+        proven by asserting no findings, not just no dangling ones."""
+        html = ld(
+            '{"@type":"Product","name":"Widget","additionalType":"https://schema.org/Vehicle"}'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual(findings, [])
+
+    def test_external_domain_reference_is_not_flagged(self):
+        html = ld('{"@type":"Product","name":"Widget","brand":"https://other-domain.example/#org"}')
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "reference" in f.id], [])
+
+    def test_schema_org_vocabulary_target_is_not_flagged(self):
+        html = ld('{"@type":"Product","name":"Widget","brand":"https://schema.org/Brand"}')
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "reference" in f.id], [])
+
+    def test_nodes_referenced_only_by_inline_nesting_with_no_id_stay_silent(self):
+        """No @id anywhere on the page at all — inline nesting is not a
+        reference relationship iter_references tracks, so there is nothing
+        to dangle and ENT-11 must not fabricate a finding from it."""
+        html = ld(
+            '{"@type":"Product","name":"Widget","brand":{"@type":"Organization","name":"Acme"}}'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual(findings, [])
+
+    def test_graph_nested_three_deep_does_not_crash_and_still_resolves(self):
+        html = (
+            '<script type="application/ld+json">'
+            '{"@graph":[{"@graph":[{"@graph":['
+            '{"@type":"Organization","@id":"#org","name":"Acme"},'
+            '{"@type":"Product","name":"Widget","brand":{"@id":"#org"}}'
+            "]}]}]}"
+            "</script>"
+        )
+        nodes, errors, _, _ = ent.parse_page(html)
+        self.assertEqual(errors, [])
+        self.assertEqual(len(nodes), 2)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "dangling" in f.id], [])
+
+    def test_relative_path_id_target_does_not_crash(self):
+        """Documents current shared/jsonld_graph.classify_target behavior
+        (Task 2's own flagged gap): a relative-path @id target has no
+        scheme/host, so it never matches page_url's (scheme, netloc) and is
+        classified "external" rather than "dangling_same_origin". Not fixed
+        here (out of this task's scope — shared/jsonld_graph.py is Task 2's,
+        already committed) — this test only proves it does not crash and
+        documents the actual behavior so a future task can decide whether to
+        change it."""
+        html = ld('{"@type":"Product","name":"Widget","brand":"/organization"}')
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "reference" in f.id], [])
+
+    def test_orphan_identity_node_with_disconnected_content_fires(self):
+        html = ld(
+            '[{"@type":"Organization","@id":"#org","name":"Acme"},'
+            '{"@type":"Product","name":"Widget"}]'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        matches = [f for f in findings if f.id == "ENT-11-orphan-identity-node"]
+        self.assertEqual(len(matches), 1)
+        self.assertEqual(matches[0].severity, "medium")
+        self.assertIn("#org", matches[0].structured_evidence["orphan_ids"])
+
+    def test_orphan_identity_node_without_disconnected_content_is_silent(self):
+        """An unreferenced Organization node on a page with no
+        Product/Article/Review at all has nothing to connect to in the
+        first place — not the defect this rule names."""
+        html = ld('{"@type":"Organization","@id":"#org","name":"Acme"}')
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "orphan" in f.id], [])
+
+    def test_identity_node_referenced_by_a_product_is_not_orphaned(self):
+        html = ld(
+            '[{"@type":"Organization","@id":"#org","name":"Acme"},'
+            '{"@type":"Product","name":"Widget","brand":{"@id":"#org"}}]'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "orphan" in f.id], [])
+
+    def test_product_with_a_brand_link_is_not_disconnected_even_if_dangling(self):
+        """A Product carrying a brand property at all (even a dangling one)
+        is not "no link" for the orphan rule's purposes — that is the
+        dangling-reference rule's own finding, a different defect."""
+        html = ld(
+            '[{"@type":"Organization","@id":"#org","name":"Acme"},'
+            '{"@type":"Product","name":"Widget","brand":{"@id":"#does-not-exist"}}]'
+        )
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f for f in findings if "orphan" in f.id], [])
+
+    def test_no_page_url_does_not_crash_same_origin_classification(self):
+        html = ld('{"@type":"Product","name":"Widget","brand":"https://example.com/#organization"}')
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, None)
+        self.assertIsInstance(findings, list)
+
+    def test_overlap_control_silent_when_no_structured_data(self):
+        """Caller-side guard: audit_html must not invoke ENT-11 at all when
+        ENT-01 fires no-structured-data — proven end-to-end here, not just
+        by unit-testing find_graph_integrity_issues in isolation."""
+        out = ent.audit_html("example.com", "<html><body>No JSON-LD here.</body></html>")
+        ids = {f["id"] for f in out["findings"]}
+        self.assertIn("ENT-01-no-structured-data", ids)
+        self.assertFalse(any(i.startswith("ENT-11") for i in ids))
+
+    def test_overlap_control_silent_when_json_ld_malformed(self):
+        html = ld('{"@type": "Organization", "name": "Acme",}')  # trailing comma
+        out = ent.audit_html("example.com", html)
+        ids = {f["id"] for f in out["findings"]}
+        self.assertIn("ENT-01-malformed-json-ld", ids)
+        self.assertFalse(any(i.startswith("ENT-11") for i in ids))
+
+    def test_dangling_reference_ids_are_stable_across_runs(self):
+        html = ld('{"@type":"Product","name":"Widget","brand":{"@id":"#organization-1"}}')
+        nodes, _, _, _ = ent.parse_page(html)
+        first = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        second = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        self.assertEqual([f.id for f in first], [f.id for f in second])
+
+    def test_dangling_findings_are_capped_per_class(self):
+        # Eight separate Product nodes, each with one dangling brand ref.
+        products = ",".join(
+            f'{{"@type":"Product","name":"W{i}","brand":{{"@id":"#missing-{i}"}}}}' for i in range(8)
+        )
+        html = ld(f"[{products}]")
+        nodes, _, _, _ = ent.parse_page(html)
+        findings = ent.find_graph_integrity_issues(nodes, "https://example.com/page")
+        dangling = [f for f in findings if f.id.startswith("ENT-11-dangling-id-reference-")]
+        self.assertEqual(len(dangling), 5)
 
 
 class CategoryLabelExtractionTests(unittest.TestCase):

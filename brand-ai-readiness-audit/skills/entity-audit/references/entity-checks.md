@@ -136,6 +136,98 @@ belongs to a future crawl-aware skill, not a single-page check.
 
 ---
 
+## ENT-11 — JSON-LD graph referential integrity
+
+**What it catches, that ENT-01/03 don't.** ENT-01 validates each node in
+isolation (required fields present, type recognised). ENT-03 compares
+markup to visible text. Neither follows an `@id` edge. A page's JSON-LD can
+be entirely valid per-node and still be a broken graph: a `Product` whose
+`brand` points at `{"@id": "#organization-1"}` when no node with that `@id`
+exists anywhere on the page. Every per-node validator passes; the graph is
+still broken, and the failure is silent until something actually walks the
+edge — which is exactly what entity resolution and knowledge-graph
+grounding do to assemble one coherent entity from a `Product`'s `brand`,
+`publisher`, `author`, and similar links.
+
+**Built on `shared/jsonld_graph.py`** (`flatten`, `build_id_index`,
+`iter_references`, `classify_target`) — the same module `entity-audit`
+migrated its own private `_flatten_json_ld` to. That migration is
+behavior-preserving by construction: `flatten` replicates the exact
+strip/parse/skip wrapper the three duplicated private copies (this skill,
+`retrieval-readiness-audit`, `static-extraction-audit`) already had, so
+ENT-01/02/03/04's own tests needed no changes when the migration landed —
+they were the regression proof.
+
+**Three findings, three different confidence levels, because they claim
+different things:**
+
+1. **Dangling fragment reference** (`ENT-11-dangling-id-reference-*`,
+   `medium` severity, `high` confidence). A fragment `@id` (`#foo`) is
+   page-scoped by definition — schema.org and JSON-LD both treat a bare
+   fragment as resolvable only within the same document. If it isn't
+   defined by this page's own nodes, it cannot be defined anywhere else.
+   That is a literal fact, not an inference, hence high confidence.
+2. **Cross-page reference** (`ENT-11-cross-page-id-reference-*`, `low`
+   severity, `medium` confidence). A same-origin *absolute* URL reference
+   (`https://site.com/other-page#org`) that doesn't resolve on *this* page
+   may legitimately be defined on the page it points to — sites do
+   structure shared entities this way. Confidence is reduced because this
+   skill only ever sees one page at a time and has no way to check the
+   other page without a second fetch, which this capability deliberately
+   does not make (zero new fetches, per the plan this shipped against).
+3. **Orphan identity node** (`ENT-11-orphan-identity-node`, `medium`
+   severity, one finding per page, not per node). An
+   Organization/Person/LocalBusiness node with an `@id` that nothing on the
+   page references, *and* the page also carries a Product/Article/Review
+   node with no `brand`/`publisher`/`author` link at all. Both conditions
+   are required: an orphaned identity node on a page with no content to
+   ground is not this defect (nothing needed the link in the first place),
+   and a content node with *some* link — even a dangling one — is not "no
+   link at all" for this rule's purposes; that is finding #1's territory,
+   a different, more specific defect on the same underlying problem.
+
+**No `sameAs` liveness fetching, anywhere in ENT-11.** Deliberate: it costs
+a fetch to a third-party host per candidate, LinkedIn/Crunchbase-class
+sites are known to bot-block this project's user agent, and a blocked
+fetch would manufacture a false "dangling" verdict on a link that is
+actually fine. ENT-02 already owns the "does `sameAs` point somewhere
+authoritative" question at the string level; ENT-11 never re-derives it by
+fetching.
+
+**Overlap control with ENT-01.** ENT-11 runs only when `nodes` is
+non-empty and carries zero JSON-LD parse errors — the caller (`audit_html`)
+enforces this before calling `find_graph_integrity_issues` at all, rather
+than re-deriving ENT-01's own no-structured-data/malformed-json-ld
+conditions a second time inside ENT-11 itself. A page with no parseable
+graph has nothing to walk; reporting a broken graph there would blame
+ENT-11's own capability for a defect ENT-01 already names correctly.
+
+**Deterministic finding ids on a content hash.** The two per-instance
+finding types append `hashlib.sha256(f"{property_path}|{target_id}")[:8]`
+to their id — the same pattern (and the same reason) `engagement-audit`'s
+EN-06 uses: `id(object)` or dict-iteration order would make the same page
+audited twice produce different ids, which is a stability regression this
+project tests against. Capped at 5 findings per class (fragment,
+cross-page) so a pathological page with dozens of broken references cannot
+flood a report — the corpus/measure harness (`measure_entity.py`) matches
+these ids by *prefix*, not exact equality, for the same reason
+`measure_engagement.py` does for EN-06.
+
+**Known gap, not fixed here.** `shared/jsonld_graph.classify_target`
+classifies a relative-path `@id` target (e.g. `"/organization"`, no
+scheme/host) as `"external"` rather than `"dangling_same_origin"`, because
+`urlsplit` on a schemeless path yields an empty `(scheme, netloc)` that
+never matches the page's own. This was flagged during the module's own
+build and left as-is: `shared/jsonld_graph.py` is committed, shared
+infrastructure another capability may also depend on, and this task's scope
+is ENT-11's own detection logic, not revisiting a dependency's contract.
+Documented with a regression test (`test_relative_path_id_target_does_not_crash`
+in `tests/test_entity_audit.py`) that locks in the *current* behavior so a
+future change to `classify_target` is a visible, deliberate decision rather
+than a silent drift.
+
+---
+
 ## ENT-09 — Taxonomy consistency (extraction only — see entity-judgement-rubric.md)
 
 **What it catches.** A declared category signal — `Product.category`,

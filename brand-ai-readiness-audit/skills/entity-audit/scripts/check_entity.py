@@ -99,6 +99,7 @@ from __future__ import annotations
 
 import argparse
 import difflib
+import hashlib
 import ipaddress
 import json
 import re
@@ -116,9 +117,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from jsonld_graph import Reference, build_id_index, classify_target, flatten, iter_references  # noqa: E402
 
 OWNER_SKILL = "entity-audit"
-CAPABILITY_IDS = ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09"]
+CAPABILITY_IDS = ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11"]
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 FETCH_TIMEOUT_SECONDS = 10
 MAX_PAGE_BYTES = 5_000_000
@@ -213,7 +215,13 @@ class _PageParser(HTMLParser):
 
 
 def parse_page(html: str) -> tuple[list[dict], list[str], list[str], str]:
-    """Returns (json_ld_nodes, json_ld_parse_errors, canonical_hrefs, visible_text)."""
+    """Returns (json_ld_nodes, json_ld_parse_errors, canonical_hrefs, visible_text).
+
+    Flattening (the @graph/array walk) delegates to `shared/jsonld_graph.flatten`
+    — this skill's own error-collection loop stays local, since `flatten`
+    itself silently skips a block that fails to parse (matching the other
+    two skills' identical wrapper) and has no way to hand back *why* a block
+    failed, which ENT-01's malformed-json-ld finding needs verbatim."""
     parser = _PageParser()
     parser.feed(html)
     parser.close()
@@ -225,29 +233,13 @@ def parse_page(html: str) -> tuple[list[dict], list[str], list[str], str]:
         if not stripped:
             continue
         try:
-            value = json.loads(stripped)
+            json.loads(stripped)
         except json.JSONDecodeError as error:
             errors.append(f"{error}: {stripped[:120]!r}")
             continue
-        nodes.extend(_flatten_json_ld(value))
+        nodes.extend(flatten([stripped]))
 
     return nodes, errors, parser.canonical_hrefs, parser.visible_text()
-
-
-def _flatten_json_ld(value) -> list[dict]:
-    if isinstance(value, list):
-        flattened = []
-        for item in value:
-            flattened.extend(_flatten_json_ld(item))
-        return flattened
-    if isinstance(value, dict):
-        if isinstance(value.get("@graph"), list):
-            flattened = []
-            for item in value["@graph"]:
-                flattened.extend(_flatten_json_ld(item))
-            return flattened
-        return [value]
-    return []
 
 
 def _node_types(node: dict) -> set[str]:
@@ -729,6 +721,201 @@ def find_sitemap_url_forks(sitemap_urls: list[str]) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# ENT-11 — JSON-LD graph referential integrity
+# ---------------------------------------------------------------------------
+#
+# ENT-01 validates individual nodes. ENT-03 compares markup to visible text.
+# Neither follows an @id edge. A page's JSON-LD can be entirely valid
+# per-node and still be a broken graph: a Product whose brand points at
+# {"@id": "#organization-1"} when no node with that @id exists anywhere on
+# the page. Entity resolution and knowledge-graph grounding work by walking
+# the graph to assemble one coherent entity; a dangling @id is the
+# structured-data equivalent of an undefined symbol, and the failure is
+# silent because every per-node validator still passes.
+#
+# Uses ENT-11, not ENT-10: ENT-10 is already reserved by a different,
+# deferred capability in the project's capability matrix.
+
+_MAX_DANGLING_FINDINGS_PER_CLASS = 5
+_ORPHAN_IDENTITY_TYPES = {"Organization", "Person", "LocalBusiness"}
+_ORPHAN_CONTENT_TYPES = {"Product", "Article", "Review"}
+_ORPHAN_LINK_PROPERTIES = ("brand", "publisher", "author")
+
+
+def find_graph_integrity_issues(nodes: list[dict], page_url: str | None) -> list[Finding]:
+    """ENT-11. Caller-side overlap control: only invoked when `nodes` is
+    non-empty and carries no JSON-LD parse errors — never report a broken
+    graph on a page that has no parseable graph at all (ENT-01's
+    no-structured-data/malformed-json-ld findings already own that case)."""
+    index = build_id_index(nodes)
+    defined_ids = sorted(index.keys())
+    resolved_page_url = page_url or ""
+
+    findings: list[Finding] = []
+    fragment_count = 0
+    same_origin_count = 0
+    referenced_targets: set[str] = set()
+
+    for reference in iter_references(nodes):
+        referenced_targets.add(reference.target_id)
+        classification = classify_target(reference.target_id, index, resolved_page_url)
+        if classification == "dangling_fragment" and fragment_count < _MAX_DANGLING_FINDINGS_PER_CLASS:
+            findings.append(_dangling_reference_finding(reference, defined_ids, cross_page=False))
+            fragment_count += 1
+        elif classification == "dangling_same_origin" and same_origin_count < _MAX_DANGLING_FINDINGS_PER_CLASS:
+            findings.append(_dangling_reference_finding(reference, defined_ids, cross_page=True))
+            same_origin_count += 1
+
+    orphan = _orphan_identity_finding(nodes, referenced_targets)
+    if orphan:
+        findings.append(orphan)
+
+    return findings
+
+
+def _defined_ids_clause(defined_ids: list[str]) -> str:
+    if not defined_ids:
+        return "defines no @ids at all"
+    quoted = ", ".join(f"'{i}'" for i in defined_ids)
+    return f"defines {len(defined_ids)} @id(s) — {quoted} — none of which match"
+
+
+def _dangling_reference_finding(reference: Reference, defined_ids: list[str], cross_page: bool) -> Finding:
+    # sha256, not id(), so the same page audited twice produces the same
+    # finding id — see EN-06's identical rationale for _stable_slug.
+    slug = hashlib.sha256(f"{reference.property_path}|{reference.target_id}".encode("utf-8")).hexdigest()[:8]
+    clause = _defined_ids_clause(defined_ids)
+
+    if cross_page:
+        return Finding(
+            id=f"ENT-11-cross-page-id-reference-{slug}",
+            title="Structured data references an @id not defined on this page",
+            severity="low",
+            evidence=(
+                f"{reference.property_path} references @id '{reference.target_id}'. The page "
+                f"{clause}. It is a same-origin absolute URL, so it may legitimately be defined "
+                "on another page of this site."
+            ),
+            suggested_action=SuggestedAction(
+                summary=(
+                    f"Confirm '{reference.target_id}' is defined on the page it points to, or add "
+                    "it to this page's own JSON-LD if it should resolve locally."
+                ),
+                priority="low",
+            ),
+            category="discoverability",
+            capability_id="ENT-11",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "Entity resolution works by walking @id references to assemble one coherent "
+                "entity. A same-origin reference that doesn't resolve on this page may be "
+                "legitimate cross-page structured data — the cross-page convention is itself "
+                "legitimate — but a consumer that only fetched this page still follows the "
+                "pointer and gets nothing."
+            ),
+            gate=3,
+            confidence="medium",
+            structured_evidence={
+                "property_path": reference.property_path,
+                "target": reference.target_id,
+                "defined_ids": defined_ids,
+            },
+        )
+
+    return Finding(
+        id=f"ENT-11-dangling-id-reference-{slug}",
+        title="Structured data references an @id that is not defined anywhere on the page",
+        severity="medium",
+        evidence=(
+            f"{reference.property_path} references @id '{reference.target_id}'. The page {clause}. "
+            "A consumer resolving this entity from the graph follows the pointer and gets nothing."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                f"Define a node with @id '{reference.target_id}' on this page, or fix the "
+                "reference to point at an @id that exists."
+            ),
+            priority="medium",
+        ),
+        category="discoverability",
+        capability_id="ENT-11",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "A fragment @id is page-scoped by definition — if it isn't defined by this page's own "
+            "nodes, it cannot be defined anywhere else. Entity resolution and knowledge-graph "
+            "grounding work by walking @id references to assemble one coherent entity; a dangling "
+            "pointer is the structured-data equivalent of an undefined symbol, and the failure is "
+            "silent because every per-node validator still passes."
+        ),
+        gate=3,
+        confidence="high",
+        structured_evidence={
+            "property_path": reference.property_path,
+            "target": reference.target_id,
+            "defined_ids": defined_ids,
+        },
+    )
+
+
+def _orphan_identity_finding(nodes: list[dict], referenced_targets: set[str]) -> Finding | None:
+    """An Organization/Person/LocalBusiness node with an @id nothing
+    references, on a page that also carries a Product/Article/Review node
+    with no brand/publisher/author link at all — the identity node is
+    declared but never connected to the content it is supposed to ground."""
+    identity_nodes = [
+        node for node in nodes if (_node_types(node) & _ORPHAN_IDENTITY_TYPES) and isinstance(node.get("@id"), str)
+    ]
+    orphan_ids = [node["@id"] for node in identity_nodes if node["@id"] not in referenced_targets]
+    if not orphan_ids:
+        return None
+
+    disconnected_content = [
+        node
+        for node in nodes
+        if (_node_types(node) & _ORPHAN_CONTENT_TYPES) and not any(prop in node for prop in _ORPHAN_LINK_PROPERTIES)
+    ]
+    if not disconnected_content:
+        return None
+
+    content_types = sorted({t for node in disconnected_content for t in (_node_types(node) & _ORPHAN_CONTENT_TYPES)})
+    shown_ids = orphan_ids[:5]
+    more = f" (+{len(orphan_ids) - 5} more)" if len(orphan_ids) > 5 else ""
+
+    return Finding(
+        id="ENT-11-orphan-identity-node",
+        title="An identity node exists but is never connected to the page's content",
+        severity="medium",
+        evidence=(
+            f"{len(orphan_ids)} identity node(s) ({', '.join(shown_ids)}{more}) are never "
+            f"referenced by any other node's @id, while this page also carries "
+            f"{len(disconnected_content)} {'/'.join(content_types)} node(s) with no "
+            "brand/publisher/author link at all."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Link the content node(s) to the identity node via brand/publisher/author (as "
+                "appropriate), or remove the unused identity node if it isn't meant to ground "
+                "this content."
+            ),
+            priority="medium",
+        ),
+        category="discoverability",
+        capability_id="ENT-11",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "An Organization/Person/LocalBusiness node is declared to give a consumer something "
+            "to resolve the content to. When nothing on the page actually points at it, and the "
+            "content itself has no brand/publisher/author link either, the identity node and the "
+            "content it should ground never connect — the entity is declared but never attached "
+            "to what it is supposed to identify."
+        ),
+        gate=3,
+        confidence="medium",
+        structured_evidence={"orphan_ids": orphan_ids, "disconnected_content_types": content_types},
+    )
+
+
+# ---------------------------------------------------------------------------
 # ENT-05 / ENT-06 — off-site brand visibility; extraction only, the agent
 # judges these (hard constraint 2, cycle 19 — see module docstring)
 # ---------------------------------------------------------------------------
@@ -1004,6 +1191,10 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
         + find_markup_text_disagreement(nodes, visible_text)
         + find_canonical_issues(canonical_hrefs, page_url)
     )
+    if nodes and not parse_errors:
+        # Overlap control: never report a broken graph on a page ENT-01
+        # already flagged as having no parseable graph at all.
+        findings += find_graph_integrity_issues(nodes, page_url)
     findings = _stamp_page(findings, page_url)
 
     judgement_requests = build_agent_judgement_requests(nodes, visible_text)

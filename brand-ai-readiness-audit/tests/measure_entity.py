@@ -4,6 +4,12 @@
 Same reporting shape as measure_detection.py / measure_content_quality.py,
 applied to entity-audit's single-page-HTML input.
 
+Matching is by ID PREFIX, not exact equality, for the same reason
+measure_engagement.py compares EN-06 by prefix: ENT-11's two per-instance
+finding ids (`ENT-11-dangling-id-reference-*`, `ENT-11-cross-page-id-reference-*`)
+carry a deterministic content-hash suffix, so corpus cases list the prefix
+(e.g. "ENT-11-dangling-id-reference-") rather than the exact hashed id.
+
 Usage:
     measure_entity.py            # markdown summary
     measure_entity.py --json     # machine-readable
@@ -38,6 +44,18 @@ orchestrator = _load("compose_report", "skills/audit-orchestrator/scripts/compos
 FIXED_TIMESTAMP = "2026-09-20T14:32:00Z"
 
 
+def _match_by_prefix(expected: set[str], emitted: set[str]) -> tuple[set[str], set[str], set[str]]:
+    true_positives, matched_emitted = set(), set()
+    for prefix in expected:
+        hit = next((e for e in emitted if e.startswith(prefix) and e not in matched_emitted), None)
+        if hit:
+            true_positives.add(prefix)
+            matched_emitted.add(hit)
+    false_negatives = expected - true_positives
+    false_positives = emitted - matched_emitted
+    return true_positives, false_positives, false_negatives
+
+
 def run_case(case: dict) -> dict:
     html = (CORPUS / "entity" / case["file"]).read_text(encoding="utf-8")
 
@@ -47,6 +65,7 @@ def run_case(case: dict) -> dict:
 
     expected = set(case["expected_findings"])
     emitted = {finding["id"] for finding in output["findings"]}
+    true_positives, false_positives, false_negatives = _match_by_prefix(expected, emitted)
 
     return {
         "id": case["id"],
@@ -54,9 +73,9 @@ def run_case(case: dict) -> dict:
         "note": case["note"],
         "expected": sorted(expected),
         "emitted": sorted(emitted),
-        "true_positives": sorted(expected & emitted),
-        "false_positives": sorted(emitted - expected),
-        "false_negatives": sorted(expected - emitted),
+        "true_positives": sorted(true_positives),
+        "false_positives": sorted(false_positives),
+        "false_negatives": sorted(false_negatives),
         "elapsed_ms": elapsed_ms,
         "skill_output": output,
     }
