@@ -125,9 +125,9 @@ before this file's output is handed to the entrypoint.** An unresolved
 - **EN-02, EN-04, EN-08, EN-10, EN-11** — context retention across a deep
   link, dead-end/orphan pages, findability/site search, trust signals,
   content-to-action coherence. Considered for cycle 21 alongside EN-05/07
-  and discarded — see `docs/capability-matrix.md`. Each needs cross-page/
-  crawl-wide context this skill does not have, or is a judgement call with
-  no concrete scriptable signal identified.
+  and discarded: each needs cross-page/crawl-wide context this skill does
+  not have, or is a judgement call with no concrete scriptable signal
+  identified.
 - **EN-03's step-count half.** "3 steps vs 8 steps to conversion" needs
   navigating the actual flow across pages; this skill only ever sees one
   page and says so rather than guessing from it.

@@ -1,7 +1,10 @@
 # Capability Matrix
 
-The project's central capability ledger. Phase 0.2 output — inventory only.
-**Nothing here is implemented. No coverage claim here is verified.**
+The project's central capability ledger. Started as a Phase 0.2 inventory-only
+snapshot; as of cycle 21, 53 capabilities below are marked IMPLEMENTED.
+**Status is tracked per row — see each capability's Status column for its
+actual current state (IMPLEMENTED, PARTIALLY_COVERED, NOT_STARTED, etc.),
+not a single blanket claim for the whole file.**
 
 ## How to read this
 
@@ -320,10 +323,12 @@ opening) rather than in the pattern match itself.
 | EN-10 | Trust & transparency for the human | Pricing hidden, contact hard to find, no proof (reviews, cases, credentials) at the decision point | — | None | ✘ | NOT_STARTED — considered cycle 21, discarded: substantially overlaps CIT-01/ENT-02 already implemented |
 | EN-11 | Content-to-action coherence | The page answers the question but the CTA is unrelated to the intent that brought the visitor | — | None | ✘ | NOT_STARTED — considered cycle 21, discarded: subjective judgement call, no scriptable candidate signal identified |
 
-**Detail.** Deps: static HTML + linked-stylesheet fetch for EN-05/EN-07 — no rendered
-DOM (hard constraint 1). EN-05 (viewport meta, tap-target sizing) and EN-07 (payload
-weight, render-blocking resource count, unsized `<img>` tags as a CLS proxy) are
-approximated from markup and fetched CSS/resource sizes, not measured pixel geometry;
+**Detail.** Deps: static HTML only for EN-05/EN-07 — no linked-stylesheet or other
+asset fetch, no rendered DOM (hard constraint 1). EN-05 is scoped to viewport meta
+and inline `style` attributes (fixed-width overflow); EN-07 is scoped to the fetched
+HTML document's own byte size and render-blocking head-resource *references* (not
+their fetched weight) plus unsized `<img>` tags as a CLS proxy. Both are approximated
+from markup alone, not measured pixel geometry or actual linked-asset sizes;
 documented as a static proxy, not a true rendered measurement. Security: never submit
 forms; never traverse checkout; inspect markup only. Runtime: low, static fetches only.
 FP risk:

@@ -19,16 +19,16 @@ entity mix-ups unless something clearly distinguishes them):
 these `DEFERRED`, reasoning that an off-site lookup conflicts with this
 project's "self-contained, no external service" design rule (M5,
 `docs/competition-requirements.md`). Hard constraint 2, confirmed with the
-judges cycle 19 (`docs/capability-matrix.md`'s "Hard constraints" section),
-narrows that rule rather than removing it: direct, bounded HTTP queries to
-named public sites (Reddit, Quora, forums, review sites), robots.txt-
-respecting, computing the verdict ourselves, are permitted — a third-party
-*scoring* API is still rejected. This script does not pick which off-site
-pages to look at (that stays the calling agent's own search step, per the
-same reasoning `docs/phase-4-completion-19.md` records); it only fetches
-agent-supplied `--offsite-url` candidates within the same SSRF/timeout/size
-bounds as every other fetch in this file, plus a new per-host robots.txt
-check before fetching a third-party host, and hands extracted snippets to
+judges cycle 19, narrows that rule rather than removing it: direct, bounded
+HTTP queries to named public sites (Reddit, Quora, forums, review sites),
+robots.txt-respecting, computing the verdict ourselves, are permitted — a
+third-party *scoring* API is still rejected. This script does not pick
+which off-site pages to look at (that stays the calling agent's own
+search step, per the same reasoning `docs/phase-4-completion-19.md`
+records); it only fetches agent-supplied `--offsite-url` candidates
+within the same SSRF/timeout/size bounds as every other fetch in this
+file, plus a new per-host robots.txt check before fetching a third-party
+host, and hands extracted snippets to
 `agent_judgement_required` — "is this genuinely the same brand" and "is
 this genuinely impersonation" are exactly the fuzzy semantic calls this
 project's Phase 0.1(c) stance pushes to agent judgement, never a script

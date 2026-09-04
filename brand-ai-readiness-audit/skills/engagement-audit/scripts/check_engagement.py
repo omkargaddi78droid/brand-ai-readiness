@@ -45,8 +45,7 @@ but enormous linked assets is invisible to this check.
 Deliberately does NOT own: EN-02 (context retention across a deep link),
 EN-04 (dead-end/orphan pages), EN-08 (findability/site search), EN-10
 (trust signals), EN-11 (content-to-action coherence). Considered for
-cycle 21 alongside EN-05/EN-07 and discarded — see
-`docs/capability-matrix.md`'s per-row notes for each. Each needs either
+cycle 21 alongside EN-05/EN-07 and discarded: each needs either
 cross-page/crawl-wide context this single-page script does not have, or is
 a judgement call with no concrete scriptable signal identified.
 

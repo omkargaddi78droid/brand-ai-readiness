@@ -4,15 +4,14 @@ response carry the facts a non-JS fetcher needs, or only its rendered DOM?
 
 Cluster B, cycle 19. This cluster was originally scoped around a headless
 render (`crawl4ai`/Playwright) comparing a rendered DOM against the raw HTML
-a fetcher sees. Hard constraint 1, confirmed with the judges cycle 19 (see
-`docs/capability-matrix.md`'s "Hard constraints" section): no headless
-browser anywhere, including as an optional fallback. Every capability below
-is redefined against static artifacts only — raw HTML, JSON-LD, and any
-hydration-state JSON a framework embeds in the response itself (Next.js's
-`__NEXT_DATA__`, Nuxt 3's `__NUXT_DATA__`) — never a rendered page. Several
-rows (REN-06/07/08) never actually needed a browser to begin with; they were
-mis-scoped into this cluster by inheriting its original framing, not by
-their own detection logic.
+a fetcher sees. Hard constraint 1, confirmed with the judges cycle 19: no
+headless browser anywhere, including as an optional fallback. Every
+capability below is redefined against static artifacts only — raw HTML,
+JSON-LD, and any hydration-state JSON a framework embeds in the response
+itself (Next.js's `__NEXT_DATA__`, Nuxt 3's `__NUXT_DATA__`) — never a
+rendered page. Several rows (REN-06/07/08) never actually needed a browser
+to begin with; they were mis-scoped into this cluster by inheriting its
+original framing, not by their own detection logic.
 
 Owns nine capabilities:
   REN-01  Fetch foundation (infrastructure only, no finding)

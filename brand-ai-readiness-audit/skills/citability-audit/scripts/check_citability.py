@@ -29,10 +29,11 @@ would be exactly the false-positive-of-severity failure this project's
 calibration discipline exists to prevent.
 
 **CIT-13 is an off-site, cycle-19 addition**, reversed from `DEFERRED`
-("off-site provenance tracing exceeds the runtime budget") once hard
-constraint 2 (confirmed with the judges, `docs/capability-matrix.md`'s
-"Hard constraints" section) permitted bounded, direct queries to named
-public sites. This script does not search the web itself — it only fetches
+("off-site provenance tracing exceeds the runtime budget") once this
+project's judge-confirmed off-site-querying rule — direct, bounded HTTP
+queries to named public sites, robots.txt-respecting, computing the
+verdict ourselves rather than outsourcing it — permitted exactly this.
+This script does not search the web itself — it only fetches
 agent-supplied `--offsite-url` candidates, reuses CIT-04's own
 `find_citation_recall_candidates` extraction as CIT-13's on-page claim
 pool (the same "sentence with a number, no link in the sentence" shape,

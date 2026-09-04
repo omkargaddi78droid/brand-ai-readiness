@@ -112,9 +112,9 @@ or otherwise alters the audited site.
    first find candidate off-site pages yourself — a Reddit thread, forum
    post, or review-site page mentioning the brand name, or a domain that
    looks confusable with it (your own search step; this project does not
-   crawl or search the web itself, per hard constraint 2 in
-   `docs/capability-matrix.md`) — then run entity-audit's off-site mode
-   once per site:
+   crawl or search the web itself — it only queries specific pages you
+   supply, direct and robots.txt-respecting) — then run entity-audit's
+   off-site mode once per site:
 
    ```bash
    python3 ../entity-audit/scripts/check_entity.py \

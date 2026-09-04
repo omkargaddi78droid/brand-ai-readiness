@@ -39,8 +39,9 @@ file's output reaches the entrypoint** — exactly the same procedure as
 
 **CIT-13 additionally needs you to supply the off-site URLs.** This script
 never searches the web itself — that is your own search step (the same
-narrowly-scoped off-site querying hard constraint 2 permits; see
-`docs/capability-matrix.md`). Pass each candidate off-site page via
+narrowly-scoped off-site querying this project permits: direct, bounded,
+robots.txt-respecting HTTP queries to named public sites, never general web
+search or crawling). Pass each candidate off-site page via
 `--offsite-url` (repeatable). With none given, CIT-13 does not run at all
 — it is omitted from `agent_judgement_required`, not reported `unknown`.
 

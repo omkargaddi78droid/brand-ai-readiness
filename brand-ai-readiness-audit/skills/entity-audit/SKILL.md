@@ -48,8 +48,9 @@ use for their own agent-judged capabilities.
 script never picks which off-site pages to look at — that is your own
 search step (find pages on Reddit, Quora, forums, review sites that mention
 the brand name, or domains that look confusable with it), the same
-narrowly-scoped off-site querying hard constraint 2 permits (see
-`docs/capability-matrix.md`). Pass each one via `--offsite-url` (repeatable).
+narrowly-scoped off-site querying this project permits: direct, bounded,
+robots.txt-respecting HTTP queries to named public sites, computing the
+verdict ourselves. Pass each one via `--offsite-url` (repeatable).
 If you supply none, ENT-05/06 are silently skipped, not reported `unknown`
 — nothing was asked of them.
 
