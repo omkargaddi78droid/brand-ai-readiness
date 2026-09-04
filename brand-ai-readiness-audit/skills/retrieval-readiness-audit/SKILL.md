@@ -6,16 +6,16 @@ description: >
   visible text (RET-01); a phrase repeated at unnatural density, tables/
   lists/glossaries excluded (RET-04); a substantial page with no headings,
   Q&A framing, or definition block (RET-07); load-bearing figures buried
-  mid-document, restated nowhere (RET-09).
+  mid-document, restated nowhere (RET-09); blocks opening with an
+  unresolved pronoun/demonstrative that never name their subject (RET-10).
   Agent-judged, extraction-only: single-phrasing-only coverage (RET-02),
   unaddressed category-obvious questions (RET-03), all-jargon-or-all-layman
   skew (RET-05), paragraphs blending several ideas (RET-06). Use when
   auditing structure/text for sparse and semantic retrieval. Not for
-  "decorative" headings or the starting heading level (disputed, not
-  checked); not for model numbers/statute names in free text (FP-prone,
-  deferred — see Excludes); not for whether existing chunks are self-
-  contained (out of scope); not for content anti-patterns (content-quality-
-  audit) or reachability (perimeter-access-audit).
+  "decorative" headings or the starting heading level (disputed); not for
+  model numbers/statute names in free text (FP-prone, deferred — see
+  Excludes); not for content anti-patterns (content-quality-audit) or
+  reachability (perimeter-access-audit).
 license: MIT
 allowed-tools: Bash
 ---
@@ -32,7 +32,7 @@ most of these checks can evaluate either way.
 
 ## A note before you run this: four capabilities need your judgement
 
-RET-01, RET-04, RET-07, RET-08 and RET-09 are deterministic — the script decides.
+RET-01, RET-04, RET-07, RET-08, RET-09 and RET-10 are deterministic — the script decides.
 **RET-02, RET-03, RET-05 and RET-06 are not.** The script extracts candidate
 signals into `agent_judgement_required` and emits no verdict — deciding
 whether a page's phrasing lacks variation, whether obvious category
@@ -60,7 +60,7 @@ and `entity-audit`'s ENT-09.
 
    For offline/fixture runs, pass `--site example.com --html-file PATH` instead.
 
-2. Read the JSON object on stdout. `findings` (RET-01/04/07/08/09) are
+2. Read the JSON object on stdout. `findings` (RET-01/04/07/08/09/10) are
    final — do not re-derive or re-word them; severity and mechanism are
    fixed by the rules in `references/retrieval-readiness-checks.md`.
 
@@ -93,13 +93,14 @@ and `entity-audit`'s ENT-09.
 | RET-04 | Keyword stuffing | Script | A 4-word phrase (not entirely stopwords) repeats at least 5 times in the page's prose, at a density of at least 8% of prose words, with table/list/glossary regions excluded from the count |
 | RET-07 | Retrieval-oriented structure | Script | A page with 300+ words of visible text has zero heading elements, no heading ending in "?" or `FAQPage`/`QAPage` JSON-LD, and no `<dt>`/`<dd>` definition-list markup anywhere |
 | RET-09 | Positional fact interment | Script | A page with 800+ words has 3+ distinct load-bearing values (currency, unit-bearing numbers, dates, dimensions), at least 40% of which sit only at normalized document position 0.25-0.75 with no restatement in the title, any h1/h2, the opening/closing 15% of prose, a table cell, a definition, or JSON-LD |
+| RET-10 | Chunk self-containment | Script | 25%+ of a page's blocks of 25+ words open with an unresolved pronoun/demonstrative/generic-definite reference and never name their own subject anywhere inside the block (across 4+ judged blocks) |
 | RET-02 | Semantic coverage / synonym variation | Agent, against the rubric | The page's dominant repeated phrase is judged the *only* way its core topic is ever expressed, with no synonym or rephrasing found anywhere on the page |
 | RET-03 | Query-intent coverage | Agent, against the rubric | Multiple genuinely obvious questions for the page's own category go entirely unaddressed anywhere on the page |
 | RET-05 | Domain-specific terminology balance | Agent, against the rubric | The page's language is judged skewed entirely to one extreme (all-jargon or all-layman) rather than balancing both |
 | RET-06 | Chunk quality / atomic paragraphs | Agent, against the rubric | A long candidate paragraph is judged to genuinely blend several distinct, unrelated ideas |
 
 Full detection rules, worked examples, and every false-positive guard for
-RET-01/04/07/08/09 are in `references/retrieval-readiness-checks.md`;
+RET-01/04/07/08/09/10 are in `references/retrieval-readiness-checks.md`;
 RET-02/03/05/06's calibration examples are in
 `references/retrieval-judgement-rubric.md`. Read the relevant one before
 extending or judging a check — each check's scope (what it deliberately
@@ -142,6 +143,14 @@ does *not* flag) is as load-bearing as what it does.
   CQ-01, agent-judged). A chronology page (mostly ascending 4-digit years)
   and a page under 800 words are both silent by design — see
   `references/retrieval-readiness-checks.md`.
+- **RET-10's own scope, and its overlap with RET-06.** RET-10 checks only
+  whether a block *names its own subject somewhere inside itself* — it
+  never judges whether the text under a heading is otherwise self-contained
+  in the fuller sense (e.g. "As mentioned above, the fee is..." referencing
+  earlier context with no anaphoric pronoun at all is not caught). RET-06
+  (agent-judged, this same skill) is a different, orthogonal signal —
+  paragraph length, not anaphora — and the two can co-fire on one block; see
+  `references/retrieval-readiness-checks.md`.
 - **RET-02/03/05/06's own extraction, narrowed.** Each hands the agent a
   small, deliberately partial signal — a dominant phrase, a page's stated
   topic, jargon-density stats, a long paragraph — never a verdict and never
@@ -159,7 +168,7 @@ One JSON object on stdout, same shape as the other audit skills:
 ```json
 {
   "owner_skill": "retrieval-readiness-audit",
-  "capability_ids": ["RET-01", "RET-02", "RET-03", "RET-04", "RET-05", "RET-06", "RET-07", "RET-08", "RET-09"],
+  "capability_ids": ["RET-01", "RET-02", "RET-03", "RET-04", "RET-05", "RET-06", "RET-07", "RET-08", "RET-09", "RET-10"],
   "site": "example.com",
   "page_url": "https://example.com/product/widget",
   "findings": [
@@ -237,6 +246,21 @@ One JSON object on stdout, same shape as the other audit skills:
       "gate": 3,
       "confidence": "medium",
       "structured_evidence": {"prose_word_count": 3412, "values": [{"value": "$1,299", "normalized_position": 0.41, "restated_at": null}], "interred_ratio": 1.0, "page_url": "..."}
+    },
+    {
+      "id": "RET-10-context-dependent-blocks",
+      "title": "Content blocks open with an unresolved reference and never name their own subject",
+      "severity": "medium",
+      "evidence": "On https://example.com/product/widget: 12 of 34 content blocks (35%) open with an unresolved reference and never name their subject inside the block. Read alone — the unit a RAG pipeline retrieves — block 6 reads: 'It cut onboarding time by 40% for their enterprise tier.' Nothing in that block says what the leading pronoun, demonstrative, or generic reference refers to.",
+      "suggested_action": {"summary": "...", "priority": "medium"},
+      "category": "discoverability",
+      "capability_id": "RET-10",
+      "owner_skill": "retrieval-readiness-audit",
+      "mechanism": "...",
+      "track": "defect",
+      "gate": 3,
+      "confidence": "medium",
+      "structured_evidence": {"total_blocks_judged": 34, "context_dependent_count": 12, "ratio": 0.3529, "examples": [{"text": "It cut onboarding time by 40% for their enterprise tier.", "first_sentence": "It cut onboarding time by 40% for their enterprise tier.", "nearest_heading": "Pricing"}], "page_url": "..."}
     }
   ],
   "agent_judgement_required": [
@@ -272,6 +296,9 @@ remove this key entirely before the report reaches the entrypoint.
 | The page's prose (via `shared/text_spans.extract_blocks`) is under 800 words | RET-09 stays silent — no meaningful "middle" exists |
 | Fewer than 3 distinct load-bearing values are extracted, or under 40% of them sit in the 0.25-0.75 band with no restatement | RET-09 stays silent |
 | 70%+ of extracted values are 4-digit years in ascending document order | RET-09 stays silent — the page is a timeline, not buried facts |
+| Fewer than 4 blocks of 25+ words exist on the page | RET-10 stays silent — too little to judge a ratio from |
+| Under 25% of judged blocks are context-dependent | RET-10 stays silent |
+| A block's first sentence starts with "This/That/These/Those guide/article/page/post/section/table/chapter" | Exempt from RET-10 — self-referential deixis, never fires |
 | A JSON-LD block fails to parse | Skipped for RET-01's purposes (entity-audit's ENT-01 owns malformed-JSON-LD detection); a well-formed block elsewhere on the page is still checked |
 | No 3-word phrase repeats ≥3 times in the page's prose | RET-02's `dominant_phrase` is `null`; nothing to judge |
 | No `<p>` element is ≥80 words and ≥5 sentences | RET-06's `candidate_paragraphs` is empty; nothing to judge |

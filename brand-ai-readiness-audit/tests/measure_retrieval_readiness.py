@@ -4,9 +4,10 @@ corpus.
 
 Same reporting shape as measure_entity.py / measure_detection.py, applied to
 retrieval-readiness-audit's single-page-HTML input. Matching is by exact id,
-not prefix — unlike ENT-11 or PER-09, RET-09 emits one fixed, page-level
-finding id (`RET-09-facts-interred-mid-document`) with no per-instance hash
-suffix, so there is nothing that needs prefix matching here.
+not prefix — unlike ENT-11 or PER-09, RET-09 and RET-10 each emit one
+fixed, page-level finding id (`RET-09-facts-interred-mid-document`,
+`RET-10-context-dependent-blocks`) with no per-instance hash suffix, so
+there is nothing that needs prefix matching here.
 
 Usage:
     measure_retrieval_readiness.py            # markdown summary

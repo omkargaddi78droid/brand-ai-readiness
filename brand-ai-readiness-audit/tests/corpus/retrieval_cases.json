@@ -1,5 +1,5 @@
 {
-  "description": "Labelled ground-truth corpus for retrieval-readiness-audit's RET-09 (positional fact interment). Clean cases carry an empty expectation on purpose: they are the false-positive control.",
+  "description": "Labelled ground-truth corpus for retrieval-readiness-audit's RET-09 (positional fact interment) and RET-10 (chunk self-containment). Clean cases carry an empty expectation on purpose: they are the false-positive control.",
   "cases": [
     {
       "id": "clean-well-anchored-long-page",
@@ -35,6 +35,48 @@
       "file": "defect_ret09_buried_facts_with_unrelated_table.html",
       "note": "820-word buying-guide page with a decoy table near the top (color/finish only, not the buried figures) — presence of a table alone does not suppress the finding when the table doesn't contain the actual buried values.",
       "expected_findings": ["RET-09-facts-interred-mid-document"]
+    },
+    {
+      "id": "clean-ret10-faq-self-contained",
+      "label": "clean",
+      "file": "clean_ret10_faq_self_contained.html",
+      "note": "An FAQ page where every block repeats the brand name from its own Q&A heading — self-contained by construction, so RET-10 stays silent.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-ret10-named-subjects-throughout",
+      "label": "clean",
+      "file": "clean_ret10_named_subjects_throughout.html",
+      "note": "Every block opens by naming its subject ('Zenith Metrics') explicitly instead of a pronoun or demonstrative — nothing is anaphoric, so RET-10 stays silent.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-ret10-under-word-gate",
+      "label": "clean",
+      "file": "clean_ret10_under_word_gate.html",
+      "note": "Six short (<25-word) blocks, several genuinely opening with an unresolved pronoun — none are ever judged, since RET-10 only evaluates blocks of 25+ words.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-ret10-buried-pronoun-references",
+      "label": "defect",
+      "file": "defect_ret10_buried_pronoun_references.html",
+      "note": "223-word page; 4 of 5 blocks open with an unresolved pronoun/demonstrative/generic-definite reference and never name their own subject, well above the 25%/4-block thresholds.",
+      "expected_findings": ["RET-10-context-dependent-blocks"]
+    },
+    {
+      "id": "defect-ret10-no-heading-anchor-low-confidence",
+      "label": "defect",
+      "file": "defect_ret10_no_heading_anchor_low_confidence.html",
+      "note": "Same shape as the buried-pronoun-references case but with no headings anywhere on the page — exercises the confidence-to-high upgrade when no context-dependent block has any heading anchor.",
+      "expected_findings": ["RET-10-context-dependent-blocks"]
+    },
+    {
+      "id": "defect-ret10-mixed-self-deixis-and-buried-references",
+      "label": "defect",
+      "file": "defect_ret10_mixed_self_deixis_and_buried_references.html",
+      "note": "One self-referential 'This guide explains...' block (exempt, never counted) alongside four genuinely buried-reference blocks — proves the self-deixis exemption and the buried-reference detection coexist correctly on one page.",
+      "expected_findings": ["RET-10-context-dependent-blocks"]
     }
   ]
 }

@@ -2,7 +2,13 @@
 """Gate-3 retrieval-readiness audit: does a single page's own markup structure
 serve sparse retrieval, or actively work against it?
 
-Owns nine capabilities — five script-decided, four agent-judged:
+Owns ten capabilities — six script-decided, four agent-judged:
+  RET-10  Chunk self-containment — a content block opens with an unresolved
+          reference ("It reduced onboarding time by 40%") and never names
+          its own subject inside the block, which hurts both a chunk's
+          dense-retrieval embedding and a model's ability to answer from
+          that chunk alone, per three independent 2025 coreference/RAG
+          papers.
   RET-09  Positional fact interment — a page's load-bearing figures (price,
           spec, headline statistic) appear only in the middle third of a long
           document and are never restated in the title, a heading, either
@@ -71,7 +77,17 @@ rule that isn't actually settled — so only the *skip between two headings
 that are both present* is checked, not the starting level.
 
 Cluster D (retrieval readiness) is now fully shipped in this one skill —
-the nine capabilities above are all of RET-01 through RET-09.
+the ten capabilities above are all of RET-01 through RET-10.
+
+**RET-10's own scope, and its overlap control vs RET-06.** RET-06
+(agent-judged, this same file) triggers on a paragraph's *length* (≥80
+words and ≥5 sentences) and asks whether it blends several distinct ideas.
+RET-10 is fully deterministic, triggers on *anaphora* (an unresolved
+pronoun/demonstrative/generic-definite reference that the block never
+resolves internally), and asks whether a block names its own subject.
+Orthogonal signals — a long paragraph can blend ideas *and* open with an
+unresolved "it" — so both can legitimately co-fire on the same block. See
+`OverlapControlTests` in the test file for the composition proof.
 
 **RET-09's own scope, and its overlap control vs CQ-01.** CQ-01
 (`content-quality-audit`, agent-judged) asks whether a *canonical answer*
@@ -249,11 +265,11 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
-from text_spans import Block, extract_blocks, normalized_position  # noqa: E402
+from text_spans import Block, extract_blocks, normalized_position, proper_noun_tokens, split_sentences  # noqa: E402
 
 OWNER_SKILL = "retrieval-readiness-audit"
 CAPABILITY_IDS = [
-    "RET-01", "RET-02", "RET-03", "RET-04", "RET-05", "RET-06", "RET-07", "RET-08", "RET-09",
+    "RET-01", "RET-02", "RET-03", "RET-04", "RET-05", "RET-06", "RET-07", "RET-08", "RET-09", "RET-10",
 ]
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 FETCH_TIMEOUT_SECONDS = 10
@@ -1485,6 +1501,202 @@ def find_interred_facts(html: str, headings: list[dict], json_ld_nodes: list[dic
 
 
 # ---------------------------------------------------------------------------
+# RET-10 — Chunk self-containment
+# ---------------------------------------------------------------------------
+#
+# A RAG pipeline retrieves blocks, not pages. A block that opens "It cut
+# onboarding time by 40% for their enterprise tier." and never names what
+# "it" or "their" refers to anywhere inside itself is a block whose
+# dense-retrieval embedding drifts away from queries naming the entity
+# explicitly, and whose content a model must guess or invent an antecedent
+# for if the block *is* retrieved alone. Three independent 2025 papers
+# (CoRAG, CLAP, and an ACL SRW coreference-in-RAG study) converge on this
+# from different methodologies. This also absorbs the defensible core of
+# this project's deferred "chunk fracture" idea: a block whose value sits
+# far from its own subject is exactly a block that fails the anchor test
+# below, without needing an arbitrary window offset.
+#
+# Deliberately reuses `shared.text_spans.extract_blocks`,
+# `split_sentences` and `proper_noun_tokens` rather than adding a second
+# block/sentence splitter — RET-09 (this file, Task 7) already exercised
+# and hardened `extract_blocks`'s offset semantics, which this capability
+# depends on for `nearest_heading` but not for offsets themselves (RET-10
+# is not itself a position check).
+
+_RET10_MIN_BLOCK_WORDS = 25
+_RET10_MIN_JUDGED_BLOCKS = 4
+_RET10_MIN_CONTEXT_DEPENDENT_RATIO = 0.25
+_RET10_MAX_EXAMPLES = 5
+_RET10_ANCHOR_WORD_MIN_CHARS = 4
+
+_RET10_PRONOUNS = {"it", "they", "he", "she", "them", "its", "their"}
+_RET10_DEMONSTRATIVES = {"this", "that", "these", "those"}
+_RET10_GENERIC_DEFINITE_RE = re.compile(
+    r"^the\s+(company|product|platform|service|tool|team)\b", re.IGNORECASE
+)
+# Self-referential deixis names the document itself ("This guide explains
+# ..."), not an external antecedent — the research's own stated FP risk.
+# Checked before the generic anaphor test, and always wins: a block that
+# matches this is never context-dependent, regardless of anchoring.
+_RET10_SELF_DEIXIS_RE = re.compile(
+    r"^(this|that|these|those)\s+(guide|article|page|post|section|table|chapter)\b", re.IGNORECASE
+)
+
+
+def _ret10_first_sentence(block_text: str) -> str:
+    sentences = split_sentences(block_text)
+    return sentences[0].text if sentences else block_text
+
+
+def _is_anaphoric_opening(first_sentence: str) -> bool:
+    """Leading personal pronoun, leading demonstrative not immediately
+    followed by a proper-noun-like (capitalized) word — 'This approach...'
+    is anaphoric, 'This Widget Pro...' names its own subject and is not —
+    or a generic definite description ('the company', 'the product', ...)."""
+    stripped = first_sentence.strip()
+    words = stripped.split()
+    if not words:
+        return False
+    first = words[0].strip(".,;:!?\"'").lower()
+    if first in _RET10_PRONOUNS:
+        return True
+    if first in _RET10_DEMONSTRATIVES:
+        if len(words) >= 2:
+            second = words[1].strip(".,;:!?\"'")
+            if second and second[0].isupper():
+                return False
+        return True
+    return bool(_RET10_GENERIC_DEFINITE_RE.match(stripped))
+
+
+def _ret10_content_words(text: str) -> set[str]:
+    return {
+        word
+        for word in _tokenize_words(text)
+        if word not in _STOPWORDS and len(word) >= _RET10_ANCHOR_WORD_MIN_CHARS
+    }
+
+
+def _has_in_block_anchor(block_text: str, title_h1_words: set[str], heading_words: set[str]) -> bool:
+    """A block is anchored — names its own subject — if it contains any
+    proper-noun token anywhere, any content word shared with the page's own
+    `<title>`/`<h1>`, or a topic term repeated from its nearest heading."""
+    if proper_noun_tokens(block_text):
+        return True
+    block_words = _ret10_content_words(block_text)
+    if title_h1_words & block_words:
+        return True
+    if heading_words & block_words:
+        return True
+    return False
+
+
+def _ret10_heading_has_anchor(nearest_heading: str | None) -> bool:
+    """Whether the block's own nearest preceding heading carries a proper
+    noun or topic term — a signal a heading-aware chunker could use to
+    resolve the reference even though this file's own anchor test (above)
+    only credits an anchor found *inside* the block itself. Drives the
+    page-level confidence downgrade, never suppression (most naive
+    chunkers do not carry headings forward)."""
+    if not nearest_heading:
+        return False
+    return bool(proper_noun_tokens(nearest_heading) or _ret10_content_words(nearest_heading))
+
+
+def find_context_dependent_blocks(html: str, headings: list[dict]) -> list[Finding]:
+    """RET-10. Judges every block of >=25 words for whether it opens with an
+    unresolved reference and never names its own subject inside itself.
+    Fires once per page (not once per block, to avoid flooding the report)
+    when the context-dependent ratio is >=25% across >=4 judged blocks."""
+    blocks = extract_blocks(html)
+    title_text, _ = extract_margin_anchor_text(html)
+    h1_text = " ".join(h["text"] for h in headings if h["level"] == 1 and h["text"])
+    title_h1_words = _ret10_content_words(f"{title_text} {h1_text}")
+
+    judged = [block for block in blocks if block.word_count >= _RET10_MIN_BLOCK_WORDS]
+    if len(judged) < _RET10_MIN_JUDGED_BLOCKS:
+        return []
+
+    context_dependent: list[dict] = []
+    any_heading_anchor = False
+    for index, block in enumerate(judged, start=1):
+        first_sentence = _ret10_first_sentence(block.text)
+        if _RET10_SELF_DEIXIS_RE.match(first_sentence.strip()):
+            continue
+        if not _is_anaphoric_opening(first_sentence):
+            continue
+        heading_words = _ret10_content_words(block.nearest_heading or "")
+        if _has_in_block_anchor(block.text, title_h1_words, heading_words):
+            continue
+        heading_anchored = _ret10_heading_has_anchor(block.nearest_heading)
+        any_heading_anchor = any_heading_anchor or heading_anchored
+        context_dependent.append(
+            {
+                "index": index,
+                "text": block.text,
+                "first_sentence": first_sentence,
+                "nearest_heading": block.nearest_heading,
+                "heading_anchored": heading_anchored,
+            }
+        )
+
+    total_judged = len(judged)
+    ratio = len(context_dependent) / total_judged if total_judged else 0.0
+    if ratio < _RET10_MIN_CONTEXT_DEPENDENT_RATIO:
+        return []
+
+    confidence = "medium" if any_heading_anchor else "high"
+    examples = context_dependent[:_RET10_MAX_EXAMPLES]
+    lead = examples[0]
+    lead_quote = lead["text"] if len(lead["text"]) <= 200 else lead["text"][:197] + "..."
+
+    return [
+        Finding(
+            id="RET-10-context-dependent-blocks",
+            title="Content blocks open with an unresolved reference and never name their own subject",
+            severity="medium",
+            evidence=(
+                f"{len(context_dependent)} of {total_judged} content blocks "
+                f"({ratio * 100:.0f}%) open with an unresolved reference and never name their "
+                f"subject inside the block. Read alone — the unit a RAG pipeline retrieves — "
+                f"block {lead['index']} reads: '{lead_quote}' Nothing in that block says what "
+                f"the leading pronoun, demonstrative, or generic reference refers to."
+            ),
+            suggested_action=SuggestedAction(
+                summary="Name the subject explicitly within each flagged block (repeat the product/company/topic name), rather than relying on context carried over from an earlier block or heading.",
+                priority="medium",
+            ),
+            category="discoverability",
+            capability_id="RET-10",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "A RAG pipeline retrieves chunks, not pages, and a chunk's dense-retrieval "
+                "embedding is computed only from the text inside it. If a block never names its "
+                "own subject, the embedding drifts away from queries that name the entity "
+                "explicitly, hurting recall; and if the chunk is retrieved anyway, the model must "
+                "guess or invent the antecedent. Three independent 2025 studies (CoRAG, CLAP, and "
+                "an ACL SRW coreference-in-RAG study) converge on this from different methodologies."
+            ),
+            gate=3,
+            confidence=confidence,
+            structured_evidence={
+                "total_blocks_judged": total_judged,
+                "context_dependent_count": len(context_dependent),
+                "ratio": round(ratio, 4),
+                "examples": [
+                    {
+                        "text": example["text"],
+                        "first_sentence": example["first_sentence"],
+                        "nearest_heading": example["nearest_heading"],
+                    }
+                    for example in examples
+                ],
+            },
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
 # Orchestration within the skill
 # ---------------------------------------------------------------------------
 
@@ -1517,7 +1729,8 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
         + find_token_survival_gaps(tokens, visible_text)
         + find_keyword_stuffing(prose_text)
         + find_missing_retrieval_structure(headings, json_ld_nodes, has_dt_dd, content_word_count)
-        + find_interred_facts(html, headings, json_ld_nodes),
+        + find_interred_facts(html, headings, json_ld_nodes)
+        + find_context_dependent_blocks(html, headings),
         page_url,
     )
 

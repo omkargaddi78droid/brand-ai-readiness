@@ -407,6 +407,143 @@ surface.
 
 ---
 
+## RET-10 — Chunk self-containment
+
+**What it catches.** A content block (per `shared.text_spans.extract_blocks`)
+of 25+ words whose first sentence opens with an unresolved reference — a
+leading personal/possessive pronoun (`it/they/he/she/them/its/their`), a
+leading demonstrative (`this/that/these/those`) not immediately followed by
+a proper-noun-like capitalized word, or a generic definite description
+(`the company/product/platform/service/tool/team`) — and which never names
+its own subject anywhere inside itself (no proper noun, no word shared with
+the page's `<title>`/`<h1>`, no topic term repeated from its own nearest
+heading). Fires once per page, not once per block, when at least 25% of
+judged blocks (across at least 4 of them) are context-dependent this way.
+
+**Why this mechanism.** A RAG pipeline retrieves chunks, not whole pages,
+and the block is the smallest unit every real chunker respects. A chunk's
+dense-retrieval embedding is computed only from the text inside it — if the
+entity is never named there, the embedding drifts away from queries that
+name the entity explicitly, hurting recall; and if the chunk is retrieved
+anyway, the model has to guess or invent the antecedent. Three independent
+2025 papers converge on this from different methodologies: CoRAG
+(coreference preprocessing before chunking), CLAP ("semantic chunking
+inevitably breaks cross-chunk context ... leading to degraded expansion
+quality and suboptimal retrieval performance"), and an ACL SRW study
+measuring gains in both retrieval relevance and downstream QA accuracy from
+coreference resolution in RAG. This also absorbs the defensible core of a
+deferred "chunk fracture" idea from this project's own capability-selection
+process: a block whose value sits far from its own subject is exactly a
+block that fails the anchor test below, captured here without an arbitrary
+window-offset heuristic.
+
+**Why a 25-word floor, distinct from every other floor in this file.** A
+short block naturally retrieves alongside its neighbors in most real
+chunking strategies (which merge short adjacent blocks up to a target
+token count), so a short block opening with "It..." is not the same risk
+as a long, substantial block standing entirely on an unresolved reference.
+25 words is deliberately lower than RET-04's 80-word floor or RET-07's
+300-word floor — those decide whether a *page* has enough content for a
+signal to mean anything; this decides whether a single *block* is
+substantial enough to plausibly be retrieved and read alone.
+
+**The anaphor test, worked through.** "It cut onboarding time by 40%." —
+leading pronoun, anaphoric. "This approach scales better than the last
+one." — leading demonstrative not immediately followed by a capitalized
+word (`approach` is lowercase), anaphoric: "this approach" does not say
+*which* approach. "This Widget Pro ships with a longer battery." — leading
+demonstrative immediately followed by a capitalized word (`Widget`), *not*
+anaphoric: the block names its own subject in the same breath. "The
+company reported strong earnings." — generic definite description,
+anaphoric: "the company" could be any company. "Acme Corp reported strong
+earnings." — an ordinary named subject, not anaphoric at all, since the
+first word is neither a pronoun, demonstrative, nor "the".
+
+**Why "not immediately followed by a capitalized word" for demonstratives,
+specifically.** This is the resolution to an apparent contradiction between
+the plan's own worked example ("This approach scales better" is cited as
+unresolved) and its own required exemption (self-referential deixis, "This
+guide explains ..." must never fire). Both "This approach" and "This
+guide" are demonstrative-plus-lowercase-noun — the anaphor test alone
+cannot distinguish them by capitalization, because neither is capitalized.
+The self-deixis exemption (below) is what actually separates them: "This
+guide/article/page/post/section/table/chapter" is checked *before* the
+general anaphor test and, when it matches, always wins — the block is
+never counted as context-dependent regardless of what the general anaphor
+test would have said. "This Widget Pro" is a *third*, distinct case: a
+demonstrative followed by an actual capitalized entity name, which the
+anaphor test itself declines to flag (no exemption needed — the block
+already names its subject in its own first sentence).
+
+**The three anchor sources, and why each is needed.** (1) A proper-noun
+token anywhere in the block (`shared.text_spans.proper_noun_tokens`) — the
+strongest, most direct anchor: the block names an actual entity. (2) A
+content word (non-stopword, 4+ characters) shared with the page's own
+`<title>`/`<h1>` — a block that repeats the page's own subject, even
+without a capitalized proper noun (e.g. "the setup process" on a page
+titled "Setup Documentation"), is anchored to the page's topic. (3) A
+content word repeated from the block's own nearest preceding heading — the
+same logic, scoped to the block's local section rather than the whole
+page. All three are checked as simple word-set intersections, deliberately
+without any semantic/embedding comparison — the same "reimplement the
+narrow, deterministic slice, not the general NLP task" discipline this
+project has applied everywhere else in this cluster (RET-01's exact-token
+survival, RET-09's literal substring restatement check).
+
+**Required exemption: self-referential deixis.** "This guide/article/
+page/post/section/table/chapter explains ..." names *itself*, not an
+external antecedent — checked first, on the first sentence, and always
+wins over the general anaphor test. This is the research's own stated
+false-positive risk, addressed directly.
+
+**Required, but not suppressed: the heading-anchor confidence signal.**
+When a context-dependent block's own nearest preceding heading carries a
+proper noun or a real content word, a heading-aware chunker (one that
+carries the preceding heading forward into each chunk) could still resolve
+the reference — but *most* naive chunkers do not carry headings forward,
+so this is not grounds to suppress the finding. Instead: `nearest_heading`
+is recorded in each example, and the page-level `confidence` is `high`
+only when *none* of the page's context-dependent blocks have any heading
+anchor at all (most commonly, a page with no headings above the flagged
+blocks whatsoever); otherwise it stays at `medium`, per the plan.
+
+**Why RET-10 fires once per page, not once per block.** The same "report
+proportional to defect classes, not occurrence count" discipline RET-08
+and RET-01 already established in this file — a page with a systemic
+anaphora problem would otherwise flood the report with one finding per
+paragraph. `structured_evidence.examples` carries up to 5 verbatim
+examples (`text`, `first_sentence`, `nearest_heading`) so a reader still
+sees concrete instances, not just a count.
+
+**Overlap with RET-06, and why it is intentional.** RET-06 (agent-judged,
+this same file) triggers on a paragraph's *length* (≥80 words and ≥5
+sentences) and asks whether it blends several distinct ideas — a semantic
+judgement about content variety. RET-10 is fully deterministic, triggers on
+*anaphora*, and asks only whether a block names its own subject — it never
+reads the block's ideas at all. A single long paragraph can legitimately
+trip both: opening with an unresolved "it" *and* wandering across several
+unrelated topics are independent defects with independent fixes (name the
+subject vs. split the paragraph). `tests/test_retrieval_readiness.py::
+Ret10Ret06OverlapControlTests` proves both surface distinctly from
+`audit_html()` (one as a script `Finding`, one as an
+`agent_judgement_required` candidate) and, once the agent has authored its
+own RET-06 finding, compose cleanly through `compose_report.py` with no
+duplicate-id collision — the same shape RET-09's own overlap-control test
+against CQ-01 already established, but intra-skill here rather than
+cross-skill.
+
+**What was left out, and why.** The anaphor test only inspects a block's
+*first* sentence — a mid-block anaphoric reference ("The pricing changed
+last quarter. It affected every region.") is not evaluated, since the
+plan's own detection algorithm scopes the test to the opening sentence
+specifically (the sentence most likely to be a chunk's own lead-in, and
+the one a chunker's embedding weighs most heavily). This is a documented,
+accepted narrowing, not an oversight — broadening it to every sentence in
+a block would need a real coreference-resolution pass, well beyond what a
+regex-based anaphor test can safely claim.
+
+---
+
 ## What extraction does not handle (known, accepted limits)
 
 - **Malformed HTML with mismatched or improperly nested heading tags** can
@@ -453,3 +590,14 @@ surface.
   adding a normalization layer with its own false-positive surface, at the
   cost of occasionally under-crediting a genuinely present but
   differently-formatted restatement.
+- **RET-10's anaphor test only inspects a block's first sentence.** A
+  mid-block anaphoric reference is not evaluated — a documented narrowing
+  matching the plan's own detection algorithm, not an oversight. Broadening
+  it to every sentence in a block would need real coreference resolution,
+  not a regex-based opening-sentence check.
+- **RET-10's in-block anchor test is word-set intersection, not semantic
+  matching.** A block that refers to its subject only via a synonym never
+  present in the title/h1/heading text (e.g. "the firm" for a company
+  named only "Acme Corp" elsewhere) is not credited as anchored. This
+  mirrors the same "reimplement the narrow, deterministic slice" design
+  RET-01 and RET-09 already use in this file.

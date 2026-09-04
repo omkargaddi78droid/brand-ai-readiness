@@ -1117,6 +1117,335 @@ class InterredFactsPositiveTests(unittest.TestCase):
         self.assertIn("RET-09-facts-interred-mid-document", ids)
 
 
+def _ret10_block(sentence: str, filler_sentences: int = 2) -> str:
+    """Pads `sentence` (the block's first, judged sentence) with enough
+    additional filler sentences to clear RET-10's 25-word gate, without
+    disturbing the leading sentence the anaphor/anchor tests read."""
+    filler = " ".join(
+        f"Additional detail number {i} follows here to extend this block well past the word floor."
+        for i in range(filler_sentences)
+    )
+    return f"<p>{sentence} {filler}</p>"
+
+
+class AnaphoricOpeningTests(unittest.TestCase):
+    def test_leading_personal_pronoun_is_anaphoric(self):
+        self.assertTrue(ret._is_anaphoric_opening("It cut onboarding time by forty percent."))
+
+    def test_leading_possessive_pronoun_is_anaphoric(self):
+        self.assertTrue(ret._is_anaphoric_opening("Their approach scales better than expected."))
+
+    def test_bare_demonstrative_followed_by_generic_noun_is_anaphoric(self):
+        self.assertTrue(ret._is_anaphoric_opening("This approach scales better than the last one."))
+
+    def test_demonstrative_followed_by_a_capitalized_word_names_its_own_subject(self):
+        self.assertFalse(ret._is_anaphoric_opening("This Widget Pro ships with a longer battery."))
+
+    def test_generic_definite_description_is_anaphoric(self):
+        self.assertTrue(ret._is_anaphoric_opening("The company reported strong quarterly earnings."))
+
+    def test_an_ordinary_named_subject_is_not_anaphoric(self):
+        self.assertFalse(ret._is_anaphoric_opening("Acme Corp reported strong quarterly earnings."))
+
+    def test_empty_sentence_is_not_anaphoric(self):
+        self.assertFalse(ret._is_anaphoric_opening(""))
+
+
+class SelfDeixisExemptionTests(unittest.TestCase):
+    def test_this_guide_is_self_referential(self):
+        self.assertTrue(ret._RET10_SELF_DEIXIS_RE.match("This guide explains the setup process."))
+
+    def test_this_article_is_self_referential(self):
+        self.assertTrue(ret._RET10_SELF_DEIXIS_RE.match("This article covers three main topics."))
+
+    def test_this_approach_is_not_self_referential(self):
+        self.assertIsNone(ret._RET10_SELF_DEIXIS_RE.match("This approach scales better overall."))
+
+
+class InBlockAnchorTests(unittest.TestCase):
+    def test_a_proper_noun_anywhere_in_the_block_anchors_it(self):
+        text = "It cut onboarding time by forty percent for Acme Corp's enterprise tier."
+        self.assertTrue(ret._has_in_block_anchor(text, set(), set()))
+
+    def test_a_word_shared_with_title_or_h1_anchors_it(self):
+        text = "It reduced setup delays significantly across every region worldwide."
+        self.assertTrue(ret._has_in_block_anchor(text, {"setup"}, set()))
+
+    def test_a_topic_term_repeated_from_the_nearest_heading_anchors_it(self):
+        text = "It reduced onboarding delays significantly across every region worldwide."
+        self.assertTrue(ret._has_in_block_anchor(text, set(), {"onboarding"}))
+
+    def test_no_shared_vocabulary_and_no_proper_noun_is_not_anchored(self):
+        text = "It reduced setup delays significantly across every region worldwide today."
+        self.assertFalse(ret._has_in_block_anchor(text, {"pricing"}, {"billing"}))
+
+
+class ContextDependentBlocksTests(unittest.TestCase):
+    _TITLE = "<title>Company Press Releases</title>"
+    _H1 = "<h1>Company Press Releases</h1>"
+
+    def _page(self, blocks_html: str) -> str:
+        return f"<html><head>{self._TITLE}</head><body>{self._H1}{blocks_html}</body></html>"
+
+    def test_buried_unresolved_references_fire(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("Zenith Metrics reduced setup delays by forty percent for its subscribers."),
+                _ret10_block("This guide explains carefully how the setup process works today."),
+                _ret10_block("They launched it in March after several quiet months of planning."),
+                _ret10_block("The team spent several quiet months building this brand new setup flow."),
+            ]
+        )
+        html = self._page(blocks)
+        findings = ret.find_context_dependent_blocks(html, ret.extract_headings(html))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "RET-10-context-dependent-blocks")
+        self.assertEqual(findings[0].capability_id, "RET-10")
+        self.assertEqual(findings[0].structured_evidence["total_blocks_judged"], 5)
+        self.assertEqual(findings[0].structured_evidence["context_dependent_count"], 3)
+
+    def test_named_subjects_throughout_do_not_fire(self):
+        blocks = "".join(
+            [
+                _ret10_block("Zenith Metrics reduced setup delays by forty percent for its subscribers."),
+                _ret10_block("Zenith Metrics also improved onboarding scores across every regional office."),
+                _ret10_block("Zenith Metrics plans to expand its premium tier into new markets."),
+                _ret10_block("Zenith Metrics reported strong subscriber growth throughout the entire fiscal year."),
+            ]
+        )
+        html = self._page(blocks)
+        self.assertEqual(ret.find_context_dependent_blocks(html, ret.extract_headings(html)), [])
+
+    def test_self_referential_deixis_never_fires(self):
+        blocks = "".join(
+            [
+                _ret10_block("This guide explains carefully how the setup process works for everyone."),
+                _ret10_block("This article covers the setup process in exhaustive step by step detail."),
+                _ret10_block("This section walks through every configuration option available during setup."),
+                _ret10_block("This page documents every field required during the initial setup flow."),
+            ]
+        )
+        html = self._page(blocks)
+        self.assertEqual(ret.find_context_dependent_blocks(html, ret.extract_headings(html)), [])
+
+    def test_blocks_under_the_word_floor_are_never_judged(self):
+        short_blocks = "".join(f"<p>It cut delays by forty percent for their tier {i}.</p>" for i in range(6))
+        html = self._page(short_blocks)
+        self.assertEqual(ret.find_context_dependent_blocks(html, ret.extract_headings(html)), [])
+
+    def test_below_the_four_block_floor_never_fires_even_at_high_ratio(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("They launched it in March after several quiet months of planning."),
+                _ret10_block("The team spent several quiet months building this brand new setup flow."),
+            ]
+        )
+        html = self._page(blocks)
+        self.assertEqual(ret.find_context_dependent_blocks(html, ret.extract_headings(html)), [])
+
+    def test_exactly_at_the_ratio_boundary_fires(self):
+        # 1 of 4 = 25%. The rule is >=0.25, not >0.25 — this fixture pins
+        # the boundary itself, proving 0.25 exactly still fires. The plan's
+        # own adversarial list calls out 0.24 (just under) as the
+        # must-not-fire case, covered separately below.
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("Zenith Metrics reduced setup delays by forty percent for its subscribers."),
+                _ret10_block("Zenith Metrics also improved onboarding scores across every regional office."),
+                _ret10_block("Zenith Metrics plans to expand its premium tier into new markets."),
+            ]
+        )
+        html = self._page(blocks)
+        findings = ret.find_context_dependent_blocks(html, ret.extract_headings(html))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].structured_evidence["ratio"], 0.25)
+
+    def test_just_under_the_ratio_boundary_does_not_fire(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("Zenith Metrics reduced setup delays by forty percent for its subscribers."),
+                _ret10_block("Zenith Metrics also improved onboarding scores across every regional office."),
+                _ret10_block("Zenith Metrics plans to expand its premium tier into new markets."),
+                _ret10_block("Zenith Metrics reported strong subscriber growth throughout the entire fiscal year."),
+            ]
+        )
+        html = self._page(blocks)
+        self.assertEqual(ret.find_context_dependent_blocks(html, ret.extract_headings(html)), [])
+
+    def test_a_conversational_blog_with_heavy_but_anchored_pronoun_use_does_not_fire(self):
+        blocks = "".join(
+            [
+                _ret10_block(
+                    "Zenith Metrics launched its new dashboard last week, and the team could not be happier with it."
+                ),
+                _ret10_block(
+                    "The Zenith team spent months polishing its onboarding flow before finally shipping it."
+                ),
+                _ret10_block(
+                    "Zenith customers have praised its new dashboard for how quickly it surfaces useful insights."
+                ),
+                _ret10_block(
+                    "The Zenith roadmap for next quarter focuses squarely on making its dashboard even faster."
+                ),
+            ]
+        )
+        html = self._page(blocks)
+        self.assertEqual(ret.find_context_dependent_blocks(html, ret.extract_headings(html)), [])
+
+    def test_no_block_has_a_heading_anchor_raises_confidence_to_high(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("They launched it in March after several quiet months of planning."),
+                _ret10_block("The team spent several quiet months building this brand new setup flow."),
+                _ret10_block("Their new pricing model rolled out to every region without incident."),
+            ]
+        )
+        html = f"<html><head><title>Untitled</title></head><body>{blocks}</body></html>"
+        findings = ret.find_context_dependent_blocks(html, ret.extract_headings(html))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].confidence, "high")
+
+    def test_evaluation_is_deterministic(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("They launched it in March after several quiet months of planning."),
+                _ret10_block("The team spent several quiet months building this brand new setup flow."),
+                _ret10_block("Their new pricing model rolled out to every region without incident."),
+            ]
+        )
+        html = self._page(blocks)
+        headings = ret.extract_headings(html)
+        first = ret.find_context_dependent_blocks(html, headings)
+        second = ret.find_context_dependent_blocks(html, headings)
+        self.assertEqual([f.to_dict() for f in first], [f.to_dict() for f in second])
+
+    def test_finding_satisfies_the_contract(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("They launched it in March after several quiet months of planning."),
+                _ret10_block("The team spent several quiet months building this brand new setup flow."),
+                _ret10_block("Their new pricing model rolled out to every region without incident."),
+            ]
+        )
+        html = self._page(blocks)
+        findings = ret.find_context_dependent_blocks(html, ret.extract_headings(html))
+        for finding in findings:
+            self.assertEqual(Finding.from_dict(finding.to_dict()).validate(), [])
+
+    def test_wired_into_audit_html(self):
+        blocks = "".join(
+            [
+                _ret10_block("It cut setup delays by forty percent for their premium subscribers."),
+                _ret10_block("They launched it in March after several quiet months of planning."),
+                _ret10_block("The team spent several quiet months building this brand new setup flow."),
+                _ret10_block("Their new pricing model rolled out to every region without incident."),
+            ]
+        )
+        html = self._page(blocks)
+        output = ret.audit_html("example.com", html)
+        ids = [f["id"] for f in output["findings"]]
+        self.assertIn("RET-10-context-dependent-blocks", ids)
+
+
+class Ret10Ret06OverlapControlTests(unittest.TestCase):
+    """RET-06 (this same file, agent-judged, triggers on paragraph length)
+    and RET-10 (deterministic, triggers on anaphora) are orthogonal — a
+    long paragraph can blend several ideas *and* open with an unresolved
+    pronoun. Proves both surface distinctly (one as a script Finding, one
+    as an agent_judgement_required candidate) and, once the agent has
+    authored its own RET-06 finding, compose cleanly with no id collision."""
+
+    _BLENDED_LONG_BLOCK = (
+        "It cut setup delays by forty percent for their premium subscribers during the first quarter. "
+        "The rollout also introduced a completely unrelated billing change that surprised many long-time "
+        "customers who had not been expecting any pricing adjustment at all this year. "
+        "Meanwhile, an entirely separate support-ticket backlog grew for reasons nobody on the team could "
+        "fully explain, and it took several more weeks before the queue returned to a normal size again. "
+        "A handful of enterprise customers separately asked for a dedicated onboarding specialist, a request "
+        "that had nothing to do with either the delay improvement or the billing change described above. "
+        "Finally, an unrelated internal audit flagged a handful of minor documentation gaps that nobody "
+        "had previously thought worth mentioning in any of the earlier planning meetings."
+    )
+
+    def test_both_capabilities_surface_on_the_same_long_anaphoric_block(self):
+        html = (
+            "<html><head><title>Company Press Releases</title></head><body><h1>Company Press Releases</h1>"
+            f"<p>{self._BLENDED_LONG_BLOCK}</p>"
+            + "".join(
+                [
+                    _ret10_block("They launched it in March after several quiet months of planning."),
+                    _ret10_block("The team spent several quiet months building this brand new setup flow."),
+                    _ret10_block("Their new pricing model rolled out to every region without incident."),
+                ]
+            )
+            + "</body></html>"
+        )
+        output = ret.audit_html("example.com", html)
+        ids = [f["id"] for f in output["findings"]]
+        self.assertIn("RET-10-context-dependent-blocks", ids)
+        ret06_request = next(r for r in output["agent_judgement_required"] if r["capability_id"] == "RET-06")
+        paragraphs = [c["paragraph"] for c in ret06_request["observations"]["candidate_paragraphs"]]
+        self.assertIn(self._BLENDED_LONG_BLOCK, paragraphs)
+
+    def test_ret10_and_a_hand_authored_ret06_finding_compose_without_a_duplicate_id_abort(self):
+        import json
+        import tempfile
+
+        html = (
+            "<html><head><title>Company Press Releases</title></head><body><h1>Company Press Releases</h1>"
+            f"<p>{self._BLENDED_LONG_BLOCK}</p>"
+            + "".join(
+                [
+                    _ret10_block("They launched it in March after several quiet months of planning."),
+                    _ret10_block("The team spent several quiet months building this brand new setup flow."),
+                    _ret10_block("Their new pricing model rolled out to every region without incident."),
+                ]
+            )
+            + "</body></html>"
+        )
+        skill_output = ret.audit_html("example.com", html, page_url="https://example.com/press")
+        ret06_finding = Finding(
+            id="RET-06-blended-ideas-in-one-paragraph",
+            title="A long paragraph blends several distinct, unrelated ideas",
+            severity="medium",
+            evidence="This paragraph shifts from a rollout metric to a billing change to a support backlog to a staffing request.",
+            suggested_action=SuggestedAction(summary="Split this paragraph into one paragraph per idea.", priority="medium"),
+            category="discoverability",
+            capability_id="RET-06",
+            owner_skill="retrieval-readiness-audit",
+            mechanism="A retrieval chunk built from a paragraph blending several ideas embeds none of them cleanly.",
+            gate=3,
+            confidence="medium",
+        )
+        skill_output["findings"].append(ret06_finding.to_dict())
+        skill_output["agent_judgement_required"] = [
+            r for r in skill_output["agent_judgement_required"] if r["capability_id"] != "RET-06"
+        ]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            path = Path(workdir) / "skill.json"
+            path.write_text(json.dumps(skill_output), encoding="utf-8")
+            report = orchestrator.compose(
+                "example.com", [("retrieval-readiness-audit", str(path))], audited_at="2026-09-20T14:32:00Z"
+            )
+
+        errors = orchestrator.validate_floor_shape(report)
+        self.assertEqual(errors, [])
+        check_ids = {f["check_id"] for f in report["findings"]}
+        self.assertIn("RET-10-context-dependent-blocks", check_ids)
+        self.assertIn("RET-06-blended-ideas-in-one-paragraph", check_ids)
+        capability_ids = {f["capability_id"] for f in report["findings"]}
+        self.assertIn("RET-10", capability_ids)
+        self.assertIn("RET-06", capability_ids)
+
+
 class OverlapControlTests(unittest.TestCase):
     """RET-09 (this skill, deterministic) and CQ-01 (content-quality-audit,
     agent-judged) can both fire on the same page — different trigger,
