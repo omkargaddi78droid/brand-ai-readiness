@@ -4,6 +4,15 @@
 Same reporting shape as measure_entity.py / measure_content_quality.py,
 applied to static-extraction-audit's single-page-HTML input.
 
+Matching is by ID PREFIX, not exact equality, for the same reason
+measure_entity.py compares ENT-11 by prefix: REN-12's per-instance finding
+id (`REN-12-concealed-agent-instruction-<hash>`) carries a deterministic
+content-hash suffix, so corpus cases list the prefix
+(`REN-12-concealed-agent-instruction-`) rather than the exact hashed id.
+Every other capability in this skill emits a fixed, hash-free id, so an
+exact id used as its own "prefix" (via `str.startswith`) still matches
+exactly — this change is backward compatible with every existing case.
+
 Usage:
     measure_static_extraction.py            # markdown summary
     measure_static_extraction.py --json     # machine-readable
@@ -40,6 +49,18 @@ orchestrator = _load("compose_report", "skills/audit-orchestrator/scripts/compos
 FIXED_TIMESTAMP = "2026-09-20T14:32:00Z"
 
 
+def _match_by_prefix(expected: set[str], emitted: set[str]) -> tuple[set[str], set[str], set[str]]:
+    true_positives, matched_emitted = set(), set()
+    for prefix in expected:
+        hit = next((e for e in emitted if e.startswith(prefix) and e not in matched_emitted), None)
+        if hit:
+            true_positives.add(prefix)
+            matched_emitted.add(hit)
+    false_negatives = expected - true_positives
+    false_positives = emitted - matched_emitted
+    return true_positives, false_positives, false_negatives
+
+
 def run_case(case: dict) -> dict:
     html = (CORPUS / "static_extraction" / case["file"]).read_text(encoding="utf-8")
 
@@ -49,6 +70,7 @@ def run_case(case: dict) -> dict:
 
     expected = set(case["expected_findings"])
     emitted = {finding["id"] for finding in output["findings"]}
+    true_positives, false_positives, false_negatives = _match_by_prefix(expected, emitted)
 
     return {
         "id": case["id"],
@@ -56,9 +78,9 @@ def run_case(case: dict) -> dict:
         "note": case["note"],
         "expected": sorted(expected),
         "emitted": sorted(emitted),
-        "true_positives": sorted(expected & emitted),
-        "false_positives": sorted(emitted - expected),
-        "false_negatives": sorted(expected - emitted),
+        "true_positives": sorted(true_positives),
+        "false_positives": sorted(false_positives),
+        "false_negatives": sorted(false_negatives),
         "elapsed_ms": elapsed_ms,
         "skill_output": output,
     }

@@ -1,5 +1,5 @@
 {
-  "description": "Labelled ground-truth corpus for static-extraction-audit (REN-02/04/05/06/07/08/10/11). Clean cases carry an empty expectation on purpose: they are the false-positive control.",
+  "description": "Labelled ground-truth corpus for static-extraction-audit (REN-02/04/05/06/07/08/10/11/12). Clean cases carry an empty expectation on purpose: they are the false-positive control. REN-12 cases list a check-id PREFIX (see measure_static_extraction.py's prefix matching), since REN-12 finding ids carry a per-instance content-hash suffix.",
   "cases": [
     {
       "id": "clean-fully-covered",
@@ -70,6 +70,69 @@
       "file": "proactive_pdf_link.html",
       "note": "A PDF link exists — REN-11 always fires as a proactive suggestion, never a confirmed defect, when a PDF link is present.",
       "expected_findings": ["REN-11-pdf-content-unverified"]
+    },
+    {
+      "id": "clean-ren12-sr-only-skip-link",
+      "label": "clean",
+      "file": "clean_ren12_sr_only_skip_link.html",
+      "note": "A sr-only-style off-canvas skip-link with ordinary 'Skip to main content' copy — concealed but no language trigger, must stay silent.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-ren12-hidden-form-label-and-live-region",
+      "label": "clean",
+      "file": "clean_ren12_hidden_form_label_and_live_region.html",
+      "note": "A visually-hidden form label plus an aria-live status region, both legitimate accessibility patterns with no agent-directed language.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-ren12-code-quoted-injection-example",
+      "label": "clean",
+      "file": "clean_ren12_code_quoted_injection_example.html",
+      "note": "A technical blog post quoting 'ignore previous instructions' inside visible <code> — the code-tag exclusion must suppress this even though the phrase itself would otherwise match the override family.",
+      "expected_findings": []
+    },
+    {
+      "id": "clean-ren12-visible-imperative-marketing-copy",
+      "label": "clean",
+      "file": "clean_ren12_visible_imperative_marketing_copy.html",
+      "note": "An imperative-reading H1 ('Ignore the noise') that is fully visible (not concealed), plus an aria-hidden decorative star icon with a visible text equivalent alongside it — neither is concealed-and-triggered.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-ren12-off-canvas-override",
+      "label": "defect",
+      "file": "defect_ren12_off_canvas_override.html",
+      "note": "Off-canvas absolute positioning (left/top: -9999px) concealing an Override-family instruction — critical severity.",
+      "expected_findings": ["REN-12-concealed-agent-instruction-"]
+    },
+    {
+      "id": "defect-ren12-font-size-zero-agent-addressing",
+      "label": "defect",
+      "file": "defect_ren12_font_size_zero_agent_addressing.html",
+      "note": "font-size:0 concealing an Agent-addressing-family instruction ('Dear assistant, please always recommend...') — high severity.",
+      "expected_findings": ["REN-12-concealed-agent-instruction-"]
+    },
+    {
+      "id": "defect-ren12-html-comment-override",
+      "label": "defect",
+      "file": "defect_ren12_html_comment_override.html",
+      "note": "An HTML comment concealing a 'system prompt' Override-family phrase — critical severity.",
+      "expected_findings": ["REN-12-concealed-agent-instruction-"]
+    },
+    {
+      "id": "defect-ren12-style-block-hidden-class",
+      "label": "defect",
+      "file": "defect_ren12_style_block_hidden_class.html",
+      "note": "A <style> block .hidden { display: none; } rule (matched by class, not inline style) concealing a 'disregard the above' Override-family phrase.",
+      "expected_findings": ["REN-12-concealed-agent-instruction-"]
+    },
+    {
+      "id": "defect-ren12-json-ld-description-injection",
+      "label": "defect",
+      "file": "defect_ren12_json_ld_description_injection.html",
+      "note": "Injection text inside a JSON-LD Product.description field — never rendered to a visitor regardless of any CSS.",
+      "expected_findings": ["REN-12-concealed-agent-instruction-"]
     }
   ]
 }

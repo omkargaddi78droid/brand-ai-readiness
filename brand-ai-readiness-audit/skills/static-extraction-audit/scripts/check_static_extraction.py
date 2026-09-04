@@ -36,6 +36,15 @@ Owns nine capabilities:
           this cannot verify whether a PDF's content is restated in HTML;
           it can only note that a PDF link exists and suggest restating key
           facts as real text. Never a defect finding for this reason.
+  REN-12  Concealed agent-directed instruction scanner — text a visitor
+          cannot see (hidden by CSS, an HTML comment, or embedded only in
+          JSON-LD/meta content) but a text extractor reads, carrying
+          imperative language addressed at an AI system. The opposite
+          direction of this skill's other checks: REN-02/04/10 detect facts
+          hidden *from machines* (present visually, missing from extracted
+          text); REN-12 detects text hidden *from humans* (present in
+          extracted text, invisible on screen) — this skill's stated concern
+          widens to cover both directions of the human/machine view gap.
 
 REN-03 (pagination/infinite scroll) and REN-09 (image-of-text facts) are
 NOT built here. REN-03's only static proxy — a "Load more"-shaped control
@@ -72,6 +81,7 @@ Emits one JSON object on stdout:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import ipaddress
 import json
 import re
@@ -91,7 +101,7 @@ from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E40
 
 OWNER_SKILL = "static-extraction-audit"
 CAPABILITY_IDS = [
-    "REN-01", "REN-02", "REN-04", "REN-05", "REN-06", "REN-07", "REN-08", "REN-10", "REN-11",
+    "REN-01", "REN-02", "REN-04", "REN-05", "REN-06", "REN-07", "REN-08", "REN-10", "REN-11", "REN-12",
 ]
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 FETCH_TIMEOUT_SECONDS = 10
@@ -836,6 +846,598 @@ def find_pdf_restatement_suggestion(pdf_links: list[str]) -> list[Finding]:
 
 
 # ---------------------------------------------------------------------------
+# REN-12 — Concealed agent-directed instruction scanner
+# ---------------------------------------------------------------------------
+#
+# This is a second, separate HTML parse building a lightweight DOM tree
+# (tag, attrs, children, parent pointer) — deliberately not `_PageParser`'s
+# flat single pass above. Concealment is inherently ancestor-aware (a node
+# with no `style` of its own is still invisible if its parent declares
+# `display:none`) and `<style>`-block rule matching needs to test arbitrary
+# nodes against arbitrary selectors after the whole page is known — neither
+# fits a single forward streaming pass the way `_PageParser`'s nine other
+# capabilities do. Highest complexity, highest false-positive risk in this
+# skill: the effective-visibility resolver below is deliberately
+# conservative throughout (no CSS cascade/specificity engine, no combinator/
+# pseudo-class selector support) — when a case is ambiguous, it stays
+# silent rather than guesses, per the plan's own explicit instruction.
+
+_REN12_VOID_TAGS = {
+    "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
+    "meta", "param", "source", "track", "wbr",
+}
+_REN12_EXCLUDED_TEXT_TAGS = {"code", "pre", "kbd", "samp"}
+_REN12_CONCEALMENT_STYLE_PROPS = {
+    "display", "visibility", "opacity", "font-size", "text-indent", "clip",
+    "width", "height", "position", "left", "top",
+}
+
+
+class _TextRun:
+    # Plain classes, not `@dataclasses.dataclass`, deliberately: this
+    # module is loaded elsewhere in this project via
+    # `importlib.util.spec_from_file_location` + `module_from_spec`
+    # without registering in `sys.modules` (this project's own test-loading
+    # convention, shared across every skill script) — Python 3.14's
+    # dataclasses machinery needs `sys.modules[cls.__module__]` to resolve
+    # a self-referential forward-reference annotation (`_ElementNode`'s own
+    # `parent` field) and raises `AttributeError` when that lookup returns
+    # `None`, which it does under that loading convention. A plain `__init__`
+    # sidesteps annotation resolution entirely.
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _CommentRun:
+    def __init__(self, text: str):
+        self.text = text
+
+
+class _ElementNode:
+    def __init__(self, tag: str, attrs: dict, children: list | None = None, parent: "_ElementNode | None" = None):
+        self.tag = tag
+        self.attrs = attrs
+        self.children = children if children is not None else []
+        self.parent = parent
+
+
+class _DomTreeParser(HTMLParser):
+    """Builds a lightweight DOM tree plus side-channels for `<style>` and
+    `<script>` bodies (never added as text-run children — their content is
+    not a human-visible text node, it is CSS/JS/JSON-LD source)."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.root = _ElementNode(tag="#root", attrs={}, children=[])
+        self._stack: list[_ElementNode] = [self.root]
+        self.style_blocks: list[str] = []
+        self.script_blocks: list[tuple[_ElementNode, str, str]] = []  # (node, type, text)
+        self._in_style = False
+        self._style_buffer: list[str] = []
+        self._in_script = False
+        self._script_type = ""
+        self._script_node: _ElementNode | None = None
+        self._script_buffer: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        self._open(tag, attrs, self_closing=False)
+
+    def handle_startendtag(self, tag, attrs):
+        self._open(tag, attrs, self_closing=True)
+
+    def _open(self, tag: str, attrs, self_closing: bool) -> None:
+        tag = tag.lower()
+        attr_dict = dict(attrs)
+        node = _ElementNode(tag=tag, attrs=attr_dict, children=[], parent=self._stack[-1])
+        self._stack[-1].children.append(node)
+
+        if tag == "style":
+            self._in_style = True
+            self._style_buffer = []
+        elif tag == "script":
+            self._in_script = True
+            self._script_type = (attr_dict.get("type") or "").strip().lower()
+            self._script_node = node
+            self._script_buffer = []
+
+        if not self_closing and tag not in _REN12_VOID_TAGS:
+            self._stack.append(node)
+
+    def handle_endtag(self, tag):
+        tag = tag.lower()
+        if tag == "style" and self._in_style:
+            self.style_blocks.append("".join(self._style_buffer))
+            self._in_style = False
+            self._style_buffer = []
+        elif tag == "script" and self._in_script:
+            self.script_blocks.append((self._script_node, self._script_type, "".join(self._script_buffer)))
+            self._in_script = False
+            self._script_type = ""
+            self._script_node = None
+            self._script_buffer = []
+        self._pop(tag)
+
+    def _pop(self, tag: str) -> None:
+        if len(self._stack) > 1 and self._stack[-1].tag == tag:
+            self._stack.pop()
+            return
+        for index in range(len(self._stack) - 1, 0, -1):
+            if self._stack[index].tag == tag:
+                del self._stack[index]
+                return
+
+    def handle_data(self, data):
+        if self._in_style:
+            self._style_buffer.append(data)
+            return
+        if self._in_script:
+            self._script_buffer.append(data)
+            return
+        self._stack[-1].children.append(_TextRun(text=data))
+
+    def handle_comment(self, data):
+        if self._in_style or self._in_script:
+            return
+        self._stack[-1].children.append(_CommentRun(text=data))
+
+
+def _dom_path(node: _ElementNode) -> str:
+    """A best-effort, non-normative DOM path (`body > main > div[3]`) for
+    evidence display only — never used for selector matching."""
+    segments: list[str] = []
+    current: _ElementNode | None = node
+    while current is not None and current.tag != "#root":
+        parent = current.parent
+        if parent is not None:
+            siblings = [c for c in parent.children if isinstance(c, _ElementNode) and c.tag == current.tag]
+            if len(siblings) > 1:
+                segments.append(f"{current.tag}[{siblings.index(current) + 1}]")
+            else:
+                segments.append(current.tag)
+        else:
+            segments.append(current.tag)
+        current = parent
+    segments.reverse()
+    return " > ".join(segments) or "(root)"
+
+
+def _parse_declarations(decl_text: str) -> dict[str, str]:
+    """`prop: value; prop2: value2` -> `{"prop": "value", ...}`, lower-cased.
+    Shared by inline `style="..."` attributes and `<style>` block rule
+    bodies — same syntax, same parser."""
+    declarations: dict[str, str] = {}
+    for decl in (decl_text or "").split(";"):
+        if ":" not in decl:
+            continue
+        prop, _, value = decl.partition(":")
+        declarations[prop.strip().lower()] = value.strip().lower()
+    return declarations
+
+
+_REN12_STYLE_RULE_RE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+
+
+def _strip_at_rule_blocks(css_text: str) -> str:
+    """Removes every `@media`/`@keyframes`/`@supports`/etc. block, including
+    its full nested content, via manual brace-depth matching — the flat
+    single-level `_REN12_STYLE_RULE_RE` below cannot itself skip a nested
+    block (it would otherwise match the *inner* rule directly, silently
+    dropping the `@media` condition it was written under, which is not the
+    conservative "never mis-apply a rule" behavior this scanner promises).
+    A malformed `@`-block with no matching `{` at all is left as a signal
+    to stop scanning further, rather than guess at a repair."""
+    out: list[str] = []
+    i, n = 0, len(css_text)
+    while i < n:
+        if css_text[i] == "@":
+            brace_start = css_text.find("{", i)
+            if brace_start == -1:
+                break
+            depth = 1
+            j = brace_start + 1
+            while j < n and depth > 0:
+                if css_text[j] == "{":
+                    depth += 1
+                elif css_text[j] == "}":
+                    depth -= 1
+                j += 1
+            i = j
+            continue
+        out.append(css_text[i])
+        i += 1
+    return "".join(out)
+
+
+def parse_style_rules(css_text: str) -> list[tuple[list[str], dict[str, str]]]:
+    """Extracts top-level `selector(s) { declarations }` rules from raw CSS
+    text, after `@`-rule blocks (`@media`, `@keyframes`, ...) have been
+    stripped out entirely by `_strip_at_rule_blocks`."""
+    rules: list[tuple[list[str], dict[str, str]]] = []
+    for match in _REN12_STYLE_RULE_RE.finditer(_strip_at_rule_blocks(css_text)):
+        selector_text = match.group(1).strip()
+        if not selector_text or "@" in selector_text:
+            continue
+        selectors = [s.strip() for s in selector_text.split(",") if s.strip()]
+        if not selectors:
+            continue
+        declarations = _parse_declarations(match.group(2))
+        if declarations:
+            rules.append((selectors, declarations))
+    return rules
+
+
+_REN12_SIMPLE_SELECTOR_RE = re.compile(r"^[a-zA-Z][a-zA-Z0-9-]*")
+_REN12_CLASS_RE = re.compile(r"\.([a-zA-Z0-9_-]+)")
+_REN12_ID_RE = re.compile(r"#([a-zA-Z0-9_-]+)")
+
+
+def _selector_matches(selector: str, node: _ElementNode) -> bool:
+    """Only simple and simple-compound selectors are supported (`div`,
+    `.hidden`, `#foo`, `div.hidden`) — no descendant/child/sibling
+    combinators, no pseudo-classes/elements. A selector this function
+    cannot parse never matches anything, the same conservative-by-design
+    disposition `parse_style_rules` already takes for `@`-rules."""
+    if any(ch in selector for ch in (" ", ">", "+", "~", ":")):
+        return False
+    tag_match = _REN12_SIMPLE_SELECTOR_RE.match(selector)
+    remainder = selector[tag_match.end():] if tag_match else selector
+    if tag_match and tag_match.group(0) != node.tag:
+        return False
+    classes = set(_REN12_CLASS_RE.findall(remainder))
+    node_classes = set((node.attrs.get("class") or "").split())
+    if classes and not classes.issubset(node_classes):
+        return False
+    id_match = _REN12_ID_RE.search(remainder)
+    if id_match and id_match.group(1) != (node.attrs.get("id") or ""):
+        return False
+    if not tag_match and not classes and not id_match:
+        return False
+    return True
+
+
+def _is_very_negative(value: str, threshold: float) -> bool:
+    match = re.match(r"^-?\d+(?:\.\d+)?", value.strip())
+    if not match:
+        return False
+    try:
+        return float(match.group(0)) <= threshold
+    except ValueError:
+        return False
+
+
+def _style_conceals(declarations: dict[str, str]) -> str | None:
+    """Returns the concealment technique name if `declarations` (already
+    resolved from either an inline `style` or a matching `<style>`-block
+    rule) declares any of the plan's named concealment properties, else
+    `None`."""
+    if declarations.get("display") == "none":
+        return "display:none"
+    if declarations.get("visibility") == "hidden":
+        return "visibility:hidden"
+    if declarations.get("opacity") in ("0", "0.0", "0%"):
+        return "opacity:0"
+    if declarations.get("font-size") in ("0", "0px", "0em", "0rem", "0%"):
+        return "font-size:0"
+    if _is_very_negative(declarations.get("text-indent", ""), -9999):
+        return "text-indent:-9999px"
+    if declarations.get("clip", "").replace(" ", "") in ("rect(0,0,0,0)", "rect(0px,0px,0px,0px)"):
+        return "clip:rect(0,0,0,0)"
+    if declarations.get("width") in ("0", "0px") or declarations.get("height") in ("0", "0px"):
+        return "zero-dimensions"
+    if declarations.get("position") == "absolute":
+        if _is_very_negative(declarations.get("left", ""), -1000) or _is_very_negative(
+            declarations.get("top", ""), -1000
+        ):
+            return "position:absolute;offscreen"
+    return None
+
+
+def _node_concealment(
+    node: _ElementNode, style_rules: list[tuple[list[str], dict[str, str]]]
+) -> tuple[bool, str | None, str | None]:
+    """Whether `node` is itself concealed (not counting inherited ancestor
+    concealment, handled separately by the caller), and by what technique/
+    rule. Checked in the plan's own order: `hidden` attribute,
+    `aria-hidden="true"`, inline style, then `<style>`-block rules (with
+    later matching rules overriding earlier same-property values — a
+    simplified, deliberately non-cascading approximation of "last rule
+    wins," per the plan's own "no cascade/specificity engine" instruction)."""
+    if "hidden" in node.attrs:
+        return True, "hidden-attribute", "the `hidden` attribute"
+    if (node.attrs.get("aria-hidden") or "").strip().lower() == "true":
+        return True, "aria-hidden", 'aria-hidden="true"'
+
+    inline = _parse_declarations(node.attrs.get("style") or "")
+    technique = _style_conceals(inline)
+    if technique:
+        return True, technique, f"the inline rule {(node.attrs.get('style') or '').strip()}"
+
+    resolved: dict[str, str] = {}
+    matched_selector = None
+    for selectors, declarations in style_rules:
+        if any(_selector_matches(sel, node) for sel in selectors):
+            resolved.update({k: v for k, v in declarations.items() if k in _REN12_CONCEALMENT_STYLE_PROPS})
+            matched_selector = ", ".join(selectors)
+    technique = _style_conceals(resolved)
+    if technique:
+        return True, technique, f"a <style> block rule ({matched_selector}) declaring {technique}"
+
+    return False, None, None
+
+
+def _flatten_descendant_text(node: _ElementNode) -> str:
+    """All text (and comment) content anywhere under `node`, skipping
+    `<code>`/`<pre>`/`<kbd>`/`<samp>` subtrees entirely — a blog post
+    *documenting* prompt injection inside a code sample must never
+    contribute to a concealed fragment's text."""
+    parts: list[str] = []
+
+    def _walk(current: _ElementNode) -> None:
+        for child in current.children:
+            if isinstance(child, _TextRun):
+                parts.append(child.text)
+            elif isinstance(child, _CommentRun):
+                parts.append(child.text)
+            elif isinstance(child, _ElementNode) and child.tag not in _REN12_EXCLUDED_TEXT_TAGS:
+                _walk(child)
+
+    _walk(node)
+    return " ".join(" ".join(parts).split())
+
+
+def find_concealed_fragments(
+    node: _ElementNode, style_rules: list[tuple[list[str], dict[str, str]]]
+) -> list[dict]:
+    """Walks the tree looking for the *outermost* concealed element on each
+    branch (a concealed element's entire subtree becomes one fragment —
+    a nested, more-specifically-hidden child inside an already-hidden
+    parent is not reported a second time), plus every `<meta content>`
+    value and every HTML comment found along the way. `<noscript>` is
+    deliberately given no special treatment here at all — it is not a skip
+    tag and nothing marks it concealed by virtue of being `<noscript>`;
+    the plan's own exclusion ("not concealment — visible to a human
+    without JS") is satisfied simply by never having written a rule that
+    would have flagged it."""
+    fragments: list[dict] = []
+    if node.tag in _REN12_EXCLUDED_TEXT_TAGS or node.tag in ("script", "style"):
+        return fragments
+
+    if node.tag == "meta":
+        content = (node.attrs.get("content") or "").strip()
+        if content:
+            fragments.append(
+                {
+                    "tag": "meta",
+                    "text": content,
+                    "technique": "meta-content",
+                    "concealment_rule": "a <meta> element (its `content` is never rendered to a page visitor)",
+                    "dom_path": _dom_path(node),
+                }
+            )
+        return fragments
+
+    concealed, technique, rule = _node_concealment(node, style_rules)
+    if concealed:
+        text = _flatten_descendant_text(node)
+        if text:
+            fragments.append(
+                {
+                    "tag": node.tag,
+                    "text": text,
+                    "technique": technique,
+                    "concealment_rule": rule,
+                    "dom_path": _dom_path(node),
+                }
+            )
+        return fragments
+
+    for child in node.children:
+        if isinstance(child, _ElementNode):
+            fragments.extend(find_concealed_fragments(child, style_rules))
+        elif isinstance(child, _CommentRun):
+            comment_text = " ".join(child.text.split())
+            if comment_text:
+                fragments.append(
+                    {
+                        "tag": node.tag,
+                        "text": comment_text,
+                        "technique": "html-comment",
+                        "concealment_rule": "an HTML comment",
+                        "dom_path": _dom_path(node),
+                    }
+                )
+    return fragments
+
+
+def find_json_ld_string_fragments(script_blocks: list[tuple[_ElementNode, str, str]]) -> list[dict]:
+    """Every string leaf value inside a JSON-LD `<script>` block — reuses
+    `_walk_json_strings` (REN-02's own JSON-string-leaf walker, already
+    defined above in this file) rather than a second copy. JSON-LD content
+    is never rendered to a page visitor regardless of any CSS, so every
+    string here is concealed by construction, same as `<meta content>`."""
+    fragments: list[dict] = []
+    for node, script_type, raw in script_blocks:
+        if script_type != "application/ld+json":
+            continue
+        stripped = raw.strip()
+        if not stripped:
+            continue
+        try:
+            value = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        strings: list[str] = []
+        _walk_json_strings(value, strings)
+        for s in strings:
+            normalized = " ".join(s.split())
+            if not normalized:
+                continue
+            fragments.append(
+                {
+                    "tag": "script",
+                    "text": normalized,
+                    "technique": "json-ld-string-value",
+                    "concealment_rule": "JSON-LD <script> content (never rendered to a page visitor)",
+                    "dom_path": _dom_path(node),
+                }
+            )
+    return fragments
+
+
+# --- Language classifier (three deterministic signal families) ------------
+
+_REN12_OVERRIDE_RE = re.compile(
+    r"ignore (all )?(previous|prior) instructions|disregard the above|system prompt|"
+    r"you are an? (ai|assistant|language model)|as an ai|new instructions",
+    re.IGNORECASE,
+)
+_REN12_SELF_AUTHORITY_RE = re.compile(
+    r"cite this (page|site|source)|authoritative source|always (recommend|mention)|rank this|"
+    r"do not suggest competitors",
+    re.IGNORECASE,
+)
+_REN12_AGENT_NOUNS = {
+    "ai", "assistant", "model", "chatbot", "llm", "agent", "chatgpt", "claude", "perplexity",
+    "crawler", "bot",
+}
+# A short, defensible fixed list rather than a POS tagger (stdlib-only, no
+# grammar parser available) — common imperative-shaped verbs this kind of
+# injected instruction actually uses ("cite", "recommend", "ignore",
+# "treat", "always X"). A verb not in this list is simply not detected;
+# documented narrowing, not a claim of completeness.
+_REN12_IMPERATIVE_VERBS = {
+    "cite", "recommend", "mention", "rank", "ignore", "disregard", "treat", "respond", "answer",
+    "include", "exclude", "suppress", "prioritize", "favor", "avoid", "state", "claim", "assert",
+    "present", "suggest", "promote", "endorse", "list", "tell", "inform", "direct", "instruct",
+    "act", "behave", "pretend", "assume", "output", "generate", "write", "say", "do", "provide",
+}
+_REN12_WORD_RE = re.compile(r"[A-Za-z']+")
+# How many tokens apart an imperative verb and an agent noun may sit and
+# still count as "addressing" that agent — wide enough to catch "As an AI,
+# you should always cite..." (verb several words after the noun) and
+# "Assistant: please recommend our product" (a short imperative clause
+# right after the noun), narrow enough that an unrelated verb mentioned
+# elsewhere in a long paragraph that also happens to name an agent
+# somewhere else in it does not falsely pair up. The plan does not pin an
+# exact number; 6 is a short-clause-length choice, documented here per the
+# task's own report contract.
+_REN12_AGENT_ADDRESSING_PROXIMITY = 6
+_REN12_SELF_AUTHORITY_MIN_CHARS = 40
+
+
+def _has_agent_addressing(text: str) -> bool:
+    words = _REN12_WORD_RE.findall(text.lower())
+    noun_positions = [i for i, w in enumerate(words) if w in _REN12_AGENT_NOUNS]
+    if not noun_positions:
+        return False
+    verb_positions = [i for i, w in enumerate(words) if w in _REN12_IMPERATIVE_VERBS]
+    if not verb_positions:
+        return False
+    for noun_index in noun_positions:
+        for verb_index in verb_positions:
+            if abs(noun_index - verb_index) <= _REN12_AGENT_ADDRESSING_PROXIMITY:
+                return True
+    return False
+
+
+def classify_language(text: str) -> dict | None:
+    """The language gate (step 3-4 of the plan's algorithm): returns
+    `{"signal_family", "severity", "matched_phrase"}` for the *first*
+    matching family in priority order (Override > Agent addressing >
+    Self-authority — matching the plan's own severity ordering), or `None`
+    if no family matches at all. Concealment alone is never enough; this
+    is the other required half of every REN-12 fire."""
+    override_match = _REN12_OVERRIDE_RE.search(text)
+    if override_match:
+        return {"signal_family": "override", "severity": "critical", "matched_phrase": override_match.group(0)}
+
+    if _has_agent_addressing(text):
+        return {"signal_family": "agent-addressing", "severity": "high", "matched_phrase": text[:120]}
+
+    authority_match = _REN12_SELF_AUTHORITY_RE.search(text)
+    if authority_match and len(text) >= _REN12_SELF_AUTHORITY_MIN_CHARS:
+        return {"signal_family": "self-authority", "severity": "medium", "matched_phrase": authority_match.group(0)}
+
+    return None
+
+
+_REN12_MAX_FINDINGS = 5
+_REN12_MAX_EVIDENCE_TEXT_CHARS = 300
+_REN12_SEVERITY_RANK = {"critical": 0, "high": 1, "medium": 2}
+
+
+def find_concealed_agent_instructions(html: str) -> list[Finding]:
+    parser = _DomTreeParser()
+    parser.feed(html)
+    parser.close()
+
+    style_rules: list[tuple[list[str], dict[str, str]]] = []
+    for block in parser.style_blocks:
+        style_rules.extend(parse_style_rules(block))
+
+    fragments = find_concealed_fragments(parser.root, style_rules)
+    fragments.extend(find_json_ld_string_fragments(parser.script_blocks))
+
+    hits: list[dict] = []
+    for fragment in fragments:
+        classification = classify_language(fragment["text"])
+        if classification is None:
+            continue
+        hits.append({**fragment, **classification})
+
+    if not hits:
+        return []
+
+    hits.sort(key=lambda h: _REN12_SEVERITY_RANK.get(h["severity"], 99))
+    findings: list[Finding] = []
+    for hit in hits[:_REN12_MAX_FINDINGS]:
+        concealed_text = hit["text"]
+        display_text = (
+            concealed_text if len(concealed_text) <= _REN12_MAX_EVIDENCE_TEXT_CHARS
+            else concealed_text[:_REN12_MAX_EVIDENCE_TEXT_CHARS - 3] + "..."
+        )
+        node_id = hashlib.sha256(f"{hit['dom_path']}|{hit['technique']}|{concealed_text}".encode()).hexdigest()[:8]
+
+        findings.append(
+            Finding(
+                id=f"REN-12-concealed-agent-instruction-{node_id}",
+                title="Concealed text carries an instruction addressed at an AI system",
+                severity=hit["severity"],
+                evidence=(
+                    f"A <{hit['tag']}> at {hit['dom_path']} is concealed by {hit['concealment_rule']}. "
+                    f"It is invisible to a visitor and fully readable by any text extractor. Its "
+                    f"content reads: '{display_text}'"
+                ),
+                suggested_action=SuggestedAction(
+                    summary="Remove this concealed text, or if it is a legitimate accessibility pattern, confirm it carries no agent-directed instruction language.",
+                    priority=hit["severity"] if hit["severity"] != "critical" else "critical",
+                ),
+                category="discoverability",
+                capability_id="REN-12",
+                owner_skill=OWNER_SKILL,
+                mechanism=(
+                    "Indirect prompt injection: text invisible to a human visitor but present in the "
+                    "page's own static HTML is read by any text extractor, retrieval pipeline, or "
+                    "autonomous agent that fetches the page, and can steer its output toward the "
+                    "injected instruction — independently documented in the wild by Zscaler ThreatLabz, "
+                    "Unit 42, Forcepoint X-Labs, and Brave's red-team work on Perplexity Comet."
+                ),
+                gate=2,
+                confidence="high",
+                structured_evidence={
+                    "dom_path": hit["dom_path"],
+                    "concealment_technique": hit["technique"],
+                    "concealment_rule": hit["concealment_rule"],
+                    "matched_phrase": hit["matched_phrase"],
+                    "signal_family": hit["signal_family"],
+                    "concealed_text": display_text,
+                },
+            )
+        )
+    return findings
+
+
+# ---------------------------------------------------------------------------
 # Orchestration
 # ---------------------------------------------------------------------------
 
@@ -866,7 +1468,8 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
         + find_missing_alt_text(parsed["images"])
         + find_missing_media_tracks(parsed["media_results"])
         + find_nap_script_only_phone(parsed["script_text"], parsed["visible_text"])
-        + find_pdf_restatement_suggestion(parsed["pdf_links"]),
+        + find_pdf_restatement_suggestion(parsed["pdf_links"])
+        + find_concealed_agent_instructions(html),
         page_url,
     )
 

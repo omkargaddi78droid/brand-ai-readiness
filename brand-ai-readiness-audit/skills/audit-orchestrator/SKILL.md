@@ -237,7 +237,7 @@ composition bug.
 | `engagement-audit` | EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (agent-judged) · EN-06 interstitial/consent-wall friction · EN-09 autonomous-agent usability | none — engagement, not gated | Once per sampled page |
 | `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per sampled page |
 | `retrieval-readiness-audit` | RET-01/04/07/08/09/10 (script), RET-02/03/05/06 (agent-judged) | 3 | Once per sampled page |
-| `static-extraction-audit` | REN-02 hydration-state coverage · REN-04 price-render gating · REN-05 availability freshness · REN-06 semantic HTML5 boundary · REN-07 content ratio · REN-08 multimodal accessibility · REN-10 NAP render asymmetry (phone) · REN-11 PDF-only fact lock (proactive) — all script-decided, no headless browser | 2 | Once per sampled page |
+| `static-extraction-audit` | REN-02 hydration-state coverage · REN-04 price-render gating · REN-05 availability freshness · REN-06 semantic HTML5 boundary · REN-07 content ratio · REN-08 multimodal accessibility · REN-10 NAP render asymmetry (phone) · REN-11 PDF-only fact lock (proactive) · REN-12 concealed agent-directed instruction scanner — all script-decided, no headless browser | 2 | Once per sampled page |
 
 ## Output
 
