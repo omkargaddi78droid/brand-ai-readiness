@@ -81,7 +81,9 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 from finding_contract import Finding, SEVERITIES, SuggestedAction, UnknownCheck  # noqa: E402
 
 OWNER_SKILL = "perimeter-access-audit"
-CAPABILITY_IDS = ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09"]
+CAPABILITY_IDS = [
+    "PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09", "PER-10",
+]
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 FETCH_TIMEOUT_SECONDS = 10
 EDGE_PROBE_DELAY_SECONDS = 0.3
@@ -1055,6 +1057,132 @@ def evaluate_md_negotiation(text: str | None, status: str) -> tuple[list[Finding
 
 
 # ---------------------------------------------------------------------------
+# PER-10 — RFC 9727 API catalog discovery
+# ---------------------------------------------------------------------------
+
+
+def _parse_api_catalog(text: str) -> tuple[list[dict] | None, list[str]]:
+    """Parse an api-catalog body against RFC 9727 §3's `linkset` shape.
+
+    Returns (entries, problems). `entries` is None when the document is not
+    even a linkset object at all (invalid JSON, or no top-level `linkset`
+    array) — there is nothing further to check. A non-None `entries` with a
+    non-empty `problems` list means the document parsed but individual
+    entries are missing the RFC's two required-in-practice fields.
+    """
+    try:
+        parsed = json.loads(text or "")
+    except (json.JSONDecodeError, TypeError, ValueError):
+        return None, ["response body is not valid JSON"]
+
+    if not isinstance(parsed, dict):
+        return None, ["response body is not a JSON object"]
+
+    linkset = parsed.get("linkset")
+    if not isinstance(linkset, list) or not linkset:
+        return None, ['no top-level "linkset" array (RFC 9727 §3)']
+
+    entries = [e for e in linkset if isinstance(e, dict)]
+    if not entries:
+        return None, ['"linkset" array contains no object entries']
+
+    problems: list[str] = []
+    missing_anchor = sum(1 for e in entries if not e.get("anchor"))
+    missing_service_desc = sum(1 for e in entries if not e.get("service-desc"))
+    if missing_anchor:
+        problems.append(f'{missing_anchor} linkset entry(ies) missing required "anchor"')
+    if missing_service_desc:
+        problems.append(f'{missing_service_desc} linkset entry(ies) missing "service-desc"')
+    return entries, problems
+
+
+def evaluate_api_catalog(
+    text: str | None, headers: dict[str, str] | None, status: str
+) -> tuple[list[Finding], list[UnknownCheck]]:
+    """RFC 9727's `/.well-known/api-catalog`: a machine-readable index of a
+    site's API surface (OpenAPI specs, Agent-to-Agent cards) via
+    `application/linkset+json`. Unlike llms.txt/`.md` negotiation, a
+    published-but-wrong response is treated as a defect, not a suggestion —
+    the RFC fixes the path and the media type exactly, so there is no
+    judgement call in "this Content-Type does not match" the way there is
+    in "this llms.txt could be better organized"."""
+    if status == "unavailable":
+        reason = text or "api-catalog could not be checked"
+        return [], [UnknownCheck("PER-10", OWNER_SKILL, reason)]
+
+    if status == "absent":
+        return [], []  # a 2024 RFC with no adoption pressure yet; absence is not worth a suggestion
+
+    if status == "present" and _looks_like_html(text or ""):
+        # A same-origin soft-404 (an SPA's client-side-routing catch-all
+        # answering every unmatched path with its index page, HTTP 200) is
+        # not evidence anyone attempted this RFC — the dominant false
+        # positive here would otherwise be "every site that hasn't adopted
+        # a 2024 RFC yet" flagged as serving the wrong Content-Type.
+        return [], []
+
+    content_type = (headers or {}).get("content-type", "")
+    if "application/linkset+json" not in content_type.lower():
+        return [
+            Finding(
+                id="PER-10-api-catalog-wrong-content-type",
+                title="api-catalog is served with the wrong Content-Type",
+                severity="low",
+                evidence=(
+                    f"GET /.well-known/api-catalog returned Content-Type "
+                    f"{content_type!r}, not the RFC 9727-required application/linkset+json."
+                ),
+                suggested_action=SuggestedAction(
+                    summary="Serve /.well-known/api-catalog with Content-Type: application/linkset+json.",
+                    priority="low",
+                    details="Agent-to-Agent and API-discovery tooling that checks Content-Type strictly will not recognize this as a valid catalog even though the path exists.",
+                ),
+                category="discoverability",
+                capability_id="PER-10",
+                owner_skill=OWNER_SKILL,
+                mechanism=(
+                    "RFC 9727 fixes both the well-known path and the media type. A response at "
+                    "the right path with the wrong Content-Type is unambiguously non-compliant, "
+                    "not a style choice."
+                ),
+                track="defect",
+                gate=1,
+                confidence="high",
+            )
+        ], []
+
+    entries, problems = _parse_api_catalog(text or "")
+    if entries is None or problems:
+        detail = "; ".join(problems) if problems else "unparseable linkset document"
+        return [
+            Finding(
+                id="PER-10-api-catalog-malformed",
+                title="api-catalog does not follow the RFC 9727 linkset structure",
+                severity="low",
+                evidence=f"/.well-known/api-catalog is served as application/linkset+json but {detail}.",
+                suggested_action=SuggestedAction(
+                    summary='Structure the body as {"linkset": [{"anchor": "<api base url>", "service-desc": [...]}]} per RFC 9727 §3.',
+                    priority="low",
+                    details="A present-but-malformed catalog is worse than a missing one — it signals support the site does not actually provide to anything that tries to parse it.",
+                ),
+                category="discoverability",
+                capability_id="PER-10",
+                owner_skill=OWNER_SKILL,
+                mechanism=(
+                    "Each linkset entry needs `anchor` (the described API's base URL) and "
+                    "`service-desc` (links to its machine-readable description, e.g. an OpenAPI "
+                    "document) to be usable by anything that consumes this catalog."
+                ),
+                track="defect",
+                gate=1,
+                confidence="high",
+            )
+        ], []
+
+    return [], []
+
+
+# ---------------------------------------------------------------------------
 # PER-08 — AI-discoverability of the sitemap itself
 # ---------------------------------------------------------------------------
 
@@ -1888,6 +2016,9 @@ def audit(
     page_results: list[dict] | None = None,
     tdmrep_data: dict | None = None,
     tdmrep_status: str = "unavailable",
+    api_catalog_text: str | None = None,
+    api_catalog_headers: dict[str, str] | None = None,
+    api_catalog_status: str = "unavailable",
 ) -> dict:
     """PER-05/06/07/08/09 default to "unavailable" (or, for `page_results`,
     empty): a caller that only passes robots/llms (every test written before
@@ -1917,6 +2048,9 @@ def audit(
         tdmrep_data,
         tdmrep_status,
     )
+    api_catalog_findings, api_catalog_unknown = evaluate_api_catalog(
+        api_catalog_text, api_catalog_headers, api_catalog_status
+    )
 
     findings = (
         robots_findings
@@ -1927,6 +2061,7 @@ def audit(
         + sitemap_disc_findings
         + llms_sitemap_findings
         + contradiction_findings
+        + api_catalog_findings
     )
     unknowns = (
         robots_unknown
@@ -1937,6 +2072,7 @@ def audit(
         + sitemap_disc_unknown
         + llms_sitemap_unknown
         + contradiction_unknown
+        + api_catalog_unknown
     )
     return {
         "owner_skill": OWNER_SKILL,
@@ -1976,6 +2112,15 @@ def main(argv: list[str] | None = None) -> int:
         "--tdmrep-file", help="Read /.well-known/tdmrep.json from a local file instead of fetching"
     )
     parser.add_argument("--tdmrep-absent", action="store_true", help="Treat tdmrep.json as a 404")
+    parser.add_argument(
+        "--api-catalog-file", help="Read /.well-known/api-catalog's body from a local file instead of fetching"
+    )
+    parser.add_argument("--api-catalog-absent", action="store_true", help="Treat api-catalog as a 404")
+    parser.add_argument(
+        "--api-catalog-content-type",
+        default="application/linkset+json",
+        help="Content-Type to assume for --api-catalog-file (a live fetch reads the real header)",
+    )
     parser.add_argument(
         "--page-url",
         action="append",
@@ -2080,6 +2225,19 @@ def main(argv: list[str] | None = None) -> int:
     else:
         tdmrep_data, tdmrep_status = None, "unavailable"
 
+    if args.api_catalog_file:
+        api_catalog_text = Path(args.api_catalog_file).read_text(encoding="utf-8", errors="replace")
+        api_catalog_headers = {"content-type": args.api_catalog_content_type}
+        api_catalog_status = "present"
+    elif args.api_catalog_absent:
+        api_catalog_text, api_catalog_headers, api_catalog_status = None, {}, "absent"
+    elif args.url:
+        api_catalog_text, api_catalog_headers, api_catalog_status = fetch_page_with_headers(
+            base_url(args.url) + "/.well-known/api-catalog"
+        )
+    else:
+        api_catalog_text, api_catalog_headers, api_catalog_status = None, {}, "unavailable"
+
     output = audit(
         site,
         robots_text,
@@ -2095,6 +2253,9 @@ def main(argv: list[str] | None = None) -> int:
         page_results,
         tdmrep_data,
         tdmrep_status,
+        api_catalog_text,
+        api_catalog_headers,
+        api_catalog_status,
     )
 
     if not args.url:

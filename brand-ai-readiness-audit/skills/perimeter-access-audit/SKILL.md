@@ -7,9 +7,10 @@ description: >
   is disallowed at the root; CDN/WAF edge blocking that diverges from what
   robots.txt permits; llms.txt and llms-full.txt presence and validity;
   sitemap.xml discovery, validity and its discoverability from robots.txt;
-  Markdown content negotiation; and whether the site's own access
-  declarations agree with each other across robots.txt, response headers,
-  meta tags, TDMRep, llms.txt and sitemap.xml. Use when a brand is absent
+  Markdown content negotiation; RFC 9727 API catalog presence and validity;
+  and whether the site's own access declarations agree with each other
+  across robots.txt, response headers, meta tags, TDMRep, llms.txt and
+  sitemap.xml. Use when a brand is absent
   from AI-assistant answers, when a site with good content is never cited, or
   as the first gate of a wider AI-readiness audit — a perimeter block makes
   every downstream content finding moot. Not for anything past gate 1:
@@ -39,14 +40,15 @@ site, and does it publish a machine-readable index?*
   PER-03 does not run in this mode — it needs a live target — and is reported
   `unknown` for that reason.
 
-No credentials, no authenticated paths, no crawl. Five GETs to well-known
+No credentials, no authenticated paths, no crawl. Six GETs to well-known
 files/paths (`robots.txt`, `llms.txt`, `llms-full.txt`, `sitemap.xml`, the
-page's `.md` variant), two more for PER-09 (the root page with its response
-headers, `/.well-known/tdmrep.json`), plus up to four more in `--url` mode
-for PER-03 (one reachability control, one per bot tier, fewer whenever
-robots.txt already covers a tier) — eleven requests worst case, still
-comfortably inside the 5-minute audit budget. Each repeated `--page-url`
-widens PER-09's header/meta comparison by one more GET.
+page's `.md` variant, `/.well-known/api-catalog` for PER-10), two more for
+PER-09 (the root page with its response headers, `/.well-known/tdmrep.json`),
+plus up to four more in `--url` mode for PER-03 (one reachability control,
+one per bot tier, fewer whenever robots.txt already covers a tier) — twelve
+requests worst case, still comfortably inside the 5-minute audit budget.
+Each repeated `--page-url` widens PER-09's header/meta comparison by one
+more GET.
 
 ## Procedure
 
@@ -59,12 +61,14 @@ widens PER-09's header/meta comparison by one more GET.
    For a fixture or an already-fetched file, pass `--site example.com
    --robots-file PATH --llms-file PATH [--llms-full-file PATH]
    [--sitemap-file PATH] [--md-file PATH] [--headers-file PATH]
-   [--tdmrep-file PATH]` instead — this skips PER-03. `--headers-file` points
-   at a JSON file (`{"url": ..., "headers": {...}, "html": "..."}`) standing
-   in for the root page PER-09 would otherwise fetch. Use `--*-absent`
+   [--tdmrep-file PATH] [--api-catalog-file PATH]` instead — this skips
+   PER-03. `--headers-file` points at a JSON file
+   (`{"url": ..., "headers": {...}, "html": "..."}`) standing in for the
+   root page PER-09 would otherwise fetch. Use `--*-absent`
    (`--robots-absent`, `--llms-absent`, `--llms-full-absent`,
-   `--sitemap-absent`, `--md-absent`, `--tdmrep-absent`) to represent a 404
-   for any of them, `--page-url URL` (repeatable) to widen PER-09's
+   `--sitemap-absent`, `--md-absent`, `--tdmrep-absent`,
+   `--api-catalog-absent`) to represent a 404 for any of them, `--page-url
+   URL` (repeatable) to widen PER-09's
    header/meta comparison beyond the root page in live `--url` mode, and
    `--no-edge-probe` to run live but skip PER-03's extra requests. See
    `--help` for the full flag list.
@@ -77,7 +81,7 @@ widens PER-09's header/meta comparison by one more GET.
 3. Hand the `findings` and `unknown_checks` arrays to the entrypoint skill
    unchanged. This skill does not build reports and does not renumber findings.
 
-4. If step 1 exits non-zero or emits no parseable JSON, report all nine
+4. If step 1 exits non-zero or emits no parseable JSON, report all ten
    capabilities as unknown with the error text. Never substitute a judgement
    for a check that did not run.
 
@@ -98,6 +102,7 @@ widens PER-09's header/meta comparison by one more GET.
 | PER-07 | Markdown content negotiation | Requesting `<path>.md` (or `/index.md` for the root) does not return a real Markdown/text variant — a 404, or an HTML soft-404 |
 | PER-08 | Sitemap discoverability | A sitemap exists (PER-06 confirms this) but robots.txt has no `Sitemap:` directive pointing to it; or llms.txt (curated, PER-04) links a same-host page the sitemap doesn't know about — the reverse (sitemap has more URLs than the curated llms.txt) is the intended pattern, not a defect. A `<sitemapindex>` sitemap reports `unknown` rather than a fabricated comparison, since this project doesn't recurse into sub-sitemaps |
 | PER-09 | Cross-layer access-signal contradiction | The site's own access declarations disagree across robots.txt, `X-Robots-Tag`, `<meta name="robots">`, TDMRep, llms.txt and sitemap.xml — see below |
+| PER-10 | RFC 9727 API catalog | `/.well-known/api-catalog` is served with the wrong `Content-Type` (not `application/linkset+json`), or its body does not follow the RFC's `linkset` structure (missing `anchor`/`service-desc`). Absence alone is not flagged — a 2024 RFC with essentially no adoption yet |
 
 Three tiers, because a block on one means something different from a block on
 another. Real-time AI search crawlers are the citation path and rate as
@@ -188,7 +193,7 @@ One JSON object on stdout:
 ```json
 {
   "owner_skill": "perimeter-access-audit",
-  "capability_ids": ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09"],
+  "capability_ids": ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09", "PER-10"],
   "site": "example.com",
   "findings": [
     {
@@ -229,7 +234,8 @@ always a counted observation naming the exact agents, never an adjective.
 | The ordinary-browser control request itself fails, times out, or gets challenged | PER-03 `unknown`, whole check — an AI-bot-specific block cannot be distinguished from the origin being generally unreachable or universally challenged |
 | An edge probe returns a status that names no deliberate access decision (5xx, 3xx, other 4xx) | PER-03 `unknown` for that tier, not a finding — asserting a block from an ambiguous status would be a false positive of severity |
 | No `--url` given (offline/fixture mode) | PER-03 `unknown`: it needs a live target |
-| `llms.txt` / `llms-full.txt` / `sitemap.xml` / the `.md` variant unreachable | `unknown` for that capability specifically (PER-04/05/06/07) |
+| `llms.txt` / `llms-full.txt` / `sitemap.xml` / the `.md` variant / `api-catalog` unreachable | `unknown` for that capability specifically (PER-04/05/06/07/10) |
+| `/.well-known/api-catalog` answers with an SPA's client-side-routing catch-all page (HTML, HTTP 200) | No finding — treated the same as a confirmed 404, since a 2024 RFC with near-zero adoption makes "returns the site's normal fallback page" far more likely than "attempted this and got the media type wrong" |
 | `sitemap.xml`'s status could not be determined at all | PER-08 `unknown` — distinct from a *confirmed-absent* sitemap, which PER-08 correctly stays silent on since PER-06 already covers it |
 | The optional accelerator package is absent or errors | Identical result. The built-in taxonomy is the working implementation; the accelerator can only widen the agent list |
 | `robots.txt` unavailable | PER-09 `unknown` too — every one of its five rules reads robots.txt groups in some form, so there is nothing to compare |

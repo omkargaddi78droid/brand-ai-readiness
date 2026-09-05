@@ -108,6 +108,7 @@ class MultiSkillMultiPageCompositionTests(unittest.TestCase):
             llms_full_status="absent",
             sitemap_status="absent",
             md_status="absent",
+            api_catalog_status="absent",
         )
         page1_out = content_quality.audit_text(
             "example.com", _PAGE_1_TEXT, page_url="https://example.com/pricing"
@@ -222,6 +223,7 @@ class UnresolvedJudgementAlongsideCleanSkillsTests(unittest.TestCase):
             llms_full_status="absent",
             sitemap_status="absent",
             md_status="absent",
+            api_catalog_status="absent",
         )
         entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
         page_out = content_quality.audit_text(

@@ -70,14 +70,14 @@ def run_case(case: dict) -> dict:
     )
 
     expected_unknown = sorted(case["expected_unknown"])
-    # This corpus predates PER-05/06/07/08 and supplies no llms-full.txt/
-    # sitemap.xml/.md inputs at all, so `audit()` correctly reports those as
-    # `unknown` on every case via its documented default — see `audit()`'s
-    # docstring. That is accurate, not a regression in what this corpus was
-    # built to measure (robots.txt/llms.txt behaviour), so it is filtered
-    # out here rather than forcing 23 unrelated fixture cases to grow inputs
-    # for capabilities they were never designed to exercise.
-    UNMEASURED_BY_THIS_CORPUS = {"PER-05", "PER-06", "PER-07", "PER-08"}
+    # This corpus predates PER-05/06/07/08/10 and supplies no llms-full.txt/
+    # sitemap.xml/.md/api-catalog inputs at all, so `audit()` correctly
+    # reports those as `unknown` on every case via its documented default —
+    # see `audit()`'s docstring. That is accurate, not a regression in what
+    # this corpus was built to measure (robots.txt/llms.txt behaviour), so
+    # it is filtered out here rather than forcing 23 unrelated fixture cases
+    # to grow inputs for capabilities they were never designed to exercise.
+    UNMEASURED_BY_THIS_CORPUS = {"PER-05", "PER-06", "PER-07", "PER-08", "PER-10"}
     emitted_unknown = sorted(
         {
             entry["capability_id"]

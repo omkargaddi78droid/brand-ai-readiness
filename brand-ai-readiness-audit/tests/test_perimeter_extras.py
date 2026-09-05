@@ -297,19 +297,22 @@ class ContractComplianceTests(unittest.TestCase):
             self.assertEqual(restored.owner_skill, "perimeter-access-audit")
             self.assertEqual(restored.gate, 1)
 
-    def test_capability_ids_include_all_nine(self):
+    def test_capability_ids_include_all_ten(self):
         self.assertEqual(
             per.CAPABILITY_IDS,
-            ["PER-01", "PER-02", "PER-03", "PER-04", "PER-05", "PER-06", "PER-07", "PER-08", "PER-09"],
+            [
+                "PER-01", "PER-02", "PER-03", "PER-04", "PER-05",
+                "PER-06", "PER-07", "PER-08", "PER-09", "PER-10",
+            ],
         )
 
     def test_audit_defaults_the_new_capabilities_to_an_honest_unknown(self):
-        """A caller that predates PER-05/06/07/08 (every test written before
-        this cycle) must not have those capabilities silently fabricated as
-        a pass — they should surface as unknown."""
+        """A caller that predates PER-05/06/07/08/10 (every test written
+        before those cycles) must not have those capabilities silently
+        fabricated as a pass — they should surface as unknown."""
         output = per.audit("example.com", "User-agent: *\nDisallow:\n", "present", None, "absent")
         unknown_ids = {u["capability_id"] for u in output["unknown_checks"]}
-        self.assertEqual(unknown_ids, {"PER-05", "PER-06", "PER-07", "PER-08"})
+        self.assertEqual(unknown_ids, {"PER-05", "PER-06", "PER-07", "PER-08", "PER-10"})
 
     def test_audit_wires_all_four_new_capabilities_when_given_inputs(self):
         output = per.audit(
