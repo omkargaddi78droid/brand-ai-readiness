@@ -802,5 +802,128 @@ class SsrfGuardTests(unittest.TestCase):
         self.assertFalse(ent.is_public_host("10.0.0.5"))
 
 
+class ExtractOutboundLinksTests(unittest.TestCase):
+    def test_a_relative_link_is_resolved_against_the_page_url(self):
+        html = '<a href="/support">Support</a>'
+        links = ent.extract_outbound_links(html, "https://acmewidgets.com/pricing")
+        self.assertEqual(links, ["https://acmewidgets.com/support"])
+
+    def test_an_absolute_link_is_kept_as_is(self):
+        html = '<a href="https://acme.zendesk.com/help/hc">Help Center</a>'
+        links = ent.extract_outbound_links(html, "https://acmewidgets.com/")
+        self.assertEqual(links, ["https://acme.zendesk.com/help/hc"])
+
+    def test_mailto_tel_and_javascript_hrefs_are_dropped(self):
+        html = (
+            '<a href="mailto:hi@acmewidgets.com">Email</a>'
+            '<a href="tel:+15551234567">Call</a>'
+            '<a href="javascript:void(0)">Nothing</a>'
+        )
+        self.assertEqual(ent.extract_outbound_links(html, "https://acmewidgets.com/"), [])
+
+    def test_a_fragment_only_href_is_dropped(self):
+        html = '<a href="#section-2">Jump</a>'
+        self.assertEqual(ent.extract_outbound_links(html, "https://acmewidgets.com/"), [])
+
+
+class BrandTokenTests(unittest.TestCase):
+    def test_extracts_the_first_label_of_the_registrable_domain(self):
+        self.assertEqual(ent._brand_token("acmewidgets.com"), "acmewidgets")
+
+    def test_works_with_a_leading_www_subdomain(self):
+        self.assertEqual(ent._brand_token("www.acmewidgets.com"), "acmewidgets")
+
+
+class FindServiceDomainCandidatesTests(unittest.TestCase):
+    def test_a_recurring_brand_named_service_domain_is_a_candidate(self):
+        page_links = {
+            "https://acme.com/": ["https://acme.zendesk.com/help/hc"],
+            "https://acme.com/pricing": ["https://acme.zendesk.com/help/pricing-faq"],
+        }
+        candidates = ent.find_service_domain_candidates("acme.com", page_links)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["domain"], "zendesk.com")
+        self.assertEqual(len(candidates[0]["source_pages"]), 2)
+
+    def test_a_single_occurrence_across_only_one_page_is_not_a_candidate(self):
+        # Dominant false positive #1: a one-off footer link is not a
+        # site-wide "we outsourced our support" pattern.
+        page_links = {"https://acme.com/": ["https://acme.zendesk.com/help/hc"]}
+        self.assertEqual(ent.find_service_domain_candidates("acme.com", page_links), [])
+
+    def test_a_recurring_link_with_no_brand_token_is_not_a_candidate(self):
+        # Dominant false positive #2: a popular, genuinely unrelated
+        # third-party tool linked from every page (a payment processor, a
+        # generic status-page host) is not evidence of unattributed
+        # ownership just because it recurs.
+        page_links = {
+            "https://acme.com/": ["https://status.io/"],
+            "https://acme.com/pricing": ["https://status.io/history"],
+        }
+        self.assertEqual(ent.find_service_domain_candidates("acme.com", page_links), [])
+
+    def test_a_recurring_brand_named_link_with_no_service_keyword_is_not_a_candidate(self):
+        page_links = {
+            "https://acme.com/": ["https://acme.example-blog.com/"],
+            "https://acme.com/pricing": ["https://acme.example-blog.com/posts"],
+        }
+        self.assertEqual(ent.find_service_domain_candidates("acme.com", page_links), [])
+
+    def test_a_same_registrable_domain_subdomain_is_never_a_candidate(self):
+        # "support.acme.com" is the same entity as "acme.com" already —
+        # nothing cross-domain to attribute.
+        page_links = {
+            "https://acme.com/": ["https://support.acme.com/"],
+            "https://acme.com/pricing": ["https://support.acme.com/faq"],
+        }
+        self.assertEqual(ent.find_service_domain_candidates("acme.com", page_links), [])
+
+    def test_duplicate_links_on_the_same_page_count_as_one_source_page(self):
+        page_links = {
+            "https://acme.com/": [
+                "https://acme.zendesk.com/help/hc",
+                "https://acme.zendesk.com/help/other-article",
+            ],
+            "https://acme.com/pricing": ["https://acme.zendesk.com/help/hc"],
+        }
+        candidates = ent.find_service_domain_candidates("acme.com", page_links)
+        self.assertEqual(len(candidates[0]["source_pages"]), 2)
+
+
+class BridgesBackToSiteTests(unittest.TestCase):
+    def test_a_same_as_reference_to_the_site_counts_as_a_bridge(self):
+        nodes = [{"@type": "Organization", "name": "Acme", "sameAs": ["https://acmewidgets.com/"]}]
+        self.assertTrue(ent._bridges_back_to_site(nodes, "acmewidgets.com"))
+
+    def test_a_url_field_referencing_the_site_counts_as_a_bridge(self):
+        nodes = [{"@type": "Organization", "url": "https://acmewidgets.com/"}]
+        self.assertTrue(ent._bridges_back_to_site(nodes, "acmewidgets.com"))
+
+    def test_no_reference_to_the_site_is_not_a_bridge(self):
+        nodes = [{"@type": "Organization", "name": "Zendesk", "url": "https://zendesk.com/"}]
+        self.assertFalse(ent._bridges_back_to_site(nodes, "acmewidgets.com"))
+
+    def test_no_nodes_at_all_is_not_a_bridge(self):
+        self.assertFalse(ent._bridges_back_to_site([], "acmewidgets.com"))
+
+
+class AuditServiceDomainsTests(unittest.TestCase):
+    def test_an_unreachable_sampled_page_becomes_one_unknown_check(self):
+        out = ent.audit_service_domains("acmewidgets.com", ["https://this-host-does-not-exist.invalid/page"])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(len(out["unknown_checks"]), 1)
+        self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
+
+    def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
+        out = ent.audit_service_domains("acmewidgets.com", [])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["unknown_checks"], [])
+
+    def test_output_always_carries_the_capability_ids(self):
+        out = ent.audit_service_domains("acmewidgets.com", [])
+        self.assertEqual(out["capability_ids"], ent.CAPABILITY_IDS)
+        self.assertIn("ENT-07", out["capability_ids"])
+
+
 if __name__ == "__main__":
     unittest.main()

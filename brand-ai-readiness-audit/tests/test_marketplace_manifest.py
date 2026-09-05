@@ -125,12 +125,24 @@ class SafetyTests(unittest.TestCase):
                 for token in forbidden:
                     self.assertNotIn(token, source, f"{script.name} looks like it can send a request body")
 
+    def test_vendor_contains_data_only_no_code(self):
+        vendor_dir = REPO_ROOT / "vendor"
+        self.assertTrue(vendor_dir.is_dir(), "vendor/ must exist")
+        forbidden_suffixes = (".py", ".so", ".pyd")
+        offenders = [
+            str(path.relative_to(REPO_ROOT))
+            for path in vendor_dir.rglob("*")
+            if path.is_file() and path.suffix in forbidden_suffixes
+        ]
+        self.assertEqual(offenders, [], f"vendor/ must contain no code, found: {offenders}")
+
     def test_scripts_import_no_third_party_packages(self):
         allowed_roots = {
             "argparse", "collections", "dataclasses", "datetime", "difflib", "hashlib", "html",
             "importlib", "ipaddress", "json", "pathlib", "re", "socket", "sys", "tempfile",
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
-            "jsonld_graph", "page_fetch", "graph_metrics", "__future__",
+            "jsonld_graph", "page_fetch", "graph_metrics", "page_sample", "xml", "budget",
+            "public_suffix", "fuzzy_match", "shingles", "__future__",
         }
         for script in list(REPO_ROOT.glob("skills/*/scripts/*.py")) + list(REPO_ROOT.glob("shared/*.py")):
             with self.subTest(script=script.name):

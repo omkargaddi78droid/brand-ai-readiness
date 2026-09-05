@@ -1,17 +1,20 @@
 ---
 name: content-quality-audit
 description: >
-  Audits a single page's visible text for content anti-patterns: unrendered
+  Audits a page's visible text for content anti-patterns: unrendered
   template syntax, changes dated only in relative time, the same metric
   stated twice with different values, a stated average contradicting the
   page's own numbers, and very-difficult-to-read prose (script-decided); no
   concise answer near the top, boilerplate hedging standing in for a fact,
   vague magnitude words needing a precise number, marketing language
   breaking up how-to steps, and substance drowning in filler (agent-decided
-  against a rubric). Use when auditing whether a page's facts are internally
-  consistent and quotable, and free of patterns that hinder accurate
-  summarisation. Not for content-decay or cross-page contradiction; not for
-  reachability (perimeter-access-audit) or main-content boundary detection
+  against a rubric); and, given a sampled page list, near-duplicate content
+  clustering within a same-template stratum (script-decided). Use when
+  auditing whether a page's facts are internally consistent and quotable,
+  free of patterns that hinder accurate summarisation, or whether several
+  pages of the same kind substantively repeat each other. Not for
+  content-decay or cross-page factual contradiction; not for reachability
+  (perimeter-access-audit) or main-content boundary detection
   (render/extraction, not yet built).
 license: MIT
 allowed-tools: Bash
@@ -62,6 +65,8 @@ evidence of a missing answer, it is the extraction's known blind spot.
 - Offline/fixture mode: `--html-file PATH` (raw HTML, extracted the same way
   as `--url`) or `--text-file PATH` (already-extracted plain text).
 - `--site` for the report label; derived from `--url` if omitted.
+- `--sample-file PATH` + `--site` — runs CQ-13's near-duplicate mode instead
+  of auditing a single page. See "Near-duplicate mode" below.
 
 ## Procedure
 
@@ -103,6 +108,25 @@ evidence of a missing answer, it is the extraction's known blind spot.
    capabilities as unknown with the error text — CQ-02/04/09/12 included,
    since you cannot judge what you were never given.
 
+## Near-duplicate mode (CQ-13)
+
+A separate mode from steps 1-5 above — it takes a list of on-site page URLs,
+not one page:
+
+```bash
+python3 scripts/check_content_quality.py --site example.com \
+    --sample-file /tmp/audit/page-sample.txt
+```
+
+`--sample-file` is one on-site URL per line — pass the `sample_urls` from
+`audit-orchestrator`'s `sample_pages.py` (INF-01). The script fetches each
+page itself, strips lines repeated verbatim across at least half the sample
+(shared nav/footer/boilerplate), groups the remainder by URL template
+(same logic as `sample_pages.py`'s own clustering), and flags any
+same-template group of 2+ pages scoring ≥0.7 on 5-word-shingle Jaccard
+similarity. Entirely script-decided — no `agent_judgement_required` entries
+come out of this mode.
+
 ## What it checks
 
 | ID | Check | Who decides | Fires when |
@@ -117,6 +141,7 @@ evidence of a missing answer, it is the extraction's known blind spot.
 | CQ-04 | Granularity mismatch | Agent, against the rubric | A vague magnitude word ("large", "substantial") next to a spec-shaped attribute (weight, size, ...) with no number is judged to need precision here |
 | CQ-09 | Marketing/procedure interleaving | Agent, against the rubric | Promotional language inside a numbered step line is judged to actually disrupt the instruction |
 | CQ-12 | Signal-to-filler ratio | Agent, against the rubric | Stock transitional phrasing is judged to be drowning out genuine substance |
+| CQ-13 | Near-duplicate / template dilution | Script (`--sample-file` mode) | 2+ pages sharing a URL template score ≥0.7 5-word-shingle Jaccard similarity on their main content, after chrome-stripping and after excluding any page with under 30 remaining words |
 
 Full detection rules, worked examples, and every false-positive guard for
 CQ-03/05/07/08/11 are in `references/content-anti-patterns.md`.
@@ -127,12 +152,23 @@ fired wrongly (or silently missed) on a specific, now-documented case.
 
 ## Excludes
 
-- **CQ-06, CQ-10** — content-decay prediction, cross-page temporal
-  contradiction. Need multi-page context this project does not build.
+- **CQ-06, CQ-10** — content-decay prediction, cross-page factual
+  contradiction. Need comparing the same fact's *value* across pages, a
+  different problem from CQ-13's content-*similarity* check.
 - **Gate 1/2** — reachability (`perimeter-access-audit`) and main-content
   boundary detection (render/extraction, not yet built) — CQ-01's opening-
   text window is document-start, not boundary-aware, for exactly this
   reason (see `references/content-anti-patterns.md`'s known-limits section).
+- **CQ-13's chrome-stripping is a cross-page repetition heuristic, not a
+  DOM boundary.** A line that happens to repeat across at least half the
+  sampled pages by coincidence (not because it is site chrome) would still
+  be stripped; conversely, a per-page-unique sidebar or ad slot is never
+  stripped, since it never repeats. In practice a real site's nav/footer
+  repeats far more often than any coincidence, so this is a low-noise proxy
+  for a DOM boundary this project does not build.
+- **CQ-13 only compares pages already in the given `--sample-file`.** A
+  near-duplicate pair where only one member was sampled cannot be found —
+  this is a heuristic net over the bounded sample, not a site-wide scan.
 
 ## Output
 
@@ -141,7 +177,7 @@ One JSON object on stdout, same shape as `perimeter-access-audit`:
 ```json
 {
   "owner_skill": "content-quality-audit",
-  "capability_ids": ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12"],
+  "capability_ids": ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12", "CQ-13"],
   "site": "example.com",
   "findings": [
     {
@@ -179,6 +215,8 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 | Fetched content's `Content-Type` is neither HTML nor text | `unknown`: not a page this skill can read |
 | No `--url`, `--html-file` or `--text-file` given | `unknown` |
 | A detector finds nothing | No finding for that capability. Silence is the expected, common case |
+| A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page; the others still run |
+| No same-template stratum has 2+ pages with ≥30 words of content | CQ-13 produces an empty, clean report — not `unknown` |
 
 ## Safety
 

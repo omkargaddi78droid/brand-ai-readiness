@@ -8,9 +8,12 @@
 # root directory (containing marketplace.json and every skill folder),
 # with a short README.md at the root". `shared/` is included too — it is a
 # real runtime dependency every skill script and the entrypoint import via
-# `sys.path.insert(0, ... / "shared")`, not optional tooling. `tests/` is
-# deliberately excluded: it is this project's own development-time
-# verification, not part of what a grader runs.
+# `sys.path.insert(0, ... / "shared")`, not optional tooling. `vendor/` is
+# included for the same reason (shared/public_suffix.py's PSL data asset —
+# see vendor/VENDORED.md); it is a runtime dependency, not tooling, but
+# ships data only, never code (tests/test_marketplace_manifest.py enforces
+# this). `tests/` is deliberately excluded: it is this project's own
+# development-time verification, not part of what a grader runs.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -25,6 +28,7 @@ zip -r -q "$OUT" \
     LICENSE \
     shared \
     skills \
+    vendor \
     -x '*__pycache__*' -x '*.pyc' -x '*.pyo'
 
 echo "Built: $OUT"

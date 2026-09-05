@@ -243,12 +243,18 @@ def build_report(
     findings: list[Finding],
     unknown_checks: list[UnknownCheck] | None = None,
     audited_at: str | None = None,
+    coverage: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Merge validated findings into the internal (superset) report.
 
     Raises ValueError on an invalid finding rather than emitting a malformed
     report: a broken finding is an authoring bug in the owning skill, not a
     runtime condition to paper over.
+
+    `coverage`, when given (see shared/budget.py's `coverage_manifest`), is
+    attached verbatim as `report["coverage"]` — an additive field the floor
+    schema (`to_floor_schema`) does not project, so passing it never affects
+    required-shape compliance.
     """
     errors = validate_findings(findings)
     for unknown in unknown_checks or []:
@@ -277,6 +283,8 @@ def build_report(
         "findings": [f.to_dict() for f in ordered],
         "unknown_checks": [u.to_dict() for u in (unknown_checks or [])],
     }
+    if coverage is not None:
+        report["coverage"] = coverage
     return report
 
 

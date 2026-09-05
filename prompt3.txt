@@ -1,0 +1,544 @@
+# Deep Research Prompt — Cycle 23: New Capabilities, Blocked-Item Rework, Engagement Research, Infra Hardening
+
+## Project background (read first — this is the whole context you need)
+
+This document is a research brief for an existing project called `brand-ai-readiness-audit`, built for a
+hackathon-style challenge ("Round 3"). Below is everything about the challenge and the project's current state
+that matters for this research pass. You do not have and do not need any other file from this project — this
+document is self-contained.
+
+### The challenge
+
+The task: build an **Agent Skill Marketplace** — a package of one or more "Agent Skills" (the
+agentskills.io format: a `SKILL.md` with YAML frontmatter + instructions, optional bundled `scripts/` and
+`references/`), tied together by a marketplace manifest, with exactly one designated **entrypoint skill**. Given
+a website URL, the entrypoint audits it and produces a structured **audit report**:
+
+- **Problems found** — issues hurting the brand's *AI discoverability* (why AI assistants don't find/cite it)
+  and its *on-site engagement* (why visitors who do arrive don't stay) — each with **evidence** and a
+  **severity**.
+- **Suggested actions** — prioritized fixes, plus proactive improvements even where no explicit defect was
+  found.
+
+It is **recommend-only**: nothing in the marketplace ever modifies a live site, submits a form, or takes a
+destructive/authenticated/rate-abusing action. Everything runs read-only, respects `robots.txt`.
+
+Minimum required report shape (a floor, extra fields are fine):
+
+```json
+{
+  "site": "example.com",
+  "audited_at": "2026-09-20T14:32:00Z",
+  "summary": { "total_findings": 6, "critical": 1, "high": 2, "medium": 3 },
+  "findings": [
+    {
+      "id": "F-001",
+      "title": "No JSON-LD structured data on product pages",
+      "severity": "high",
+      "evidence": "Crawled 12 product pages; 0/12 contain schema.org markup.",
+      "suggested_action": { "summary": "Add Product/Offer JSON-LD to every product page.", "priority": "high" }
+    }
+  ]
+}
+```
+
+**Evaluation** is of the marketplace itself (its skills' instructions/checks/logic/composition), not any one
+report it produces, on **unseen websites** (no example sites are given — generalization is tested by
+construction, so patterns/root-causes matter, not fitting to specific sites). Rubric criteria: detection
+accuracy (real problems, evidence-backed, few misses, few false positives), suggested-action quality (correctly
+targeted, mechanism-sound, prioritized, non-obvious beyond-problem suggestions), output design (clear structured
+actionable report a non-expert could act on), skill-format/engineering hygiene, marketplace composition
+(genuine separation of concerns, not padding — a single well-built skill is not penalized for not decomposing),
+and generalization.
+
+Guardrails: submission zip ≤ 50 MB (**no pre-trained model weights**), audit runtime < 5 minutes on a standard
+machine for a typical website, no browser automation of any kind (see Hard Constraints below).
+
+### Why these signals matter (the underlying mechanism — background, not a checklist)
+
+The challenge is explicitly about encoding *why* a brand is invisible, stale, or gets bounced by AI systems, not
+applying a generic SEO checklist. The mechanisms behind that:
+
+- **How search/AI visibility works at all**: a crawler has to be let in, has to be able to read what's on the
+  page, and has to be able to pick out the specific fact someone's looking for — in that order. If any one step
+  fails, the page is invisible to the machine even though a human sees it fine.
+- **How assistants like ChatGPT use sources**: many assistants look things up live — searching, fetching pages,
+  building the answer from what those pages say. What becomes a cited source tends to be whatever's easiest to
+  reach, read, and quote a clear fact from. If nothing about a brand is easy to reach/read/quote, it doesn't make
+  it into the answer.
+- **How machines "read" a page**: a page that looks complete to a person isn't always complete to a machine —
+  content assembled only after page-load, or held in a non-textual form, can be invisible to a program not
+  looking at it the same way a browser does. The more explicitly and unambiguously a fact is stated in plain
+  readable text, the more likely it's extracted correctly.
+- **Why cross-web agreement matters**: machines trust a fact more when many independent places say the same
+  thing; a claim living in only one spot is fragile. A related problem is mistaken identity — several different
+  things sharing a name can get merged unless something clearly distinguishes them.
+- **Personalization**: assistants can draw on context they already hold about a person (past questions, location,
+  stated preferences) and weight answers toward that — part of why two people asking the same question can get
+  different brands or framing back.
+- **Why machines drop content from summaries**: AI-generated summaries (e.g. of long emails/pages) are built from
+  readable text; when the real substance isn't available as text, or the important lines are buried in low-value
+  filler, the summary has little to work with and the important part can simply disappear.
+
+The project's existing capability rows below all trace back to one of these mechanisms.
+
+### The project's current state
+
+Marketplace: `brand-ai-readiness-audit`, currently v0.23.0, **8 skills** (`audit-orchestrator` is the
+entrypoint; `perimeter-access-audit`, `static-extraction-audit`, `entity-audit`, `retrieval-readiness-audit`,
+`citability-audit`, `content-quality-audit`, `engagement-audit` are the others). It tracks **89 catalogued
+capabilities** organized into named clusters (PER = perimeter/access, REN = static-extraction/rendering-adjacent,
+ENT = entity/identity, RET = retrieval readiness, CIT = citability/trust, CQ = content-quality anti-patterns,
+EN = on-site engagement, INF = internal infrastructure). **58 are IMPLEMENTED**; the rest are NOT_STARTED,
+DEFERRED, PARTIALLY_COVERED, or REJECTED, each with a stated reason — full lists below.
+
+This is not the first research pass. An earlier pass (not included here) surveyed novel, non-conventional
+detection techniques against the capability set as it stood at that time; it returned 27 candidates, and after
+scoring, **5 were shipped, 4 deferred, 19 rejected**. The distilled outcome of that pass — which candidates
+shipped, which were rejected and why, which remain deferred and why — is fully reproduced in the tables below.
+You do not need the original research documents; treat the tables as the authoritative record of what has
+already been tried and decided.
+
+This pass has **four target areas**, decided by the project owner:
+
+- **A. Genuinely new capability dimensions** — territory the prior pass did not already mine, now reopened
+  further by a constraint change (see next section).
+- **B. Fresh angles on deferred/blocked items** — several NOT_STARTED/DEFERRED rows were blocked specifically
+  on "needs multi-page/crawl-wide context, no crawl infra," not on a hard policy rule. Find out whether a
+  bounded (not full-crawl) approach can unblock any of them.
+- **C. On-site engagement research** — the engagement cluster (EN) was *authored* by the project team, not
+  derived from the same kind of research-backed mechanism the other clusters trace to (the mechanisms section
+  above, plus academic sources for specific rows — see the Implemented table). It is the weaker half of an
+  equally-weighted rubric. Ground it in real research.
+- **D. Infrastructure hardening** — not audit checks; the machinery (fetch layer, page sampling, dedup, budget
+  governor). Lower judge visibility, but affects whether the other 89 rows run correctly and within the 5-minute
+  budget at all.
+
+Do **not** perform the research yourself and do **not** implement anything. Your job is to produce the ranked
+research backlog this document defines the shape of — identify the gaps, name the specific open questions, and
+score candidates exactly as instructed in the Innovation Filter and Required Output sections below.
+
+---
+
+## Hard constraints — non-negotiable, apply to every candidate
+
+1. **No headless/headless-adjacent browsers, ever.** No Playwright, Puppeteer, Selenium, Chromium, `crawl4ai`, no
+   rendered DOM, no browser-based JS execution — not even as an optional fallback. Judges run the solution in
+   plain Python/Node environments; an optional browser path still fails a browserless grader. Detection must use
+   direct HTTP + parsing only: `requests`/`httpx`/Node `fetch`, raw HTML, JSON-LD, embedded JSON, hydration-state
+   blobs a page embeds itself (e.g. `__NEXT_DATA__`, `window.__NUXT__`), HTTP headers, XML, static CSS/resource
+   inspection, locally computed statistics/heuristics.
+2. **Off-site website querying is allowed, but narrowly.** For capabilities involving brand visibility/presence/
+   mentions/discoverability/reputation/external corroboration/public discussion, you may directly query public
+   sites — Reddit, Quora, forums, review sites, other publicly accessible sources — via direct HTTP GETs,
+   robots.txt-respecting. This does **not** reopen general web search or crawling.
+3. **No outsourced intelligence.** Never use a third-party API/service that hands back a pre-computed SEO score,
+   GEO score, ranking, classification, sentiment score, authority score, visibility score, AI-readiness score, or
+   any other proprietary analysis in place of computing it ourselves. If a signal can be computed locally from
+   raw retrieved data, it must be computed locally.
+4. **No pre-trained model weights**, independent of constraint 5 below — a submission zip must not bundle model
+   weights, and a package that *downloads* model weights at install/runtime (a spaCy language model, a
+   sentence-embedding checkpoint, any statistical NLP model) is out of bounds even if the package itself would
+   otherwise be fine. Rule-based, non-statistical NLP/parsing logic is fine.
+5. **Third-party open-source packages ARE now allowed — this is a relaxation from this project's earlier,
+   stricter rule.** Earlier in this project, *all* third-party dependencies were banned outright (an automated
+   test enforced zero third-party imports project-wide). **That blanket ban is now lifted by the project owner**,
+   specifically:
+
+   > Packages that are publicly available and downloadable from the standard Python (PyPI) or Node (npm)
+   > ecosystem, and that run **locally** using their own bundled algorithm/logic, are now allowed. What remains
+   > categorically banned is consuming a **result** computed by an external party — a hosted API, cloud service,
+   > or third-party endpoint that hands back a pre-computed score/ranking/classification/verdict in place of us
+   > computing it ourselves. Fetch-raw-and-judge-ourselves: allowed (constraint 2). Download-and-run-an-algorithm
+   > locally: now also allowed (this is the change). Outsource-the-verdict: still banned (constraint 3).
+
+   A package that is pure algorithm/data-structure code (e.g. `networkx`, `rapidfuzz`, `python-Levenshtein`,
+   `tldextract`, `datasketch`) is fine. A package that ships or downloads model weights is still blocked by
+   constraint 4.
+6. **Recommend-only, read-only, robots.txt-respecting, audit runtime under 5 minutes, submission zip ≤ 50 MB.**
+
+**Open risk to flag explicitly in every candidate that introduces a new dependency** (name it as a stated risk
+in the candidate's own write-up, do not try to resolve it yourself): the grading environment's ability to
+`pip install` / `npm install` at build or run time is unconfirmed. A pure-Python/pure-JS package with no
+native-binary compilation step and no separate model-weight download is lower risk than one that shells out to a
+system binary (e.g. `tesseract-ocr`, which the `pytesseract` package wraps but does not itself install) or that
+needs a compiled C extension unavailable in a locked-down sandbox. Score this under "Package footprint" in the
+Innovation Filter below.
+
+**This relaxation reopens, for reconsideration only (not automatic re-acceptance), specifically these three
+previously-rejected candidates from the prior research pass, whose rejection reason was the old blanket
+dependency ban and nothing else** — re-evaluate whether they clear the Innovation Filter now that the blocking
+reason is gone, do not resubmit them unchanged:
+
+- **GraphRAG k-core density** (needed `networkx`)
+- **Internal PageRank starvation** (needed `networkx`)
+- **OpenIE triple-extraction yield** (needed a dependency parser — verify it doesn't secretly need model weights;
+  most real dependency parsers do, which would keep this blocked under constraint 4 even though constraint 5
+  relaxed)
+
+Every other prior-pass rejection was rejected for a *different* reason (fires on everything, unfalsifiable
+threshold, already shipped under another name, conventional-SEO novelty failure, or a specific other reason like
+false-positive risk or third-party-service self-containment) — the package relaxation does not reopen those; see
+the full table below.
+
+---
+
+## Existing capability set — DO NOT REDISCOVER
+
+58 rows below are IMPLEMENTED — treat all of them as already covered regardless of what package is now available
+to build them differently or better. Cluster names: PER = perimeter/access & discovery, REN = static extraction &
+hydration-state analysis, ENT = entity & canonical identity, RET = retrieval readiness, CIT = trust/authority/
+citability, CQ = content anti-patterns, EN = on-site engagement, INF = internal infrastructure.
+
+### Implemented (58) — by cluster, one line each
+
+**Perimeter & discovery (PER):** PER-01 AI crawler robots.txt tiering (training bots / real-time search bots /
+on-demand fetch bots) · PER-02 blanket-block (`Disallow: /`) detection · PER-03 edge/WAF/CDN bot blocking vs.
+robots.txt (403/429/challenge to AI user-agents despite robots.txt allowing) · PER-04 llms.txt presence/spec
+validity · PER-05 llms-full.txt presence/thinness · PER-07 markdown path-suffix content negotiation · PER-08
+sitemap robots.txt-reference + llms.txt/sitemap URL-set disagreement · PER-09 cross-layer access-signal
+contradiction (robots.txt / `X-Robots-Tag` response header / `<meta name="robots">` / TDMRep `tdm-reservation` /
+llms.txt / sitemap.xml, checked against each other for literal disagreement, not just presence/validity of any
+one).
+
+**Static extraction & hydration-state (REN):** REN-01 fetch foundation (infra, no finding) · REN-02
+hydration-state-JSON vs. static-visible-text coverage diff · REN-04 price-render gating (JSON-LD `Offer.price`
+present but not restated in visible text, or vice versa) · REN-05 real-time-availability freshness-signal
+absence (stock/slots served as a static snapshot with no timestamp/`dateModified` nearby) · REN-06 semantic
+HTML5 boundary presence (`<main>`/`<article>`) · REN-07 boilerplate/content ratio (extractable body text vs.
+chrome) · REN-08 multimodal accessibility (missing/empty alt-text, `<video>`/`<audio>` with no `<track>`) ·
+REN-10 NAP render asymmetry (phone numbers only assembled client-side, no plain-text equivalent — address
+half not built) · REN-11 PDF-only fact lock (presence-only — no PDF text-layer parser) · REN-12 concealed
+agent-directed instruction scanner (CSS-hidden/HTML-comment/JSON-LD-only text carrying an instruction addressed
+at an AI system — indirect prompt injection).
+
+**Entity & canonical identity (ENT):** ENT-01 Schema.org/JSON-LD presence/validity · ENT-02 knowledge-graph
+grounding (`sameAs` to Wikidata/authoritative IDs) · ENT-03 markup/text agreement (structured ratings vs.
+visible-text ratings) · ENT-04 canonicalisation (single-page + a sitemap-scoped crawl-wide half for
+trailing-slash/`www.`/scheme forks) · ENT-05 brand-name entity collision (off-site, agent-judged against
+agent-supplied candidate URLs) · ENT-06 lookalike domain impersonation (off-site, domain-string similarity +
+agent-judged intent) · ENT-09 specialty/taxonomy consistency (agent-judged category-vs-body-text contradiction)
+· ENT-11 JSON-LD graph referential integrity (dangling `@id` reference, cross-page `@id` reference the sitemap
+can confirm broken, orphan identity node never referenced by anything else in the graph).
+
+**Retrieval readiness (RET):** RET-01 BM25 exact-match retention (JSON-LD SKU/MPN/GTIN missing from extracted
+visible text) · RET-02 dense/semantic coverage & synonym variation (agent-judged) · RET-03 query-intent coverage
+(agent-judged) · RET-04 keyword stuffing (4-word n-gram density) · RET-05 jargon/plain-language balance
+(agent-judged) · RET-06 chunk atomic-paragraph quality (agent-judged) · RET-07 retrieval-oriented structure
+(absence of headings/Q&A framing/definition blocks on a substantial page) · RET-08 heading hierarchy integrity
+(skipped levels, empty headings) · RET-09 positional fact interment (load-bearing figures existing only in a long
+page's middle band, never restated at either margin — grounded in Liu et al.'s "Lost in the Middle", TACL 2024,
+and Chroma's 2025 "Context Rot" study) · RET-10 chunk self-containment (a content block opening with an
+unresolved pronoun/demonstrative/generic-definite reference that never names its own subject inside the block).
+
+**Trust, authority & citability (CIT):** CIT-01 trust-signal authority (bylines, author bios, About-page depth)
+· CIT-02 source attribution & footnote density · CIT-04 citation recall (load-bearing claims with no source) ·
+CIT-06 statistics density / numeric verifiability (vague superlatives where a sourced number belongs) · CIT-07
+citation-position weighting (all outbound citations buried in the last 20% of a substantial page) · CIT-13
+off-site corroboration (agent-judged, a claim's own significant number checked against agent-supplied off-site
+URLs' text).
+
+**Content anti-patterns (CQ):** CQ-01 answer extractability (agent-judged) · CQ-02 non-answer template detection
+(boilerplate hedging, agent-judged) · CQ-03 template leakage (unrendered Mustache/Liquid/ERB tokens) · CQ-04
+granularity mismatch (agent-judged) · CQ-05 relative-date anchors (needs a claim verb in the same sentence) ·
+CQ-07 scope-ambiguous numeric claims (colon-labeled key:value spec-sheet style only) · CQ-08 computed-stat
+integrity (summary stats contradicting the page's own listed data) · CQ-09 marketing/procedure interleaving
+(agent-judged) · CQ-11 fluency/readability (Flesch Reading Ease, "very difficult" band only) · CQ-12
+signal-to-filler ratio (agent-judged).
+
+**On-site engagement (EN):** EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (partial:
+forced-account-creation and undisclosed-fees signals only, no step-count) · EN-05 mobile usability (partial:
+viewport config + inline fixed-width overflow only, no tap-target/font-legibility) · EN-06 interstitial/
+consent-wall friction · EN-07 perceived-performance friction (partial: static proxies only — fetched-HTML byte
+size, render-blocking head-resource references, unsized `<img>` as a CLS proxy) · EN-09 autonomous-agent
+usability (partial: unlabelled form fields only, no machine-readable contact/booking path).
+
+**Infrastructure (INF):** INF-05 normalised finding contract (shared internal schema every skill's findings
+serialize through) · INF-09 proactive-suggestion track (a `track` field distinguishing a confirmed defect from a
+recommendation where no defect was found).
+
+### Rejected (19, prior pass) — do not resubmit unless noted "reopened" above
+
+| Candidate | Rejection class | Reopened by package relaxation? |
+|---|---|---|
+| GraphRAG k-core density | Banned dependency (`networkx`) | **Yes — reconsider** |
+| Internal PageRank starvation | Banned dependency (`networkx`) | **Yes — reconsider** |
+| OpenIE triple-extraction yield | Banned dependency (parser) | **Maybe — check for hidden model-weight requirement** |
+| Self-reflective API validation | Near-zero hit rate (needs a published OpenAPI spec) | No — not a dependency problem |
+| Accept-header content negotiation | Fires on everything (~99.9% of sites answer "no") | No |
+| W3C PROV-O lineage | Fires on everything (research states nearly all sites will flag) | No |
+| Byte-range fetch survivability | Fires on everything, irrelevant to HTML | No |
+| HTTP `Link` header relations | Fires on everything (absent on nearly every site, appropriately) | No |
+| Redirect-hop/latency vs. fetcher tolerance | Unfalsifiable threshold (thresholds from blog observation, not vendor specs) | No |
+| BM25 length-normalization trap | Unfalsifiable threshold (corpus average document length is unknowable) | No |
+| Semantic distractor density | Already shipped (≈ CQ-07, same defect with a similarity score attached) | No |
+| Identifier-vs-prose vocabulary divergence | Already shipped (≈ RET-01 + RET-05) | No |
+| Sectioning containment hierarchy | Already shipped (intersection of RET-08 + REN-06, both shipped) | No |
+| NCD semantic redundancy standalone | Already shipped (≈ REN-07's content ratio, within a page) | No |
+| Cross-page near-dup via SimHash | Conventional SEO in new clothing (presentation not question, novelty) + methodology-broken (see Deferred table) | Package relaxation doesn't fix the methodology problem |
+| URL semantic entropy | Conventional SEO in new clothing (opaque IDs are a legitimate engineering choice, not a defect) | No |
+| IndexNow adoption | Conventional SEO in new clothing (absence proves nothing — server-side pings leave no artifact) | No |
+| Edge-cache staleness skew (bot vs. browser) | Highest false-positive risk in the pool — mechanism is inference from general CDN practice, not a study | No — evidence problem, not a dependency problem |
+| Common Crawl CDX footprint | Third-party service dependency, breaks manifest self-containment | **Worth re-examining under Area A** — it returns raw crawl-index data (URLs/timestamps), not a score/verdict; may now fit the constraint-2 "fetch raw, judge ourselves" pattern instead of the "outsourced intelligence" pattern it was filed under. Flag as ambiguous, not settled. |
+| ETag volatility vs. content hash | Costs a 30-second sleep for a rare, low-impact signal | No — cost/value problem, not a dependency problem |
+
+### Deferred (4, prior pass) + other NOT_STARTED/DEFERRED rows — the material for Area B
+
+| ID / candidate | Blocked on | Note |
+|---|---|---|
+| Chunk-fracture simulation | Absorbed into RET-10's own mechanism instead | Not open — closed by design, not by blocker |
+| AI-reachable subgraph orphan detection (full form) | Needs a link-graph crawl | Cheap 80% (robots path rules ∩ sitemap inventory) already absorbed into PER-09. Full form is Area B material. |
+| Cross-page near-duplicate/template dilution | Methodologically broken against this project's own agent-chosen, variety-biased page sample, which systematically hides exactly the clusters this would look for | Not a package or infra problem — a sampling-bias problem. Open research question under Area D (does a *different* sampling strategy fix this?). |
+| `.md`-variant-vs-canonical-HTML drift | Not blocked — just deprioritized (reachable on well under 1% of sites that serve a `.md` variant at all) | Low-hanging extension of an existing capability, mention only if trivial |
+| ENT-07 cross-domain service attribution | Marketing on `.com`, support on a third-party subdomain with nothing linking them as one entity — needs multi-page/cross-domain context, no crawl infra | Area B |
+| ENT-08 NAP consistency (address half) | Name/address/phone disagreeing across the site's own pages — needs multi-page context, no crawl infra (phone-only half already covered by REN-10) | Area B |
+| ENT-10 same-listing address drift | Needs historical snapshots of one listing — impossible in a single read-only run | Genuinely infeasible, not a crawl problem — confirm this stays out of scope, don't force it |
+| CIT-08 hub/authority link-graph structure | Navigational hubs vs. fact-dense authority pages not separated — needs crawl-wide or off-site link-graph context | Area B |
+| CIT-09 comparison-content gap | No first-party "X vs Y" content — same crawl-wide/off-site blocker as CIT-08 | Area B |
+| CIT-11 synthesised-hearsay sourcing | Forum/social opinion laundered into declarative claims — needs matching the page's own claim text against forum/social opinion text for provenance, a fuzzy-matching problem, not a policy block (the categorical off-site block was already lifted for other capabilities) | Area B — now that packages are allowed, is there a bounded fuzzy-matching approach (e.g. `rapidfuzz`) that makes this tractable at an acceptable false-positive rate? |
+| CIT-03 citation precision | Claims not supported by the sources actually cited — needs reading comprehension across a claim and its source, no scriptable low-FP slice identified | Not a crawl/package problem — likely stays agent-judged-only or stays out; low priority for Area B |
+| CIT-12 abstractiveness vs. faithfulness balance | Dense-but-unsummarisable or fluent-but-factless — same reading-comprehension judgement problem as CIT-03 | Same as CIT-03 |
+| CQ-06 date-context/price invariance | Identical price/metric reused across temporal or regional variants that should differ — needs comparing the same fact across page variants, no crawl infra | Area B |
+| CQ-10 temporal freshness & contradiction | Stale "updated" dates, page-to-page contradictions on the same fact — was selected then descoped by the project owner after selection, not a feasibility problem | Legitimate to reconsider — was never actually rejected on technical merit |
+| REN-03 pagination/infinite scroll | Products/articles reachable only by scrolling or "Load more" — a static proxy (absence of pagination links alongside a hrefless "Load more" control) was considered too weak twice already | Low priority for Area B unless a materially different static signal is proposed |
+| REN-09 image-of-text facts | Prices/specs/hours rendered inside images with no text restatement — no OCR/vision capability in this project | Area B — see the OCR/package question below |
+| EN-02 context retention on arrival | Deep-link arrivals lose their intent (no breadcrumbs, no in-context next step, interstitials resetting to homepage) — needs multi-page navigation context, no crawl infra | Area B/C |
+| EN-04 dead-end pages | Fact-dense pages offering no next action; orphaned pages with no inbound internal links — needs crawl-wide inbound-link data | Area B/C |
+| EN-08 on-site findability | No site search; navigation depth burying key pages — nav-depth half needs a crawl | Area B/C |
+| EN-10 trust & transparency for the human | Pricing hidden, contact hard to find, no proof at the decision point — substantially overlaps CIT-01/ENT-02 already implemented | Probably stays rejected — confirm no non-overlapping slice exists |
+| EN-11 content-to-action coherence | The page answers the question but the CTA is unrelated to the intent that brought the visitor — subjective judgement, no scriptable candidate signal identified | Area C — is there a research-backed proxy (e.g. lexical-overlap heuristics) that makes this scriptable or safely agent-judged? |
+
+### Infrastructure gaps — the material for Area D
+
+| ID | Purpose | Current state |
+|---|---|---|
+| INF-01 | Target acquisition & scoping — URL → domain, template discovery, page sampling plan | NOT_STARTED |
+| INF-02 | Fetch layer — robots-respecting, rate-limited, cached, single-fetch-many-consumers | NOT_STARTED |
+| INF-04 | Page bundle artifact — the shared object every skill consumes: raw HTML, extracted text, JSON-LD, hydration-state JSON, headers, links | NOT_STARTED |
+| INF-06 | Severity model — gate-based: gate-1 failures veto downstream findings | PARTIALLY_COVERED (a `gate` field is carried and severities derived per gate; suppression logic not implementable until a second gate exists) |
+| INF-07 | Confidence model — evidence-strength scoring, `unknown` as a first-class state | PARTIALLY_COVERED (typed `unknown` + per-finding `confidence` implemented; no evidence-strength scoring) |
+| INF-08 | Deduplication & aggregation — related symptoms from multiple skills merged into one finding with multiple evidence sources | NOT_STARTED — checked twice already (reading 4 real composed reports across 4 sites for cross-skill redundancy); no real case found yet |
+| INF-10 | Budget & timeout governor — coverage modes, per-stage time caps, degrade to `unknown` rather than overrun the 5-minute ceiling | NOT_STARTED |
+| INF-11 | Prompt-injection defence — page content is data, never instruction, enforced in every skill that reads a page | PARTIALLY_COVERED (stated in every skill's instructions; enforcement lightly tested — the concealed-instruction scanner is the first row that actually reads page body as untrusted page body) |
+
+---
+
+## Area A — Genuinely new capability dimensions
+
+Investigate territory that is genuinely different from everything in the tables above — not another row in an
+existing cluster, a re-framing of a shipped capability, or a re-submission of a prior rejection without a new
+angle. Under the now-relaxed dependency constraint:
+
+1. **What becomes newly implementable with real packages** that wasn't with stdlib-only code. Graph algorithms
+   (`networkx`) applied to something *other* than the two already-flagged-for-reconsideration candidates above —
+   e.g., is there a graph-structure signal in the site's own JSON-LD entity graph beyond referential integrity
+   (already covered) — some other graph-theoretic property of that same graph? Fuzzy-matching packages
+   (`rapidfuzz`, `python-Levenshtein`) applied beyond the uses already named for CIT-11/ENT-06. Rule-based (not
+   statistical, not model-weight-based) tokenization/NLP packages.
+2. **What AI-specific signals are still missing** — failure modes specific to how modern AI systems actually
+   work: retrieval-augmented generation, sparse/dense/hybrid retrieval, reranking, entity resolution, knowledge
+   graphs, citation selection, context compression, query rewriting, answer synthesis, agentic browsing, tool
+   use, multi-hop retrieval — failure modes an ordinary SEO audit would never detect. Cross-check against every
+   table above before proposing; do not repeat a prior-pass candidate under another name.
+3. **What unconventional web/HTTP signals remain genuinely unexplored** — HTTP headers, redirects, content
+   types, caching behavior, ETags, Last-Modified, canonical chains, alternate representations, link
+   relationships, XML structures, feed formats (RSS/Atom), OpenGraph, Twitter/X cards, microformats, hreflang,
+   language/content negotiation, static assets, downloadable documents, source-code conventions,
+   framework-generated metadata, URL structures, internal linking patterns — that are not already covered above
+   and were not already rejected as "fires on everything" or "unfalsifiable threshold."
+4. **"Side-channel" signals** — seemingly unrelated website characteristics that indirectly affect the chain
+   discovery → retrieval → ranking → context inclusion → citation → answer generation: cache behavior, redirect
+   topology, duplicate-content fingerprints, URL entropy, content-version divergence, document update patterns,
+   feed/index synchronization, inconsistent entity fingerprints, structured-data contradictions, resource
+   availability, response-size anomalies, HTTP-level accessibility patterns.
+5. **Adjacent-field techniques** not yet tried in this project: information retrieval, search engines,
+   recommender systems, knowledge graphs, entity resolution, information theory, NLP, document understanding,
+   digital libraries, information extraction, web archaeology, spam detection, plagiarism detection, authorship
+   attribution, graph analysis, anomaly detection, compiler/static-analysis techniques, distributed systems,
+   caching systems, security research, accessibility research, data provenance — adapt an established technique
+   from one of these fields into a genuinely new AI-discoverability audit capability, now with real packages
+   available to implement it properly rather than approximate it with stdlib.
+
+## Area B — Fresh angles on deferred/blocked items
+
+Most rows tagged "Area B" above were blocked on **"needs multi-page/crawl-wide context, no crawl infra."** This
+project already has one working precedent for a *bounded, non-full-crawl* multi-page pattern: a canonicalisation
+check reuses a site's own sitemap.xml URL list (already fetched for a separate check) to compare URL variants
+across the whole site without ever crawling a link graph — no page-graph traversal, just reading a sitemap that
+already exists and sampling from its declared URL list.
+
+For each row tagged "Area B" above, investigate specifically:
+
+- Can the **same sitemap-scoped, bounded-N-page-sample pattern** (not a full crawl, not link-graph traversal)
+  unblock it, and at what sample size does it stay inside the 5-minute total runtime budget shared across all 8
+  skills?
+- If not sitemap-scoped sampling, is there a *different* bounded pattern (e.g. following only same-template
+  internal links up to depth 1, capped at N pages) that would work, and what's the false-positive/coverage
+  tradeoff versus an actual crawl?
+- For **REN-09 (image-of-text facts)** specifically: is there a pure-algorithm (no model-weight) OCR path now
+  that packages are allowed? Investigate what real OCR actually requires — the most common real OCR path
+  (Tesseract, wrapped by the `pytesseract` package) needs a system binary that the Python package itself does not
+  install, which may not clear the "downloadable from pip/npm, run locally" bar the same way a pure-Python
+  package does. Flag this distinction explicitly rather than assuming OCR is now unblocked by the relaxation.
+- For **CIT-11 (hearsay provenance)**: does a fuzzy-matching package make the claim-vs-forum-opinion text
+  matching tractable at an acceptable false-positive rate, or is the underlying blocker semantic (not lexical)
+  and therefore unaffected by better string matching?
+- For **cross-page near-duplicate/template dilution**: the rejection reason was a sampling-bias problem in this
+  project's own agent-chosen page sample (it tends to pick "interesting-looking" pages, which hides exactly the
+  near-duplicate clusters this check would look for), not a technique problem. Is there a sampling strategy
+  (stratified by page template rather than by apparent interest) that would fix the methodology rather than the
+  detector?
+
+## Area C — On-site engagement research
+
+The engagement cluster (EN) is explicitly authored by the project team, not derived from the same kind of
+research-backed mechanism the discoverability clusters trace to (the mechanisms section near the top of this
+document, plus specific academic grounding for individual rows — e.g. the "Lost in the Middle" research behind
+the positional-fact-interment capability, or the documented prompt-injection red-team research behind the
+concealed-instruction scanner). It does not have that same grounding, yet the rubric weights discoverability and
+engagement equally, and the engagement cluster is visibly thinner (6 implemented, several only partially) than
+the discoverability side (one single discoverability cluster alone has 9 fully implemented rows).
+
+Investigate, staying strictly within the "static HTML/HTTP only, no rendering, no real user telemetry"
+constraint every other cluster in this project already operates under — no real page-load metrics, no actual
+click/scroll data, only what can be inferred from markup and HTTP responses:
+
+- Published UX/HCI research that produces **static, structurally-detectable proxies** — information scent
+  theory, F-pattern/Z-pattern scanning research, cognitive-load research, or any published usability-research
+  heuristics that translate into markup-level signals rather than visual/rendered ones.
+- **A named gap in one of the already-implemented (partial) engagement rows**: a machine-readable contact/
+  booking path (e.g. the WebMCP proposal, or `potentialAction` in JSON-LD) is explicitly not built yet. Is there
+  enough of a published spec/pattern here to make this a real, scriptable check rather than a subjective
+  judgement call?
+- **Content-to-action coherence** (a page answers the question but the CTA is unrelated to the visitor's intent)
+  is currently rejected as "no scriptable candidate signal identified." Is there a research-backed proxy — e.g.
+  lexical overlap between the page's own stated topic/heading and its primary call-to-action text — that would
+  make this either scriptable or a bounded, low-false-positive agent-judged check with a real calibrated rubric
+  behind it (several other rows in this project already use exactly this pattern: script extracts a narrow
+  candidate signal, an LLM judges it against a written rubric)?
+- What single engagement capability, if any, is the highest-value addition given the rubric weights engagement
+  equally with discoverability but this cluster is visibly the thinner half of the project?
+
+## Area D — Infrastructure hardening
+
+These are not audit checks the report surfaces to the user — they are the machinery the 89 audit rows run on
+top of. Investigate, now with real packages available:
+
+- **Page sampling plan**: what does stratified/representative sampling literature (survey sampling,
+  software-testing test-selection literature) say about picking a small, diverse page set from a sitemap without
+  a full crawl, in a way that maximizes template/content-type coverage for a fixed page budget? This directly
+  feeds Area B's "bounded sampling" question too — treat them as the same underlying research question seen from
+  two angles.
+- **Fetch layer / page bundle**: caching-systems and single-fetch-many-consumers patterns (one fetch of a page
+  feeding every skill that needs it, instead of each skill fetching independently) — what's the simplest correct
+  implementation given a real HTTP client package is now allowed (e.g. a connection-pooling/HTTP2-capable client
+  vs. the stdlib HTTP client)?
+- **Deduplication/aggregation of findings**: this project checked twice already for cross-skill redundant
+  findings across 4 real composed reports and found no real case yet. Is that because it's genuinely rare, or
+  because the 4 test sites weren't the right test? What near-duplicate-text-detection technique (e.g. MinHash/
+  LSH via a package, or something simpler) would be the right tool *if* a real case appears — note that a
+  SimHash-based near-duplicate technique was rejected above as an audit *capability* aimed at the target site's
+  own content (methodologically broken against this project's page-sampling bias), but that says nothing about
+  whether the same underlying algorithm is useful applied to a completely different problem: deduplicating this
+  project's *own findings output* across its 8 skills, not the target site's content.
+- **Budget/timeout governor**: given the hard <5-minute total-runtime ceiling across all 8 skills, and a now-
+  larger dependency surface (real packages carry real import/initialization cost), what's a defensible per-stage
+  time-budget allocation, and what degrade-to-`unknown` policy avoids a partial audit silently under-reporting
+  instead of honestly flagging incompleteness?
+
+---
+
+## Innovation Filter
+
+For every proposed capability or infrastructure improvement, score it on:
+
+1. **Novelty** — Would a typical SEO/GEO auditor already do this? Does it duplicate anything in the Implemented,
+   Rejected, or Deferred tables above?
+2. **AI relevance** — Does it specifically affect retrieval, grounding, citation, synthesis, or agent usability
+   (Areas A/B), or does it genuinely improve report quality/coverage/runtime (Areas C/D)?
+3. **Implementability** — Can it be implemented in Python/Node, browser-free, under the relaxed dependency rule
+   (hard constraints 1–6 above)?
+4. **Evidence quality** — Can the detector produce concrete evidence rather than an opinion?
+5. **False-positive safety.**
+6. **Computational cost** — inside the 5-minute total-runtime budget, shared across all skills.
+7. **Package footprint** — name the exact package(s), PyPI/npm, license, pure-language vs. native-binary/
+   compiled, approximate install size, and whether it requires any network access or model-weight download at
+   install or run time. Flag any native-binary or model-weight dependency as elevated risk.
+8. **Differentiation / judge "wow factor"** (Areas A/B) or **report-quality/robustness impact** (Areas C/D).
+
+Strongly prioritize ideas that are: **simple to implement + technically defensible + unusual or genuinely
+missing + produce surprising or high-confidence findings + low package risk.**
+
+---
+
+## Required Output
+
+Do not produce a generic research summary. Produce a ranked backlog, tagged by area (A/B/C/D). For every
+candidate, provide all of the following:
+
+1. **Proposed capability/improvement** — a concise name, tagged `[Area A/B/C/D]`.
+2. **What it detects/improves** — the exact failure mode, or the exact engineering gap it closes.
+3. **Why it matters specifically for AI systems** (Areas A/B) **or for report quality/coverage/runtime**
+   (Areas C/D) — explain the causal connection to retrieval, grounding, citation, generation, or agent behavior
+   (A/B), or to audit correctness/coverage/robustness (C/D).
+4. **Why it is novel / genuinely missing** — an explicit check against the Implemented/Rejected/Deferred tables
+   above; state plainly if it overlaps and by how much. Reject candidates with substantial overlap.
+5. **Detection/implementation methodology** — a concrete algorithm or engineering approach.
+6. **Required inputs** — exactly what must be fetched or parsed.
+7. **Package dependency** — name, ecosystem (PyPI/npm), license, pure-language vs. native/model-weight,
+   approximate size, install-time network requirement. Write "none — stdlib only" if no new dependency is
+   needed.
+8. **Grading-sandbox risk note** — one line on what could break this at grading time (unavailable package,
+   native compile step, no install-time network access) and how the detector should degrade (`unknown`, never a
+   hard failure) if the dependency isn't there.
+9. **Evidence produced** — what the report can show the judge/user when it fires.
+10. **False-positive risks** — when the technique could be wrong.
+11. **Complexity** — Low / Medium / High.
+12. **Innovation score** — 1–10.
+13. **Evidence strength** — 1–10, based on published/technical evidence for the underlying mechanism.
+14. **Existing-capability overlap** — explicit yes/no/partial against every table above, not just a general
+    impression.
+
+---
+
+## Final Ranking
+
+Classify every candidate into:
+
+- **Tier A — "Cycle-23 differentiators"**: novel, technically defensible, implementable within the relaxed
+  constraint, low grading-sandbox risk, likely to visibly improve the report.
+- **Tier B — "Interesting extensions"**: novel and useful but less distinctive, or carries real package risk.
+- **Tier C — "Skip"**: already covered, methodologically broken, or not worth the package risk relative to
+  value. Do not recommend Tier C for implementation.
+
+Then select the **top 10–15 genuinely new candidates across all four areas** and provide a final table:
+
+| Rank | Area | Capability/Improvement | Novelty | Relevance/Impact | Implementability | Package risk | Evidence quality |
+|---|---|---|---:|---:|---:|---:|---:|
+
+Finally, identify the **top 5 worth actually implementing next**, ideally at least one from each of Areas A, B,
+C, and D where a qualifying candidate exists — do not force a weak Area C or D pick just to fill a quota; say so
+explicitly if an area has no candidate that clears the bar. For each of the top 5, give a short explanation of
+why it offers the best innovation-to-effort ratio.
+
+---
+
+## Research discipline
+
+Use primary and technically authoritative sources wherever possible: academic papers, search-engine/retrieval
+research, official technical documentation, standards/specifications, research from major search/retrieval/NLP
+organizations, engineering papers/blogs with concrete methodology, high-quality open-source implementations. Do
+not treat marketing articles claiming "AI SEO best practices" as strong evidence. For every high-value idea,
+provide source evidence for why the underlying mechanism is plausible, and clearly distinguish:
+
+- established mechanism
+- research-backed inference
+- novel proposed adaptation
+- speculative idea
+
+For package-dependent candidates specifically, treat the package's own documentation/changelog/PyPI or npm
+metadata as a primary source for the "Package dependency" and "Grading-sandbox risk" fields — verify license,
+maintenance status, and actual install size rather than assuming.
+
+The result should read as technical R&D continuing this specific project from its current, documented state —
+not a generic SEO/GEO checklist, and not a restart of the project's original research brief.

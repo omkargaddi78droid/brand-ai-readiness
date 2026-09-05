@@ -62,6 +62,15 @@ class ValidationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_report("example.com", [make_finding(evidence="")], audited_at=FIXED_TIMESTAMP)
 
+    def test_build_report_attaches_a_given_coverage_manifest_verbatim(self):
+        coverage = {"stages": [{"stage": "near-duplicate-detection", "expired": True}]}
+        report = build_report("example.com", [], audited_at=FIXED_TIMESTAMP, coverage=coverage)
+        self.assertEqual(report["coverage"], coverage)
+
+    def test_build_report_omits_coverage_when_not_given(self):
+        report = build_report("example.com", [], audited_at=FIXED_TIMESTAMP)
+        self.assertNotIn("coverage", report)
+
 
 class ReportShapeTests(unittest.TestCase):
     def setUp(self):

@@ -58,18 +58,44 @@ or otherwise alters the audited site.
    Never present a content finding as an independent cause when a gate above it
    has failed.
 
-4. **Run the remaining audit skills** listed in the registry below, each
+4. **Build the page sample once per site**, before running any per-page skill
+   below. `sample_pages.py` replaces picking pages by eye: it fetches
+   `sitemap.xml`, clusters URLs by template shape (same path structure,
+   different instance), and allocates a fixed page budget across clusters
+   proportionally, always including the homepage and any `/contact`,
+   `/checkout`, `/search`, `/pricing` page found — so the sample spans the
+   site's different page *kinds* instead of just its most numerous one (a
+   hand-picked "interesting pages" sample tends to under-sample near-duplicate
+   templates, the exact gap that later disables near-duplicate detection):
+
+   ```bash
+   python3 ../audit-orchestrator/scripts/sample_pages.py \
+       --url https://example.com --budget 25 > /tmp/audit/page-sample.json
+   ```
+
+   If `sitemap.xml` is absent (`total_urls: 0`), fall back to picking pages by
+   hand as before. Otherwise, read `sample_urls` from the output and use it as
+   the page list for every per-page skill below — the 5-minute budget still
+   does not allow running every skill against every sampled URL, so prioritize
+   pages that carry claims worth getting right (pricing, specs, policies,
+   dated announcements, how-to guides) within that list rather than the full
+   set.
+
+   Write `sample_urls` to a plain one-URL-per-line file too
+   (`/tmp/audit/page-sample.txt`) — two multi-page checks below
+   (`content-quality-audit`'s CQ-13, `entity-audit`'s ENT-07) consume it
+   directly via their own `--sample-file` flag, once per site, alongside
+   their normal per-page invocations.
+
+5. **Run the remaining audit skills** listed in the registry below, each
    writing its JSON to its own file. Skills are independent; a failure in one
    does not stop the others.
 
-   `content-quality-audit` runs per page, not per site: pick a small,
-   representative sample of pages that carry claims worth getting right
-   (pricing, specs, policies, dated announcements, how-to guides), not every
-   URL on the site — the 5-minute budget does not allow a full crawl, and
-   navigational pages rarely have extractable facts worth checking. Five of
-   its ten capabilities (CQ-01, CQ-02, CQ-04, CQ-09, CQ-12) are judgement
-   calls the script deliberately does not resolve, the same pattern as
-   `engagement-audit` and `citability-audit` below:
+   `content-quality-audit` runs per page, not per site, against pages drawn
+   from the sample built above. Five of its ten capabilities (CQ-01, CQ-02,
+   CQ-04, CQ-09, CQ-12) are judgement calls the script deliberately does not
+   resolve, the same pattern as `engagement-audit` and `citability-audit`
+   below:
 
    ```bash
    python3 ../content-quality-audit/scripts/check_content_quality.py \
@@ -81,6 +107,14 @@ or otherwise alters the audited site.
    passing the file to `compose_report.py`. Run it again per page in the
    sample; each invocation's findings carry that page's URL, so composing
    several runs keeps every finding attributable to the page it came from.
+
+   Also run `content-quality-audit`'s near-duplicate mode (CQ-13) once per
+   site, against the whole page-sample file built in step 4:
+
+   ```bash
+   python3 ../content-quality-audit/scripts/check_content_quality.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/content-near-dup.json
+   ```
 
    `entity-audit` runs the same way, per page — homepage/About page for
    Organization markup and canonical hygiene, product or review pages for
@@ -105,6 +139,14 @@ or otherwise alters the audited site.
    ```bash
    python3 ../entity-audit/scripts/check_entity.py \
        --site example.com --sitemap-file /tmp/audit/sitemap-urls.txt > /tmp/audit/entity-sitemap.json
+   ```
+
+   Also run `entity-audit`'s cross-domain service-attribution mode (ENT-07)
+   once per site, against the same page-sample file used for CQ-13 above:
+
+   ```bash
+   python3 ../entity-audit/scripts/check_entity.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/entity-service-domains.json
    ```
 
    **Optional, off-site brand-visibility (ENT-05/ENT-06):** if checking for
@@ -194,14 +236,16 @@ or otherwise alters the audited site.
        --url https://example.com/product/widget > /tmp/audit/static-extraction-widget.json
    ```
 
-5. **Compose one report.**
+6. **Compose one report.**
 
    ```bash
    python3 scripts/compose_report.py --site example.com \
        --skill perimeter-access-audit /tmp/audit/perimeter.json \
        --skill content-quality-audit /tmp/audit/content-pricing.json \
        --skill content-quality-audit /tmp/audit/content-checkout.json \
+       --skill content-quality-audit /tmp/audit/content-near-dup.json \
        --skill entity-audit /tmp/audit/entity-home.json \
+       --skill entity-audit /tmp/audit/entity-service-domains.json \
        --skill entity-audit /tmp/audit/entity-offsite.json \
        --skill engagement-audit /tmp/audit/engagement-home.json \
        --skill citability-audit /tmp/audit/citability-guide.json \
@@ -214,12 +258,12 @@ or otherwise alters the audited site.
    per site — the same skill name may appear more than once. Add
    `--floor-only` for the minimal required schema instead of the full report.
 
-6. **Return the JSON the script printed, unmodified.** It has already been
+7. **Return the JSON the script printed, unmodified.** It has already been
    validated. Do not add findings, re-word evidence, re-rank severities or
    summarise the report into prose in place of the JSON — a finding's severity
    and mechanism are set by the skill that has the evidence.
 
-7. **If a skill produced nothing usable**, the composer records it as an
+8. **If a skill produced nothing usable**, the composer records it as an
    `unknown_checks` entry naming that skill, and the report is still emitted
    from whatever did run. Reduced coverage is reported, never hidden.
 
@@ -232,8 +276,8 @@ composition bug.
 | Skill | Owns | Gate | Runs |
 |---|---|---|---|
 | `perimeter-access-audit` | PER-01 AI-crawler access by tier · PER-02 blanket block · PER-03 CDN/edge blocking · PER-04 llms.txt presence and validity · PER-05 llms-full.txt · PER-06 sitemap discovery · PER-07 Markdown negotiation · PER-08 sitemap discoverability (robots.txt reference + llms.txt/sitemap URL-set agreement) · PER-09 cross-layer access-signal contradiction (robots.txt/`X-Robots-Tag`/meta-robots/TDMRep/llms.txt/sitemap.xml agreement) | 1 | Once per site |
-| `content-quality-audit` | CQ-03 template leakage · CQ-05 relative-date anchors · CQ-07 scope-ambiguous numerics · CQ-08 computed-stat integrity · CQ-11 fluency/readability · CQ-01 answer extractability (agent-judged) · CQ-02 non-answer templates (agent-judged) · CQ-04 granularity mismatch (agent-judged) · CQ-09 marketing/procedure interleaving (agent-judged) · CQ-12 signal-to-filler ratio (agent-judged) | 3 | Once per sampled page |
-| `entity-audit` | ENT-01 schema.org/JSON-LD validity · ENT-02 knowledge-graph grounding · ENT-03 markup/text agreement · ENT-04 canonicalisation (single-page + sitemap-scoped fork detection) · ENT-11 JSON-LD graph referential integrity (dangling/cross-page @id references, orphan identity nodes) · ENT-09 taxonomy consistency (agent-judged) · ENT-05 brand-name collision + ENT-06 lookalike-domain impersonation (agent-judged, optional off-site mode) | 3 | Once per sampled page, plus once per site for ENT-04's sitemap-scoped half and (optional) ENT-05/06's off-site mode |
+| `content-quality-audit` | CQ-03 template leakage · CQ-05 relative-date anchors · CQ-07 scope-ambiguous numerics · CQ-08 computed-stat integrity · CQ-11 fluency/readability · CQ-13 near-duplicate/template dilution (multi-page) · CQ-01 answer extractability (agent-judged) · CQ-02 non-answer templates (agent-judged) · CQ-04 granularity mismatch (agent-judged) · CQ-09 marketing/procedure interleaving (agent-judged) · CQ-12 signal-to-filler ratio (agent-judged) | 3 | Once per sampled page, plus once per site for CQ-13's `--sample-file` mode |
+| `entity-audit` | ENT-01 schema.org/JSON-LD validity · ENT-02 knowledge-graph grounding · ENT-03 markup/text agreement · ENT-04 canonicalisation (single-page + sitemap-scoped fork detection) · ENT-07 cross-domain service attribution (multi-page) · ENT-11 JSON-LD graph referential integrity (dangling/cross-page @id references, orphan identity nodes) · ENT-12 JSON-LD entity-graph fragmentation · ENT-09 taxonomy consistency (agent-judged) · ENT-05 brand-name collision + ENT-06 lookalike-domain impersonation (agent-judged, optional off-site mode) | 3 | Once per sampled page, plus once per site for ENT-04's sitemap-scoped half, ENT-07's `--sample-file` mode, and (optional) ENT-05/06's off-site mode |
 | `engagement-audit` | EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (agent-judged) · EN-06 interstitial/consent-wall friction · EN-09 autonomous-agent usability | none — engagement, not gated | Once per sampled page |
 | `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per sampled page |
 | `retrieval-readiness-audit` | RET-01/04/07/08/09/10 (script), RET-02/03/05/06 (agent-judged) | 3 | Once per sampled page |

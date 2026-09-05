@@ -2,7 +2,7 @@
 """Gate-3 content-quality audit: text anti-patterns, script-decided and
 agent-judged.
 
-Owns ten capabilities, split by whether a verdict is deterministic or
+Owns eleven capabilities, split by whether a verdict is deterministic or
 needs judgement — the same split `engagement-audit` and `citability-audit`
 already use for their agent-judged capabilities:
 
@@ -14,6 +14,7 @@ rather than asserting a judgement):
   CQ-07  Scope-ambiguous numeric claims — the same labeled metric stated twice with different values, no qualifier
   CQ-08  Computed-stat integrity — a stated average that does not match the arithmetic of the page's own listed numbers
   CQ-11  Fluency/readability — Flesch Reading Ease below the "very difficult" band, on a large enough sample
+  CQ-13  Near-duplicate/template dilution — cycle 23 addition, `--sample-file` mode (multi-page, see below)
 
 Agent decides, against references/content-judgement-rubric.md (the script
 extracts candidate sentences only and emits no verdict — asserting "this
@@ -25,6 +26,25 @@ calibration discipline exists to prevent):
   CQ-04  Granularity mismatch — a vague magnitude word where a query needs a precise number
   CQ-09  Marketing/procedure interleaving — promotional language breaking up numbered how-to steps
   CQ-12  Signal-to-filler ratio — substance drowning in stock transitional phrasing
+
+**CQ-13 is a cycle-23 addition, `--sample-file` mode.** Cluster A's own
+"Deferred, 4" note (docs/capability-matrix.md) previously held near-duplicate/
+template-dilution detection as "methodologically broken against this
+project's own agent-chosen, variety-biased page sample, which systematically
+hides exactly the clusters this would look for" — true before cycle 23's
+Phase 1 shipped a template-stratified sampler (`shared/page_sample.py`),
+which exists specifically so near-identical pages land in the same stratum
+instead of never being sampled together. Given a file of on-site page URLs,
+this mode fetches each one, strips lines that repeat verbatim across at
+least half the sample (the shared site chrome — nav, footer, boilerplate —
+that would otherwise make every page look like a near-duplicate of every
+other), groups the remainder by `shared/page_sample.template_key`, and runs
+`shared/shingles.near_duplicate_groups` (k-shingle Jaccard, replacing the
+`datasketch` package rejected in `docs/02-project-plan.md` Part 1) *within*
+each template stratum only — comparing across templates would be
+meaningless, since a pricing page and a blog post are expected to differ.
+Entirely script-decided; no agent judgement needed for a shingle-overlap
+threshold.
 
 Deliberately does NOT own: CQ-06/CQ-10 (decay prediction, cross-page
 contradiction) — need multi-page context this project does not build. Those
@@ -81,9 +101,11 @@ dropping or crashing on them, but resolving it properly is the caller's job.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
+import urllib.parse
 from collections import defaultdict
 from html.parser import HTMLParser
 from pathlib import Path
@@ -93,6 +115,8 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from text_spans import split_sentences  # noqa: E402
+from page_sample import template_key  # noqa: E402
+from shingles import near_duplicate_groups  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -103,7 +127,9 @@ from page_fetch import (  # noqa: E402
 )
 
 OWNER_SKILL = "content-quality-audit"
-CAPABILITY_IDS = ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12"]
+CAPABILITY_IDS = [
+    "CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12", "CQ-13",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -981,6 +1007,151 @@ def _unknown_output(site: str, reason: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# CQ-13 — Near-duplicate / template dilution (--sample-file mode only)
+# ---------------------------------------------------------------------------
+
+_CQ13_MIN_STRATUM_SIZE = 2
+_CQ13_CHROME_LINE_MIN_CHARS = 20
+_CQ13_SHINGLE_K = 5
+_CQ13_JACCARD_THRESHOLD = 0.7
+_CQ13_MIN_CONTENT_WORDS = 30
+
+
+def _strip_chrome_lines(pages_text: dict[str, str]) -> dict[str, str]:
+    """Removes lines that repeat, verbatim, across at least half of
+    `pages_text` — the site-wide nav/footer/boilerplate every page shares —
+    before near-duplicate comparison, so shared chrome alone does not make
+    every page in a site look like a near-duplicate of every other.
+
+    A structural (DOM-based) main-content boundary would be more precise,
+    but this project has no such layer (gate 2, not built — see the
+    module's own "Text extraction" docstring section); cross-page line
+    repetition is a stdlib-only proxy that needs none.
+    """
+    line_page_counts: dict[str, int] = {}
+    for text in pages_text.values():
+        seen_this_page: set[str] = set()
+        for line in text.split("\n"):
+            stripped = line.strip()
+            if len(stripped) < _CQ13_CHROME_LINE_MIN_CHARS or stripped in seen_this_page:
+                continue
+            seen_this_page.add(stripped)
+            line_page_counts[stripped] = line_page_counts.get(stripped, 0) + 1
+
+    threshold = max(2, (len(pages_text) + 1) // 2)
+    chrome_lines = {line for line, count in line_page_counts.items() if count >= threshold}
+
+    return {
+        url: "\n".join(line for line in text.split("\n") if line.strip() not in chrome_lines)
+        for url, text in pages_text.items()
+    }
+
+
+def _near_duplicate_finding(template_key_value: str, urls: list[str]) -> Finding:
+    slug = hashlib.sha256("|".join(sorted(urls)).encode("utf-8")).hexdigest()[:8]
+    shown = ", ".join(urls[:4]) + ("…" if len(urls) > 4 else "")
+    return Finding(
+        id=f"CQ-13-near-duplicate-cluster-{slug}",
+        title=f"{len(urls)} pages under template {template_key_value!r} are near-duplicate content",
+        severity="medium",
+        evidence=(
+            f"{len(urls)} pages sharing the {template_key_value!r} URL template ({shown}) score at "
+            f"or above {_CQ13_JACCARD_THRESHOLD:.0%} 5-word-shingle Jaccard similarity on their main "
+            "content after shared site chrome (nav, footer, boilerplate repeated across the sample) "
+            "is stripped — these pages substantively repeat each other rather than offering distinct "
+            "content."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Differentiate these pages' actual content, or canonicalize/consolidate them if they "
+                "are not meant to compete for distinct queries — a near-duplicate cluster splits "
+                "citation authority across near-identical pages instead of concentrating it on one."
+            ),
+            priority="medium",
+        ),
+        category="discoverability",
+        capability_id="CQ-13",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "An AI assistant selecting a citation source treats near-identical pages as redundant, "
+            "not corroborating, signal — a near-duplicate cluster's combined authority stays split "
+            "across several URLs instead of concentrating on one, and cluster members compete with "
+            "each other for the same query rather than reinforcing a single canonical answer."
+        ),
+        gate=3,
+        confidence="medium",
+        structured_evidence={
+            "template_key": template_key_value,
+            "urls": urls,
+            "shingle_k": _CQ13_SHINGLE_K,
+            "jaccard_threshold": _CQ13_JACCARD_THRESHOLD,
+        },
+    )
+
+
+def find_near_duplicate_clusters(page_texts: dict[str, str]) -> list[Finding]:
+    """CQ-13. Groups `page_texts` (page_url -> visible text) into
+    same-template strata via `shared/page_sample.template_key`, then flags
+    any stratum where 2 or more pages cluster as near-duplicates by
+    k-shingle Jaccard similarity on their post-chrome-stripped text.
+
+    Comparing only *within* a stratum — never across templates — is what
+    makes the comparison meaningful: a pricing page and a blog post are
+    expected to differ, and a low similarity score between them is not
+    evidence of anything. A page with fewer than 30 words of remaining
+    content after chrome-stripping is excluded from comparison entirely —
+    a near-empty stub page trivially "matches" almost anything at the
+    shingle level, which would be noise, not a duplicate-content defect.
+    """
+    strata: dict[str, list[str]] = {}
+    for url in page_texts:
+        strata.setdefault(template_key(urllib.parse.urlsplit(url).path or "/"), []).append(url)
+
+    stripped = _strip_chrome_lines(page_texts)
+
+    findings: list[Finding] = []
+    for key, urls in strata.items():
+        if len(urls) < _CQ13_MIN_STRATUM_SIZE:
+            continue
+        eligible = [u for u in urls if len(stripped[u].split()) >= _CQ13_MIN_CONTENT_WORDS]
+        if len(eligible) < 2:
+            continue
+        texts = [stripped[u] for u in eligible]
+        groups = near_duplicate_groups(texts, k=_CQ13_SHINGLE_K, threshold=_CQ13_JACCARD_THRESHOLD)
+        for group in groups:
+            if len(group) < 2:
+                continue
+            findings.append(_near_duplicate_finding(key, [eligible[i] for i in group]))
+    return findings
+
+
+def audit_near_duplicates(site: str, page_urls: list[str]) -> dict:
+    """CQ-13's multi-page mode — fetches every on-site URL in `page_urls`
+    (the orchestrator's own bounded page sample) and checks for
+    near-duplicate clusters within same-template strata.
+
+    A separate, once-per-run mode from `audit_text`'s once-per-page mode."""
+    unknowns: list[UnknownCheck] = []
+    page_texts: dict[str, str] = {}
+    for page_url in page_urls:
+        html_or_error, status = fetch_page_html(page_url)
+        if status != "present" or html_or_error is None:
+            unknowns.append(UnknownCheck("CQ-13", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
+            continue
+        page_texts[page_url] = extract_visible_text(html_or_error)
+
+    findings = find_near_duplicate_clusters(page_texts)
+    return {
+        "owner_skill": OWNER_SKILL,
+        "capability_ids": CAPABILITY_IDS,
+        "site": site,
+        "findings": [f.to_dict() for f in findings],
+        "agent_judgement_required": [],
+        "unknown_checks": [u.to_dict() for u in unknowns],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Fetching (--url mode only)
 # ---------------------------------------------------------------------------
 
@@ -1006,7 +1177,29 @@ def main(argv: list[str] | None = None) -> int:
         "--html-file/--text-file mode so a report composed from several pages stays "
         "attributable to the right one.",
     )
+    parser.add_argument(
+        "--sample-file",
+        help=(
+            "Run only CQ-13's near-duplicate/template-dilution check across a local file of "
+            "on-site page URLs (one per line — the sample_urls from audit-orchestrator's "
+            "sample_pages.py) instead of auditing a single page's text. Fetches each page itself "
+            "(same as --url). Requires --site."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.sample_file:
+        if not args.site:
+            parser.error("--site is required with --sample-file")
+        site = site_label(args.site)
+        page_urls = [
+            line.strip()
+            for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+        json.dump(audit_near_duplicates(site, page_urls), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
 
     if not any((args.url, args.site)):
         parser.error("one of --url or --site is required")

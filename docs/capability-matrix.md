@@ -122,19 +122,20 @@ skills, no new skill file for any of them:**
   machines, REN-12 finds text hidden *from* humans). See
   `docs/phase-4-completion-22.md`.
 
-**Deferred, 4** (a real defect, blocked on complexity or infrastructure,
+**Deferred, 3** (a real defect, blocked on complexity or infrastructure,
 not policy — distinct from a rejection): chunk-fracture simulation (folded
 into RET-10's own mechanism instead — a fixed window offset is arbitrary,
 RET-10's anchor test captures the same underlying risk without one);
 AI-reachable subgraph orphan detection in its full graph form (needs a
 link-graph crawl this project does not have; its cheap, crawl-free 80% —
 robots path rules ∩ sitemap inventory — is absorbed into PER-09's own
-contradiction check); cross-page near-duplicate/template dilution
-(methodologically broken against this project's own agent-chosen,
-variety-biased page sample, which systematically hides exactly the
-clusters this would look for); `.md`-variant-vs-canonical-HTML drift
-(a genuine defect, reachable on <1% of sites that serve a `.md` variant at
-all — a cheap PER-07 extension for a future cycle, not its own capability).
+contradiction check); `.md`-variant-vs-canonical-HTML drift (a genuine
+defect, reachable on <1% of sites that serve a `.md` variant at all — a
+cheap PER-07 extension for a future cycle, not its own capability).
+Cross-page near-duplicate/template dilution, formerly deferred here as
+"methodologically broken against this project's own agent-chosen,
+variety-biased page sample", was unblocked by cycle 23's Phase 1
+template-stratified sampler and shipped as **CQ-13** — see that row above.
 
 **Rejected, 19**, across five named failure classes (full per-candidate
 reasoning in `docs/01-project-plan.md` §2's table and "The pattern in the
@@ -275,7 +276,7 @@ paragraph's FP-risk note about "approximated rows" no longer covers them.
 | ENT-04 | Canonicalisation & duplicate content | Slug variants, trailing-slash forks, missing/incorrect `rel=canonical` splitting authority | — (built locally) | None | — | IMPLEMENTED — `entity-audit`. Single-page half (missing/empty/conflicting/off-domain canonical, `www.`-aware since cycle 15) plus a sitemap-scoped crawl-wide half added cycle 18: `--sitemap-file` mode detects trailing-slash/`www.`/scheme forks directly from the sitemap's own declared URL list (no crawl needed — reuses PER-06's fetch). Live-validated on 4 real sitemaps (61 to 7071 URLs), all clean, no false positives |
 | ENT-05 | Brand-name entity collision | Same/similar name on other entities with different locations or ratings → attribute-merging hallucinations | GEO | Exact | ~ | IMPLEMENTED — `entity-audit`, off-site mode (`--offsite-url`/`--brand-name`), agent-judged, cycle 19. Script fetches agent-supplied off-site URLs (robots.txt-checked per host) and extracts a snippet around every brand-name mention; agent judges same-entity vs. genuine collision against `references/entity-judgement-rubric.md` §ENT-05. Does not search the web itself — candidate URLs are the calling agent's own search step. FP risk stays **very high** by design of the judgement, not the extraction — see Detail below |
 | ENT-06 | Lookalike domain impersonation | Confusable non-official domains cannibalising the real entity's citations | — | None | ✘ | IMPLEMENTED — `entity-audit`, off-site mode, agent-judged, cycle 19. Domain-string similarity (stdlib `difflib`, ≥0.75 threshold) against the audited site's own domain is scriptable and deterministic; audited site's own domain and subdomains excluded (live-found: `meta.discourse.org` scored 0.839 against `discourse.org` and would have false-positived as a lookalike before the subdomain guard). Agent judges the fetched page's content for plausible impersonation intent against §ENT-06 |
-| ENT-07 | Cross-domain service attribution | Marketing on `.com`, support on a third-party subdomain, with nothing linking them as one entity | — | None | ✘ | NOT_STARTED — considered cycle 21, discarded: needs multi-page/cross-domain context, no crawl infra |
+| ENT-07 | Cross-domain service attribution | Marketing on `.com`, support on a third-party subdomain, with nothing linking them as one entity | — | None | ✘ | IMPLEMENTED — `entity-audit`, `--sample-file` mode, cycle 23 (B2). Unblocked by Phase 1's page sampler (`shared/page_sample.py`) and the vendored Public Suffix List (`shared/public_suffix.py`). Fetches every on-site URL in an orchestrator-supplied page sample, extracts outbound links, and narrows to third-party domains recurring across ≥2 sampled pages whose URL looks service-related (support/help/docs/status) and whose hostname carries the site's own brand token — the dominant-false-positive guard against a popular but genuinely unrelated third-party tool (a payment processor, a generic statuspage.io host) merely being linked often. For each survivor, fetches that domain's own homepage once (robots.txt-checked) and flags it only if its structured data carries no `sameAs`/`url` reference back to the audited site. Entirely script-decided, no agent judgement |
 | ENT-08 | NAP consistency | Name/address/phone disagreeing across the site's own pages and its markup | — | None | ✘ | NOT_STARTED — considered cycle 21, discarded: needs multi-page context, no crawl infra; phone-half overlaps REN-10 |
 | ENT-09 | Specialty/taxonomy consistency | A page's assigned category tag contradicting its own body text | — | None | ✘ | IMPLEMENTED — `entity-audit`, agent-judged. Single-page, no off-site/cross-page reasoning needed (an earlier phase-4 note incorrectly grouped it with ENT-07/08, corrected in cycle 9). Script extracts a declared category/breadcrumb label + zero-keyword-overlap candidates only; agent judges against references/entity-judgement-rubric.md |
 | ENT-10 | Same-listing address drift | Unstable address text across snapshots of one listing → trust demotion | — | None | ✘ | **DEFERRED** — requires historical snapshots we cannot obtain in a single <5 min read-only audit. Documented as a limitation, not faked |
@@ -406,6 +407,7 @@ over *incorrectness* (CIT-03, hard, noisy).
 | CQ-09 | Marketing/procedure interleaving | Promotional bullets inside how-to steps → models discard the whole procedure | — | None | ✘ | IMPLEMENTED — `content-quality-audit`, agent-judged. Extraction scoped to numbered step-line markers, text-based (no DOM li/ol structure retained) |
 | CQ-10 | Temporal freshness & contradiction | Stale "updated" dates; page-to-page contradictions on the same fact | — | None | ✘ | NOT_STARTED — considered cycle 21, discarded: selected then descoped by the user after selection, not a feasibility problem |
 | CQ-11 | Fluency / readability | Grammatical noise raising parse friction | — (was seoscoreapi) | None | ✘ | IMPLEMENTED — `content-quality-audit`. Flesch Reading Ease, "very difficult" band (<30) only, 300-word minimum sample, confidence capped at medium — the formula's known jargon-vs-difficulty limitation, documented, not solved |
+| CQ-13 | Near-duplicate / template dilution | Several pages under one URL template substantively repeat each other's content, diluting citation authority across near-identical pages | — (was `datasketch`) | None | ✘ | IMPLEMENTED — `content-quality-audit`, `--sample-file` mode, cycle 23 (B6). Previously held DEFERRED (see "Deferred, 4" below) as "methodologically broken against this project's own agent-chosen, variety-biased page sample" — unblocked by Phase 1's template-stratified sampler (`shared/page_sample.py`), which exists specifically so near-identical pages land in the same stratum. Strips lines repeating verbatim across ≥half the sample (chrome), groups by URL template, and runs `shared/shingles.near_duplicate_groups` (k-shingle Jaccard, replacing `datasketch`, rejected in `docs/02-project-plan.md` Part 1) within each stratum only |
 | CQ-12 | Signal-to-filler ratio | Substance drowning in low-value filler (appendix F, generalised to pages) | — | None | ✘ | IMPLEMENTED — `content-quality-audit`, agent-judged. Script reports a page-level filler-phrase count/word-count/examples triple only, no ratio computed; agent judges proportion |
 
 **Detail.** Deps: none beyond extracted text. CQ-03, CQ-05, CQ-07, CQ-08 are
@@ -461,16 +463,16 @@ vs disoriented landing pages, and a checkout with 3 steps vs 8 with late fees.
 
 | ID | Capability | Purpose | Status |
 |---|---|---|---|
-| INF-01 | Target acquisition & scoping | URL → domain, template discovery, page sampling plan | NOT_STARTED |
-| INF-02 | Fetch layer | Robots-respecting, rate-limited, cached, single-fetch-many-consumers | NOT_STARTED |
+| INF-01 | Target acquisition & scoping | URL → domain, template discovery, page sampling plan | IMPLEMENTED — `shared/page_sample.py` (D1, cycle 23): template-stratified sitemap sampling, replacing the orchestrator's prior interest-biased prose instruction; CLI wrapper `skills/audit-orchestrator/scripts/sample_pages.py` |
+| INF-02 | Fetch layer | Robots-respecting, rate-limited, cached, single-fetch-many-consumers | PARTIALLY_COVERED — `shared/page_fetch.py` (D2, cycle 23) consolidates six duplicate fetch implementations into one SSRF-guarded, gzip/deflate-decoding, in-process-cached module (`fetch_page`/`fetch_page_html`/`fetch_text`); no rate-limiting yet |
 | INF-03 | Render layer | Headless render of a sampled subset; graceful degradation when unavailable | REJECTED — hard constraint 1 (no headless browsers, cycle 19). Permanently excluded, not just deprioritized; Cluster B rewritten to not need this layer at all |
-| INF-04 | Page bundle artifact | The shared object every skill consumes: raw HTML, extracted text, JSON-LD, embedded hydration-state JSON, headers, links | NOT_STARTED — "rendered DOM" dropped from the bundle's own definition, cycle 19; superseded by hydration-state JSON per Cluster B |
+| INF-04 | Page bundle artifact | The shared object every skill consumes: raw HTML, extracted text, JSON-LD, embedded hydration-state JSON, headers, links | PARTIALLY_COVERED — `shared/page_fetch.py`'s `PageBundle` (D2, cycle 23) carries raw/decoded HTML, headers and final URL with an in-process one-fetch cache; extracted-text/JSON-LD/link fields not yet folded into the bundle itself — "rendered DOM" dropped from the bundle's own definition, cycle 19; superseded by hydration-state JSON per Cluster B |
 | INF-05 | Normalised finding contract | Internal superset schema that serialises down to the required report shape | IMPLEMENTED — `shared/finding_contract.py` |
 | INF-06 | Severity model | Gate-based: gate-1 failures are veto items; downstream findings suppressed when an upstream gate fails | PARTIALLY_COVERED — `gate` field carried and severities derived per gate; suppression not implementable until a second gate exists |
 | INF-07 | Confidence model | Evidence-strength scoring; `unknown` is a first-class state | PARTIALLY_COVERED — typed `unknown` and per-finding `confidence` implemented; no evidence-strength scoring yet |
 | INF-08 | Deduplication & aggregation | Related symptoms from multiple skills merged into one finding with multiple evidence sources | NOT_STARTED — checked twice, not speculative: the orchestrator validation pass and its second-round follow-up (`docs/phase-4-completion-15.md`, `-16.md`) read four real composed reports for cross-skill redundancy across four sites and found none; deferred until a real case appears |
 | INF-09 | Proactive-suggestion track | Recommendations where no defect was found — separately required by the rubric | IMPLEMENTED — `track` field; first user is PER-04 |
-| INF-10 | Budget & timeout governor | Coverage modes; per-stage time caps; degrade to `unknown` rather than overrun 5 minutes | NOT_STARTED |
+| INF-10 | Budget & timeout governor | Coverage modes; per-stage time caps; degrade to `unknown` rather than overrun 5 minutes | PARTIALLY_COVERED — `shared/budget.py` (D4, cycle 23): `StageBudget` monotonic-clock cap, `unreached_capability_unknowns` (typed `UnknownCheck` per capability cut off by a cap), `coverage_manifest` attachable via `finding_contract.build_report`'s optional `coverage` param. Not yet consumed by any existing single-page skill; built as the precondition Phase 3/4's multi-page checks (e.g. B6 near-duplicate detection's ~450 pairwise comparisons) need to bound their own work |
 | INF-11 | Prompt-injection defence | Page content is data, never instruction — enforced in every skill that reads a page | PARTIALLY_COVERED — stated in every SKILL.md; no page-body reading exists yet to enforce it against |
 
 ---

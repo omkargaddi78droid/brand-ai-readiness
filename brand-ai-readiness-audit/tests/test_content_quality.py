@@ -499,5 +499,123 @@ class SsrfGuardTests(unittest.TestCase):
         self.assertFalse(cq.is_public_host("this-host-does-not-exist.invalid"))
 
 
+_CHROME_NAV = "Home About Products Support Contact Sign In Cart"
+_CHROME_FOOTER = "Copyright Acme Widgets Inc All rights reserved Privacy Policy Terms of Service"
+
+
+def _page(*body_lines: str) -> str:
+    return "\n".join([_CHROME_NAV, *body_lines, _CHROME_FOOTER])
+
+
+class StripChromeLinesTests(unittest.TestCase):
+    def test_lines_repeated_on_at_least_half_the_pages_are_removed(self):
+        pages = {
+            "https://acme.com/a": _page("Unique content for page A goes here"),
+            "https://acme.com/b": _page("Unique content for page B goes here"),
+        }
+        stripped = cq._strip_chrome_lines(pages)
+        for text in stripped.values():
+            self.assertNotIn(_CHROME_NAV, text)
+            self.assertNotIn(_CHROME_FOOTER, text)
+
+    def test_unique_content_lines_are_preserved(self):
+        pages = {
+            "https://acme.com/a": _page("Unique content for page A goes here"),
+            "https://acme.com/b": _page("Unique content for page B goes here"),
+        }
+        stripped = cq._strip_chrome_lines(pages)
+        self.assertIn("Unique content for page A goes here", stripped["https://acme.com/a"])
+        self.assertIn("Unique content for page B goes here", stripped["https://acme.com/b"])
+
+    def test_short_lines_are_never_treated_as_chrome(self):
+        # Below the minimum length guard even if it repeats everywhere —
+        # avoids stripping something like a repeated one-word price label.
+        pages = {"https://acme.com/a": "Hi\nReal content line one", "https://acme.com/b": "Hi\nReal content line two"}
+        stripped = cq._strip_chrome_lines(pages)
+        self.assertIn("Hi", stripped["https://acme.com/a"])
+
+
+class FindNearDuplicateClustersTests(unittest.TestCase):
+    def test_near_identical_pages_under_the_same_template_are_flagged(self):
+        body = (
+            "Our premium widget line offers industry leading durability backed by a "
+            "comprehensive five year warranty and free worldwide shipping on every order "
+            "placed through our online store this month only while supplies last"
+        )
+        page_texts = {
+            "https://acme.com/blog/post-1": _page(body),
+            "https://acme.com/blog/post-2": _page(body.replace("this month", "this week")),
+        }
+        findings = cq.find_near_duplicate_clusters(page_texts)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].capability_id, "CQ-13")
+        self.assertEqual(set(findings[0].structured_evidence["urls"]), set(page_texts))
+
+    def test_legitimately_distinct_pages_under_the_same_template_are_not_flagged(self):
+        page_texts = {
+            "https://acme.com/blog/post-1": _page(
+                "This article explains our new titanium frame manufacturing process in detail "
+                "covering material sourcing quality control and the twelve step assembly line"
+            ),
+            "https://acme.com/blog/post-2": _page(
+                "This unrelated article covers our quarterly financial results for shareholders "
+                "including revenue growth margin expansion and guidance for the coming fiscal year"
+            ),
+        }
+        self.assertEqual(cq.find_near_duplicate_clusters(page_texts), [])
+
+    def test_different_templates_are_never_compared_to_each_other(self):
+        # Dominant false positive: two totally different page kinds that
+        # happen to share generic boilerplate phrasing must never be
+        # compared just because their content overlaps somewhat — they are
+        # not even in the same stratum.
+        body = "Identical filler text repeated on purpose to maximize any shingle overlap score"
+        page_texts = {"https://acme.com/pricing": _page(body), "https://acme.com/about": _page(body)}
+        self.assertEqual(cq.find_near_duplicate_clusters(page_texts), [])
+
+    def test_a_single_page_stratum_is_never_flagged(self):
+        page_texts = {"https://acme.com/blog/only-post": _page("Some reasonably long unique article body text here")}
+        self.assertEqual(cq.find_near_duplicate_clusters(page_texts), [])
+
+    def test_near_empty_stub_pages_are_excluded_from_comparison(self):
+        page_texts = {
+            "https://acme.com/blog/stub-1": _page("Coming soon"),
+            "https://acme.com/blog/stub-2": _page("Coming soon"),
+        }
+        self.assertEqual(cq.find_near_duplicate_clusters(page_texts), [])
+
+    def test_findings_pass_the_finding_contract_validation(self):
+        body = (
+            "Our premium widget line offers industry leading durability backed by a "
+            "comprehensive five year warranty and free worldwide shipping on every order "
+            "placed through our online store this month only while supplies last"
+        )
+        page_texts = {
+            "https://acme.com/blog/post-1": _page(body),
+            "https://acme.com/blog/post-2": _page(body),
+        }
+        findings = cq.find_near_duplicate_clusters(page_texts)
+        for finding in findings:
+            self.assertEqual(finding.validate(), [])
+
+
+class AuditNearDuplicatesTests(unittest.TestCase):
+    def test_an_unreachable_page_becomes_one_unknown_check(self):
+        out = cq.audit_near_duplicates("acme.com", ["https://this-host-does-not-exist.invalid/page"])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(len(out["unknown_checks"]), 1)
+        self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
+
+    def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
+        out = cq.audit_near_duplicates("acme.com", [])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["unknown_checks"], [])
+
+    def test_output_always_carries_the_capability_ids(self):
+        out = cq.audit_near_duplicates("acme.com", [])
+        self.assertEqual(out["capability_ids"], cq.CAPABILITY_IDS)
+        self.assertIn("CQ-13", out["capability_ids"])
+
+
 if __name__ == "__main__":
     unittest.main()

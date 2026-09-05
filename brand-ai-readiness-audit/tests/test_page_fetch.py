@@ -101,6 +101,38 @@ class FetchPageHtmlEndToEndTests(unittest.TestCase):
         self.assertIn("Example Corp", html)
 
 
+class _XmlHandler(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):  # noqa: N802
+        body = b"<?xml version='1.0'?><urlset></urlset>"
+        self.send_response(200)
+        self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class FetchTextTests(unittest.TestCase):
+    def test_a_loopback_url_is_refused_without_a_network_call(self):
+        text, status = page_fetch.fetch_text("http://127.0.0.1:9/")
+        self.assertEqual(status, "unavailable")
+        self.assertIn("does not resolve to a public address", text)
+
+    def test_application_xml_content_type_is_accepted_unlike_fetch_page_html(self):
+        with _LocalServer(_XmlHandler) as server, patch.object(page_fetch, "is_public_host", return_value=True):
+            text, status = page_fetch.fetch_text(server.url)
+        self.assertEqual(status, "present")
+        self.assertIn("<urlset>", text)
+
+    def test_a_normal_html_response_is_still_returned_present(self):
+        with _LocalServer(_HtmlHandler) as server, patch.object(page_fetch, "is_public_host", return_value=True):
+            text, status = page_fetch.fetch_text(server.url)
+        self.assertEqual(status, "present")
+        self.assertIn("Example Corp", text)
+
+
 class PageBundleCacheTests(unittest.TestCase):
     def setUp(self):
         page_fetch.clear_cache()

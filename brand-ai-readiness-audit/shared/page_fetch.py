@@ -84,6 +84,38 @@ def decode_content_encoding(raw: bytes, content_encoding: str) -> bytes:
     return raw
 
 
+def fetch_text(url: str) -> tuple[str | None, str]:
+    """Fetch `url` and return (text_or_error_message, status), with no
+    Content-Type restriction — unlike `fetch_page_html`, which rejects
+    anything not html/text and would wrongly reject a sitemap.xml served as
+    `application/xml` (a common, correct Content-Type for one that contains
+    neither "html" nor "text"). Use this for any well-known file whose
+    format is already known from context (a sitemap, a JSON/text
+    well-known resource), and `fetch_page_html` only for an arbitrary page
+    whose Content-Type itself needs validating as HTML/text.
+
+    status is one of "present", "unavailable". On any failure the first
+    element is a human-readable message, never None.
+    """
+    hostname = urllib.parse.urlparse(url).hostname
+    if not hostname or not is_public_host(hostname):
+        return f"{url} does not resolve to a public address", "unavailable"
+
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+            raw = response.read(MAX_PAGE_BYTES)
+            content_encoding = response.headers.get("Content-Encoding", "")
+        raw = decode_content_encoding(raw, content_encoding)
+        return raw.decode("utf-8", errors="replace"), "present"
+    except urllib.error.HTTPError as error:
+        code = error.code
+        error.close()
+        return f"{url} returned HTTP {code}", "unavailable"
+    except Exception as error:
+        return f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
+
+
 def fetch_page_html(url: str) -> tuple[str | None, str]:
     """Fetch `url` and return (html_or_error_message, status).
 

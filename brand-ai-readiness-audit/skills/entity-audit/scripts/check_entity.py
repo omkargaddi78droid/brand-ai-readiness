@@ -2,7 +2,7 @@
 """Gate-3 entity audit: is the brand a resolved entity, and does its markup
 agree with itself?
 
-Owns seven capabilities — the identity multiplier, cross-cutting because
+Owns ten capabilities — the identity multiplier, cross-cutting because
 every other gate-3 finding is worth more once an assistant can resolve
 *which* brand it is looking at (Round-2 appendix D: shared names cause
 entity mix-ups unless something clearly distinguishes them):
@@ -12,8 +12,11 @@ entity mix-ups unless something clearly distinguishes them):
   ENT-04  Canonicalisation — missing, conflicting, malformed or off-domain rel=canonical
   ENT-05  Brand-name entity collision (agent-judged; off-site — see below)
   ENT-06  Lookalike domain impersonation (agent-judged; off-site — see below)
+  ENT-07  Cross-domain service attribution (multi-page; --sample-file mode — see below)
   ENT-09  Taxonomy consistency — a declared category/section contradicting the page's
           own body text (agent-judged; see below)
+  ENT-11  JSON-LD graph referential integrity — dangling/cross-page @id references
+  ENT-12  JSON-LD entity-graph fragmentation — a valid graph split into disconnected clusters
 
 **ENT-05/ENT-06 are off-site, cycle-19 additions.** Cycle 9 through 18 kept
 these `DEFERRED`, reasoning that an off-site lookup conflicts with this
@@ -34,12 +37,29 @@ this genuinely impersonation" are exactly the fuzzy semantic calls this
 project's Phase 0.1(c) stance pushes to agent judgement, never a script
 verdict.
 
-Deliberately does NOT own: ENT-07 (cross-domain service attribution) and
-ENT-08 (NAP consistency), which need either off-site reasoning or comparing
-several pages, neither of which this single-page script does; ENT-04's
-crawl-wide half (slug variants, trailing-slash forks across many URLs) —
-that needs a sitemap and a canonical map spanning the whole site, not one
-page.
+**ENT-07 is a cycle-23 addition, `--sample-file` mode.** Cycle 21 deferred it
+as needing "either off-site reasoning or comparing several pages, neither of
+which this single-page script does" — true at the time, and no longer a
+blocker once cycle 23's Phase 1 shipped a page sampler
+(shared/page_sample.py) and a Public Suffix List module
+(shared/public_suffix.py). Given a file of on-site page URLs (the
+orchestrator's own bounded sample), this mode fetches each one, extracts
+outbound links, and flags a recurring, brand-named, service-shaped
+third-party domain (a help desk, a status page) whose own homepage carries
+no `sameAs`/`url` reference back to this site — the same reasoning ENT-05/06
+established in cycle 19 for when an off-site or multi-page lookup is
+permitted (hard constraint 2): direct, bounded, robots.txt-respecting HTTP
+queries this script picks candidates for itself, computing the verdict here
+rather than deferring it to agent judgement, since "does this hostname
+contain our brand name and a service keyword, and does its own markup name
+us back" is fully mechanical.
+
+Deliberately does NOT own: ENT-08 (NAP consistency), which needs comparing
+several pages' visible address text against each other — a genuinely
+semantic clustering problem (B3, still-deferred Phase 4 work), unlike ENT-07's
+mechanical domain/markup check; ENT-04's crawl-wide half (slug variants,
+trailing-slash forks across many URLs) — that needs a sitemap and a
+canonical map spanning the whole site, not one page.
 
 **ENT-09 is agent-judged**, unlike ENT-01–04. The capability matrix's own
 wording — "a page's assigned category tag contradicting its own body text"
@@ -122,9 +142,12 @@ from page_fetch import (  # noqa: E402
     is_public_host,
     fetch_page_html,
 )
+from public_suffix import registrable_domain, same_entity  # noqa: E402
 
 OWNER_SKILL = "entity-audit"
-CAPABILITY_IDS = ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11", "ENT-12"]
+CAPABILITY_IDS = [
+    "ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-07", "ENT-09", "ENT-11", "ENT-12",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -1361,6 +1384,210 @@ def audit_sitemap(site: str, sitemap_urls: list[str]) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# ENT-07 — Cross-domain service attribution (--sample-file mode only)
+# ---------------------------------------------------------------------------
+
+_SERVICE_KEYWORDS = ("support", "help", "docs", "status")
+_ENT07_MIN_SOURCE_PAGES = 2
+
+
+class _LinkParser(HTMLParser):
+    """Collects every <a href> target on a page — the minimal extraction
+    ENT-07 needs, kept separate from `_PageParser` rather than folded into
+    it: this only runs in `--sample-file` mode, and `_PageParser`'s existing
+    consumers (ENT-01/03/04/09/11/12) have no use for outbound links."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hrefs: list[str] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "a":
+            href = dict(attrs).get("href")
+            if href:
+                self.hrefs.append(href.strip())
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+
+
+def extract_outbound_links(html: str, page_url: str) -> list[str]:
+    """Every http(s) link target on the page, resolved to an absolute URL
+    against `page_url`. mailto:/tel:/javascript:/fragment-only hrefs are
+    dropped — none of them can be a cross-domain service homepage."""
+    parser = _LinkParser()
+    parser.feed(html)
+    parser.close()
+    resolved = []
+    for href in parser.hrefs:
+        if href.startswith("#"):
+            continue
+        absolute = urllib.parse.urljoin(page_url, href)
+        if urllib.parse.urlparse(absolute).scheme in ("http", "https"):
+            resolved.append(absolute)
+    return resolved
+
+
+def _brand_token(site: str) -> str:
+    """The first label of `site`'s own registrable domain, lowercased —
+    "acme" from "acme.com" or "www.acme.co.uk". See
+    `find_service_domain_candidates` for why this gates candidate domains."""
+    result = registrable_domain(site)
+    if not result.registrable_domain:
+        return ""
+    return result.registrable_domain.split(".")[0]
+
+
+def find_service_domain_candidates(site: str, page_links: dict[str, list[str]]) -> list[dict]:
+    """Third-party domains worth checking for a `sameAs` bridge back to
+    `site`: linked from at least two distinct sampled pages (recurs, not a
+    one-off footer link), whose full URL looks service-related (contains
+    "support", "help", "docs", or "status" — a real help-desk platform link
+    typically carries this in the path, e.g. "acme.zendesk.com/hc", not
+    necessarily the hostname) and whose hostname contains the site's own
+    brand token.
+
+    The dominant false positive this guards against is a commonly-linked
+    but genuinely unrelated third party — a payment processor, a generic
+    statuspage.io-hosted status page for some *other* company — that merely
+    happens to be linked often. Requiring the brand's own name in the
+    candidate's hostname is what distinguishes "this looks like it might be
+    OUR support site" from "we link to a popular tool a lot"; recurrence
+    across ≥2 distinct pages (not ≥2 raw links, which one footer alone could
+    supply) is what distinguishes a site-wide pattern from a single
+    incidental mention.
+    """
+    brand_token = _brand_token(site)
+    by_domain: dict[str, dict] = {}
+    for page_url, links in page_links.items():
+        seen_domains_this_page: set[str] = set()
+        for link in links:
+            hostname = (urllib.parse.urlparse(link).hostname or "").lower()
+            if not hostname or same_entity(hostname, site):
+                continue
+            if not any(keyword in link.lower() for keyword in _SERVICE_KEYWORDS):
+                continue
+            if brand_token and brand_token not in hostname:
+                continue
+            candidate_domain = registrable_domain(hostname).registrable_domain
+            if not candidate_domain or candidate_domain in seen_domains_this_page:
+                continue
+            seen_domains_this_page.add(candidate_domain)
+            entry = by_domain.setdefault(
+                candidate_domain, {"domain": candidate_domain, "example_url": link, "source_pages": []}
+            )
+            entry["source_pages"].append(page_url)
+
+    return [entry for entry in by_domain.values() if len(entry["source_pages"]) >= _ENT07_MIN_SOURCE_PAGES]
+
+
+def _bridges_back_to_site(nodes: list[dict], site: str) -> bool:
+    """Whether any JSON-LD node on the candidate's own homepage names `site`
+    via `sameAs` or `url` — the reciprocal reference this check verifies is
+    missing when it returns False."""
+    for node in nodes:
+        for field in ("sameAs", "url"):
+            value = node.get(field)
+            values = value if isinstance(value, list) else [value] if value else []
+            for candidate in values:
+                if not isinstance(candidate, str):
+                    continue
+                hostname = urllib.parse.urlparse(candidate).hostname or ""
+                if hostname and same_entity(hostname, site):
+                    return True
+    return False
+
+
+def _cross_domain_unattributed_finding(candidate: dict) -> Finding:
+    domain = candidate["domain"]
+    pages = candidate["source_pages"]
+    slug = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:8]
+    shown_pages = ", ".join(pages[:3]) + ("…" if len(pages) > 3 else "")
+    return Finding(
+        id=f"ENT-07-cross-domain-service-unattributed-{slug}",
+        title=f"{domain} looks like this brand's service domain but has no structured-data bridge back",
+        severity="low",
+        evidence=(
+            f"{domain} is linked as a support/help/docs/status destination from {len(pages)} sampled "
+            f"pages ({shown_pages}) and its hostname carries this brand's own name, but {domain}'s "
+            "own homepage carries no sameAs or url reference back to this site."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                f"Add a reciprocal sameAs (or Organization.url) reference between this site and "
+                f"{domain} so an AI assistant can resolve them as one entity instead of two "
+                "unrelated sites."
+            ),
+            priority="low",
+        ),
+        category="discoverability",
+        capability_id="ENT-07",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "Entity resolution walks sameAs/url references to confirm two domains describe the same "
+            "organization. A brand-named, service-shaped third-party domain that recurs across the "
+            "sampled pages but never names this site back leaves an AI assistant unable to attribute "
+            "that domain's content to this brand, splitting what should be one entity's authority "
+            "and citations across two unconnected ones."
+        ),
+        gate=3,
+        confidence="medium",
+        structured_evidence={"domain": domain, "source_pages": pages, "example_url": candidate["example_url"]},
+    )
+
+
+def find_cross_domain_service_attribution(
+    site: str, candidates: list[dict]
+) -> tuple[list[Finding], list[UnknownCheck]]:
+    findings: list[Finding] = []
+    unknowns: list[UnknownCheck] = []
+    for candidate in candidates:
+        domain = candidate["domain"]
+        homepage_url = f"https://{domain}/"
+        if not robots_allows_offsite_fetch(homepage_url):
+            unknowns.append(UnknownCheck("ENT-07", OWNER_SKILL, f"{domain} disallowed by its own robots.txt"))
+            continue
+        html_or_error, status = fetch_page_html(homepage_url)
+        if status != "present" or html_or_error is None:
+            unknowns.append(UnknownCheck("ENT-07", OWNER_SKILL, f"{domain} could not be fetched: {html_or_error}"))
+            continue
+        nodes, _, _, _ = parse_page(html_or_error)
+        if not _bridges_back_to_site(nodes, site):
+            findings.append(_cross_domain_unattributed_finding(candidate))
+    return findings, unknowns
+
+
+def audit_service_domains(site: str, page_urls: list[str]) -> dict:
+    """ENT-07's multi-page mode — fetches every on-site URL in `page_urls`
+    (the orchestrator's own bounded page sample), extracts outbound links,
+    and checks any recurring brand-named service domain for a bridge back.
+
+    A separate, once-per-run mode from `audit_html`'s once-per-page mode,
+    the same relationship `audit_offsite` has to it for ENT-05/06."""
+    unknowns: list[UnknownCheck] = []
+    page_links: dict[str, list[str]] = {}
+    for page_url in page_urls:
+        html_or_error, status = fetch_page_html(page_url)
+        if status != "present" or html_or_error is None:
+            unknowns.append(UnknownCheck("ENT-07", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
+            continue
+        page_links[page_url] = extract_outbound_links(html_or_error, page_url)
+
+    candidates = find_service_domain_candidates(site, page_links)
+    findings, fetch_unknowns = find_cross_domain_service_attribution(site, candidates)
+    unknowns.extend(fetch_unknowns)
+
+    return {
+        "owner_skill": OWNER_SKILL,
+        "capability_ids": CAPABILITY_IDS,
+        "site": site,
+        "findings": [f.to_dict() for f in findings],
+        "agent_judgement_required": [],
+        "unknown_checks": [u.to_dict() for u in unknowns],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Off-site fetching (--offsite-url mode only) — ENT-05/ENT-06
 # ---------------------------------------------------------------------------
 
@@ -1454,7 +1681,30 @@ def main(argv: list[str] | None = None) -> int:
         "--brand-name",
         help="Brand name to search off-site pages for (ENT-05). Defaults to --site if omitted.",
     )
+    parser.add_argument(
+        "--sample-file",
+        help=(
+            "Run only ENT-07's cross-domain service-attribution check across a local file of "
+            "on-site page URLs (one per line — the sample_urls from audit-orchestrator's "
+            "sample_pages.py) instead of auditing a single page's HTML. Fetches each on-site page "
+            "directly (same as --url), plus, for any surviving candidate domain, that candidate's "
+            "own third-party homepage (robots.txt-checked, same as --offsite-url). Requires --site."
+        ),
+    )
     args = parser.parse_args(argv)
+
+    if args.sample_file:
+        if not args.site:
+            parser.error("--site is required with --sample-file")
+        site = site_label(args.site)
+        page_urls = [
+            line.strip()
+            for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+        json.dump(audit_service_domains(site, page_urls), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
 
     if args.sitemap_file:
         site = site_label(args.site or "")
@@ -1477,7 +1727,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if not any((args.url, args.site)):
-        parser.error("one of --url, --site, --sitemap-file or --offsite-url is required")
+        parser.error("one of --url, --site, --sitemap-file, --offsite-url or --sample-file is required")
     site = site_label(args.site or args.url)
     page_url = args.page_url or args.url
 

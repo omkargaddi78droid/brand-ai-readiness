@@ -1,22 +1,21 @@
 ---
 name: entity-audit
 description: >
-  Audits a single page for entity identity and structural consistency:
-  schema.org/JSON-LD presence and validity, a link to an authoritative
-  identity source (Wikidata, LinkedIn, Crunchbase) in Organization markup,
-  agreement between a marked-up rating and the page's visible text,
-  rel=canonical presence/uniqueness/domain, and whether the JSON-LD graph's
-  @id references resolve or its resolved graph fragments (script-decided);
-  a declared category
-  contradicting the page's own body text, and — given agent-supplied
-  off-site URLs — brand-name collision or lookalike-domain impersonation
-  (agent-decided against a rubric). Use when structured data is missing,
-  broken, contradicts its own page, or references an entity it never
-  defines, when duplicate URLs risk splitting citation authority, or when
-  checking off-site brand confusion or impersonation. Not for cross-page/
-  cross-domain consistency (NAP, attribution), reachability
-  (perimeter-access-audit), or non-structured-data content anti-patterns
-  (content-quality-audit).
+  Audits a page (or a sampled page list) for entity identity and structural
+  consistency: schema.org/JSON-LD presence/validity, a link to an
+  authoritative identity source (Wikidata, LinkedIn, Crunchbase), rating
+  markup vs. visible text, rel=canonical presence/uniqueness/domain, and
+  whether the JSON-LD graph's @id references resolve or its resolved graph
+  fragments (script-decided); a declared category contradicting body text;
+  given off-site URLs, brand-name collision or lookalike-domain
+  impersonation; and, given a page sample, a recurring brand-named
+  third-party service domain with no structured-data bridge back
+  (agent-decided or script-decided as noted). Use when structured data is
+  missing, broken, self-contradicting, or references an undefined entity,
+  when duplicate URLs risk splitting citation authority, or when checking
+  off-site brand confusion or unattributed service domains. Not for NAP
+  consistency, reachability (perimeter-access-audit), or non-structured-data
+  content anti-patterns (content-quality-audit).
 license: MIT
 allowed-tools: Bash
 ---
@@ -64,6 +63,8 @@ If you supply none, ENT-05/06 are silently skipped, not reported `unknown`
 - `--offsite-url URL` (repeatable) + `--brand-name NAME` — runs ENT-05/06's
   off-site mode instead of auditing a page's HTML. See "Off-site mode"
   below.
+- `--sample-file PATH` + `--site` — runs ENT-07's cross-domain mode instead
+  of auditing a page's HTML. See "Cross-domain service mode" below.
 
 ## Procedure
 
@@ -122,6 +123,28 @@ never a silent drop. Read the resulting `agent_judgement_required` array
 for ENT-06 in particular, read the live off-site page yourself before
 judging impersonation; a wrong accusation is a serious false positive.
 
+## Cross-domain service mode (ENT-07)
+
+A separate mode from steps 1-5 above — it takes a list of on-site page URLs,
+not one page's HTML:
+
+```bash
+python3 scripts/check_entity.py --site example.com \
+    --sample-file /tmp/audit/page-sample.txt
+```
+
+`--sample-file` is one on-site URL per line — pass the `sample_urls` from
+`audit-orchestrator`'s `sample_pages.py` (INF-01), the same bounded page
+sample every other multi-page check draws from. The script fetches each
+page itself (same fetch path as `--url`), extracts outbound links, and
+narrows to third-party domains that recur across ≥2 sampled pages, look
+service-related (a URL containing "support", "help", "docs", or "status"),
+and carry this site's own brand token in their hostname. For each survivor
+it fetches that domain's own homepage once (robots.txt-checked, same as
+`--offsite-url`) and checks whether its structured data names this site
+back via `sameAs` or `url`; no bridge is a finding. Entirely script-decided
+— no `agent_judgement_required` entries come out of this mode.
+
 ## What it checks
 
 | ID | Check | Who decides | Fires when |
@@ -134,6 +157,7 @@ judging impersonation; a wrong accusation is a serious false positive.
 | ENT-12 | JSON-LD entity-graph fragmentation | Script | ≥5 JSON-LD entities on the page, every `@id` reference resolves (nothing dangling — that is ENT-11's job), but the resolved graph still splits into 2 or more clusters of 2+ nodes each with nothing connecting them |
 | ENT-05 | Brand-name entity collision | Agent, against the rubric | An agent-supplied off-site URL mentions the brand name, and the agent judges the mention as a genuinely different entity sharing the name rather than the same brand |
 | ENT-06 | Lookalike domain impersonation | Agent, against the rubric | An agent-supplied off-site URL's own domain scores ≥0.75 string-similarity against the audited site's domain (and is not that domain or one of its own subdomains), and the agent judges the fetched page's content as plausible impersonation |
+| ENT-07 | Cross-domain service attribution | Script (`--sample-file` mode) | A third-party registrable domain is linked from ≥2 distinct sampled pages, its URL looks service-related (contains "support"/"help"/"docs"/"status"), its hostname carries this site's own brand token, and its own homepage's structured data carries no `sameAs`/`url` reference back to this site |
 | ENT-09 | Taxonomy consistency | Agent, against the rubric | A declared category (`Product.category`, `articleSection`, or a breadcrumb's deepest item) shares zero keywords with the page's own visible text, and the agent judges that as a genuine mismatch rather than an unseen synonym |
 
 ENT-02 only evaluates nodes that exist — if there is no Organization node at
@@ -182,12 +206,27 @@ node, say) is expected, not fragmented.
   with a coincidentally similar name will still surface as a candidate —
   the agent's read of the fetched content is what actually decides
   impersonation.
-- **ENT-07/ENT-08** — cross-domain service attribution, NAP consistency.
-  Each needs off-site reasoning or comparing multiple pages, which a
-  single-page script does not do. (ENT-09, taxonomy consistency, does *not*
-  need either — it compares a page's own declared category against its own
-  body text, both from the one page this script was given; an earlier
-  version of this file incorrectly grouped it here, corrected in cycle 9.)
+- **ENT-08** — NAP (name/address/phone) consistency. Needs clustering
+  address text across several pages, a genuinely semantic comparison
+  problem unlike ENT-07's mechanical domain/markup check; still deferred to
+  a later phase. (ENT-09, taxonomy consistency, needs neither off-site nor
+  multi-page reasoning — it compares a page's own declared category against
+  its own body text, both from the one page this script was given; an
+  earlier version of this file incorrectly grouped it with ENT-07/08,
+  corrected in cycle 9.)
+- **ENT-07's brand-token guard is a hostname substring match, not a legal
+  or semantic brand check.** A third party whose own hostname happens to
+  contain the brand's name coincidentally (rare, but possible) would still
+  surface as a candidate; conversely, a legitimately-owned service domain
+  that does not carry the brand name in its hostname at all (e.g. a
+  wholly-owned but differently-branded subsidiary's support site) is never
+  considered a candidate. Recurrence across ≥2 sampled pages plus the
+  service-keyword requirement together keep this a low-noise heuristic in
+  practice, not a semantic guarantee.
+- **ENT-07 only sees domains linked from the bounded page sample it was
+  given.** A service domain never linked from any sampled page cannot be
+  found — this is a heuristic net over what the sample happens to surface,
+  not a site-wide crawl.
 - **ENT-04's crawl-wide half beyond a sitemap's own declared URL list** —
   the `--sitemap-file` mode (below) catches trailing-slash/`www.`/scheme
   forks *within* the sitemap's listed URLs, but does not discover orphaned
@@ -203,7 +242,7 @@ One JSON object on stdout, same shape as the other audit skills:
 ```json
 {
   "owner_skill": "entity-audit",
-  "capability_ids": ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11", "ENT-12"],
+  "capability_ids": ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-07", "ENT-09", "ENT-11", "ENT-12"],
   "site": "example.com",
   "page_url": "https://example.com/product/widget",
   "findings": [
@@ -252,6 +291,9 @@ came from.
 | An `--offsite-url` is disallowed by its own robots.txt, or cannot be fetched | One `unknown_checks` entry for that URL; the other URLs still run |
 | That URL's own robots.txt cannot be fetched at all | Treated as allow-all (RFC 9309 convention: no reachable robots.txt means unrestricted access) — the fetch is still attempted, and can still fail on its own |
 | No `--offsite-url` given | ENT-05/06 silently skipped (empty candidate lists), not `unknown` |
+| A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page; the others still run |
+| A candidate domain's own homepage is disallowed by its robots.txt, or cannot be fetched | One `unknown_checks` entry for that domain — ENT-07 does not assume a defect it could not check |
+| No candidate domains survive `--sample-file`'s filters | ENT-07 produces an empty, clean report — not `unknown` |
 
 ## Safety
 
