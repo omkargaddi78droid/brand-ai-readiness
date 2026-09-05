@@ -3,19 +3,20 @@ name: entity-audit
 description: >
   Audits a single page for entity identity and structural consistency:
   schema.org/JSON-LD presence and validity, a link to an authoritative
-  identity source (Wikidata, LinkedIn, Crunchbase, ...) in Organization
-  markup, agreement between a marked-up rating and the page's visible text,
+  identity source (Wikidata, LinkedIn, Crunchbase) in Organization markup,
+  agreement between a marked-up rating and the page's visible text,
   rel=canonical presence/uniqueness/domain, and whether the JSON-LD graph's
-  own @id references resolve (script-decided); a declared category
+  @id references resolve or its resolved graph fragments (script-decided);
+  a declared category
   contradicting the page's own body text, and — given agent-supplied
   off-site URLs — brand-name collision or lookalike-domain impersonation
   (agent-decided against a rubric). Use when structured data is missing,
   broken, contradicts its own page, or references an entity it never
   defines, when duplicate URLs risk splitting citation authority, or when
   checking off-site brand confusion or impersonation. Not for cross-page/
-  cross-domain consistency (NAP, cross-domain attribution), reachability
-  (perimeter-access-audit), or content anti-patterns unrelated to
-  structured data (content-quality-audit).
+  cross-domain consistency (NAP, attribution), reachability
+  (perimeter-access-audit), or non-structured-data content anti-patterns
+  (content-quality-audit).
 license: MIT
 allowed-tools: Bash
 ---
@@ -130,6 +131,7 @@ judging impersonation; a wrong accusation is a serious false positive.
 | ENT-03 | Markup/text agreement | Script | JSON-LD `aggregateRating.ratingValue` disagrees (>0.3) with an explicit "N out of 5" / "N/5" / "rated N" pattern in the page's visible text |
 | ENT-04 | Canonicalisation | Script | No `rel=canonical`; an empty href; two or more different hrefs on one page; a canonical resolving to a different hostname than the page itself (`www.` doesn't count as different); or — `--sitemap-file` mode, once per site — two sitemap-listed URLs that are the same page under a trailing-slash/`www.`/scheme variant |
 | ENT-11 | JSON-LD graph referential integrity | Script | An entity-valued property (`brand`, `publisher`, `author`, ...) references an `@id` fragment no node on the page defines (medium); references a same-origin absolute URL not defined here, which may legitimately live on another page (low); or an Organization/Person/LocalBusiness node's `@id` is never referenced by anything, on a page that also carries a Product/Article/Review node with no brand/publisher/author link at all (medium) |
+| ENT-12 | JSON-LD entity-graph fragmentation | Script | ≥5 JSON-LD entities on the page, every `@id` reference resolves (nothing dangling — that is ENT-11's job), but the resolved graph still splits into 2 or more clusters of 2+ nodes each with nothing connecting them |
 | ENT-05 | Brand-name entity collision | Agent, against the rubric | An agent-supplied off-site URL mentions the brand name, and the agent judges the mention as a genuinely different entity sharing the name rather than the same brand |
 | ENT-06 | Lookalike domain impersonation | Agent, against the rubric | An agent-supplied off-site URL's own domain scores ≥0.75 string-similarity against the audited site's domain (and is not that domain or one of its own subdomains), and the agent judges the fetched page's content as plausible impersonation |
 | ENT-09 | Taxonomy consistency | Agent, against the rubric | A declared category (`Product.category`, `articleSection`, or a breadcrumb's deepest item) shares zero keywords with the page's own visible text, and the agent judges that as a genuine mismatch rather than an unseen synonym |
@@ -156,6 +158,16 @@ per-instance finding ids (`ENT-11-dangling-id-reference-*`,
 `ENT-11-cross-page-id-reference-*`) carry a deterministic content-hash
 suffix so the same page audited twice produces the same ids — capped at 5
 findings per class so a pathological page cannot flood the report.
+
+**ENT-12 deliberately does not also restate ENT-11's `orphan-identity-node`
+finding.** Both notice a starved Organization/Person/LocalBusiness node, but
+ENT-11's version is a tighter, already-shipped check for that one specific
+node-type gate; ENT-12 only fires on the broader whole-graph fragmentation
+signal (2+ disconnected substantial clusters), never on a lone unlinked
+singleton node — a stray BreadcrumbList or ImageObject with nothing to
+connect to is the common case, not a defect. Gated to pages with at least 5
+JSON-LD entities: a small page with little to connect (one Organization
+node, say) is expected, not fragmented.
 
 ## Excludes
 
@@ -191,7 +203,7 @@ One JSON object on stdout, same shape as the other audit skills:
 ```json
 {
   "owner_skill": "entity-audit",
-  "capability_ids": ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11"],
+  "capability_ids": ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11", "ENT-12"],
   "site": "example.com",
   "page_url": "https://example.com/product/widget",
   "findings": [
@@ -233,8 +245,9 @@ came from.
 | The page cannot be fetched (any error) | ENT-01/02/03/04/09 `unknown` |
 | The URL resolves to a private, loopback, link-local or reserved address | Refused before connecting, `unknown` — SSRF guard |
 | Fetched content's `Content-Type` is neither HTML nor text | `unknown` |
-| A JSON-LD block fails to parse | Reported as `ENT-01-malformed-json-ld`, not silently skipped and not crashing the rest of the audit; ENT-11 also stays silent on that page — nothing to walk |
+| A JSON-LD block fails to parse | Reported as `ENT-01-malformed-json-ld`, not silently skipped and not crashing the rest of the audit; ENT-11 and ENT-12 also stay silent on that page — nothing to walk |
 | A page's JSON-LD carries no `@id`s at all (inline-nested references only) | ENT-11 stays silent — there is nothing to dangle |
+| Fewer than 5 JSON-LD entities on the page | ENT-12 stays silent — gated as a defect that only means something once there is enough graph to fragment |
 | No `--url` or `--html-file` given | `unknown` |
 | An `--offsite-url` is disallowed by its own robots.txt, or cannot be fetched | One `unknown_checks` entry for that URL; the other URLs still run |
 | That URL's own robots.txt cannot be fetched at all | Treated as allow-all (RFC 9309 convention: no reachable robots.txt means unrestricted access) — the fetch is still attempted, and can still fail on its own |

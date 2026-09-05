@@ -495,6 +495,93 @@ class GraphIntegrityTests(unittest.TestCase):
         self.assertEqual(len(dangling), 5)
 
 
+class EntityGraphFragmentationTests(unittest.TestCase):
+    """ENT-12. Distinct from ENT-11: every reference below resolves
+    correctly (nothing dangling) — the defect is that the resolved graph
+    still splits into two unconnected clusters."""
+
+    _TWO_CLUSTERS_FIVE_ENTITIES = ld(
+        "["
+        '{"@type":"Organization","@id":"#org","name":"Acme"},'
+        '{"@type":"Product","@id":"#prod1","name":"Widget","brand":{"@id":"#org"}},'
+        '{"@type":"Product","@id":"#prod2","name":"Gadget"},'
+        '{"@type":"Review","@id":"#rev1","itemReviewed":{"@id":"#prod2"},'
+        '"author":{"@id":"#author1"}},'
+        '{"@type":"Person","@id":"#author1","name":"Jane Reviewer"}'
+        "]"
+    )
+
+    def test_two_disconnected_clusters_at_five_entities_fires(self):
+        nodes, _, _, _ = ent.parse_page(self._TWO_CLUSTERS_FIVE_ENTITIES)
+        finding = ent.find_entity_graph_fragmentation(nodes, "https://example.com/page")
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding.id, "ENT-12-entity-graph-fragmented")
+        self.assertEqual(finding.severity, "low")
+        self.assertEqual(finding.structured_evidence["substantial_component_count"], 2)
+
+    def test_the_same_two_clusters_below_the_five_entity_gate_stay_silent(self):
+        """Only 4 entities total (drop the Person) — under the gate, so even
+        though the same two-cluster shape exists, it must not fire. Small
+        pages with little to connect are the expected common case, not a
+        defect."""
+        nodes, _, _, _ = ent.parse_page(
+            ld(
+                "["
+                '{"@type":"Organization","@id":"#org","name":"Acme"},'
+                '{"@type":"Product","@id":"#prod1","name":"Widget","brand":{"@id":"#org"}},'
+                '{"@type":"Product","@id":"#prod2","name":"Gadget"},'
+                '{"@type":"Review","@id":"#rev1","itemReviewed":{"@id":"#prod2"}}'
+                "]"
+            )
+        )
+        self.assertEqual(len(nodes), 4)
+        finding = ent.find_entity_graph_fragmentation(nodes, "https://example.com/page")
+        self.assertIsNone(finding)
+
+    def test_one_fully_connected_cluster_at_five_entities_is_silent(self):
+        """Same 5 entities, but the Product2/Review cluster also links back
+        to the Organization — one cohesive graph, no fragmentation."""
+        nodes, _, _, _ = ent.parse_page(
+            ld(
+                "["
+                '{"@type":"Organization","@id":"#org","name":"Acme"},'
+                '{"@type":"Product","@id":"#prod1","name":"Widget","brand":{"@id":"#org"}},'
+                '{"@type":"Product","@id":"#prod2","name":"Gadget","brand":{"@id":"#org"}},'
+                '{"@type":"Review","@id":"#rev1","itemReviewed":{"@id":"#prod2"},'
+                '"author":{"@id":"#author1"}},'
+                '{"@type":"Person","@id":"#author1","name":"Jane Reviewer"}'
+                "]"
+            )
+        )
+        finding = ent.find_entity_graph_fragmentation(nodes, "https://example.com/page")
+        self.assertIsNone(finding)
+
+    def test_stray_singleton_nodes_do_not_count_as_substantial_clusters(self):
+        """The dominant false positive: a page with one normal connected
+        pair plus several unrelated singleton entities (a lone
+        BreadcrumbList, a lone ImageObject, an unlinked Person) that were
+        never going to reference anything. Only one *substantial* (2+ node)
+        cluster exists, so this must not fire."""
+        nodes, _, _, _ = ent.parse_page(
+            ld(
+                "["
+                '{"@type":"Organization","@id":"#org","name":"Acme"},'
+                '{"@type":"Product","@id":"#prod1","name":"Widget","brand":{"@id":"#org"}},'
+                '{"@type":"BreadcrumbList","@id":"#crumbs","name":"Breadcrumbs"},'
+                '{"@type":"ImageObject","@id":"#img1","name":"Hero image"},'
+                '{"@type":"Person","@id":"#person1","name":"Unlinked Person"}'
+                "]"
+            )
+        )
+        finding = ent.find_entity_graph_fragmentation(nodes, "https://example.com/page")
+        self.assertIsNone(finding)
+
+    def test_finding_validates_against_the_shared_contract(self):
+        nodes, _, _, _ = ent.parse_page(self._TWO_CLUSTERS_FIVE_ENTITIES)
+        finding = ent.find_entity_graph_fragmentation(nodes, "https://example.com/page")
+        self.assertEqual(finding.validate(), [])
+
+
 class CategoryLabelExtractionTests(unittest.TestCase):
     def test_product_category_string_is_extracted(self):
         nodes, _, _, _ = ent.parse_page(ld('{"@type":"Product","name":"Widget","category":"Laptops"}'))

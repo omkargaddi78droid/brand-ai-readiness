@@ -113,6 +113,7 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from jsonld_graph import Reference, build_id_index, classify_target, flatten, iter_references  # noqa: E402
+from graph_metrics import connected_components  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -123,7 +124,7 @@ from page_fetch import (  # noqa: E402
 )
 
 OWNER_SKILL = "entity-audit"
-CAPABILITY_IDS = ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11"]
+CAPABILITY_IDS = ["ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-09", "ENT-11", "ENT-12"]
 
 
 # ---------------------------------------------------------------------------
@@ -916,6 +917,102 @@ def _orphan_identity_finding(nodes: list[dict], referenced_targets: set[str]) ->
 
 
 # ---------------------------------------------------------------------------
+# ENT-12 — JSON-LD entity-graph fragmentation (cycle 23, Phase 2)
+#
+# Distinct from ENT-11: ENT-11 catches a *broken* graph (an @id reference
+# pointing at nothing). This catches a *valid but poorly-connected* graph —
+# every reference resolves, but the page's entities form two or more
+# disconnected clusters instead of one cohesive graph, so nothing about
+# Organization/Product/Review being the same coherent story is machine-
+# visible. Deliberately does NOT also restate ENT-11's own
+# orphan-identity-node check (an Organization/Person/LocalBusiness node with
+# nothing pointing at it, paired with disconnected content) — that is a
+# tighter, already-shipped version of the same underlying signal for one
+# specific node-type gate; re-flagging the identical root cause under a
+# second capability id would be noise, not new evidence.
+# ---------------------------------------------------------------------------
+
+_ENT12_MIN_ENTITIES = 5
+_ENT12_MIN_SUBSTANTIAL_COMPONENT_SIZE = 2
+
+
+def find_entity_graph_fragmentation(nodes: list[dict], page_url: str | None) -> Finding | None:
+    """ENT-12. Gated to ≥5 entities: a small page's JSON-LD (a single
+    Organization node, say) is expected to have little or nothing to
+    connect to, and flagging that as "fragmented" would be noise on the
+    overwhelming majority of pages this project audits."""
+    if len(nodes) < _ENT12_MIN_ENTITIES:
+        return None
+
+    index = build_id_index(nodes)
+    resolved_page_url = page_url or ""
+    vertex_ids = [node.get("@id") if isinstance(node.get("@id"), str) else f"$node[{i}]" for i, node in enumerate(nodes)]
+
+    edges: list[tuple[str, str]] = []
+    for reference in iter_references(nodes):
+        if reference.source_node_id is None:
+            continue
+        if classify_target(reference.target_id, index, resolved_page_url) != "resolved":
+            continue
+        edges.append((reference.source_node_id, reference.target_id))
+
+    components = connected_components(vertex_ids, edges)
+    substantial = [c for c in components if len(c) >= _ENT12_MIN_SUBSTANTIAL_COMPONENT_SIZE]
+    if len(substantial) < 2:
+        return None
+
+    types_by_vertex = {
+        (node.get("@id") if isinstance(node.get("@id"), str) else f"$node[{i}]"): (_node_types(node) or {"Unknown"})
+        for i, node in enumerate(nodes)
+    }
+    substantial.sort(key=len, reverse=True)
+    cluster_summaries = [
+        "{" + ", ".join(sorted({t for v in cluster for t in types_by_vertex.get(v, {"Unknown"})})) + "}"
+        for cluster in substantial[:4]
+    ]
+    more = f" (+{len(substantial) - 4} more)" if len(substantial) > 4 else ""
+
+    return Finding(
+        id="ENT-12-entity-graph-fragmented",
+        title="Structured-data graph splits into disconnected clusters",
+        severity="low",
+        evidence=(
+            f"This page's {len(nodes)} JSON-LD entities form {len(substantial)} disconnected "
+            f"clusters of 2 or more nodes each: {', '.join(cluster_summaries)}{more}. Every @id "
+            "reference resolves correctly — nothing is broken — but nothing links these clusters "
+            "to each other."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Link the disconnected clusters together where they describe the same site — e.g. "
+                "a Product's brand pointing at the page's Organization node, or a Review's itemReviewed "
+                "pointing at the Product it reviews — so a consumer walking the graph can assemble one "
+                "coherent entity instead of several unrelated ones."
+            ),
+            priority="low",
+        ),
+        category="discoverability",
+        capability_id="ENT-12",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "Entity resolution and knowledge-graph grounding work by walking @id references to "
+            "assemble one coherent entity out of several JSON-LD nodes. A valid graph that is "
+            "nonetheless fragmented into disconnected clusters gives a consumer no path from one "
+            "cluster to another, even though every individual reference it does have resolves "
+            "correctly — a different failure mode from a dangling reference (ENT-11), and invisible "
+            "to any check that validates one node or one reference at a time."
+        ),
+        gate=3,
+        confidence="medium",
+        structured_evidence={
+            "entity_count": len(nodes),
+            "substantial_component_count": len(substantial),
+            "component_sizes": sorted((len(c) for c in components), reverse=True),
+        },
+    )
+
+
+# ---------------------------------------------------------------------------
 # ENT-05 / ENT-06 — off-site brand visibility; extraction only, the agent
 # judges these (hard constraint 2, cycle 19 — see module docstring)
 # ---------------------------------------------------------------------------
@@ -1195,6 +1292,9 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
         # Overlap control: never report a broken graph on a page ENT-01
         # already flagged as having no parseable graph at all.
         findings += find_graph_integrity_issues(nodes, page_url)
+        fragmentation = find_entity_graph_fragmentation(nodes, page_url)
+        if fragmentation:
+            findings.append(fragmentation)
     findings = _stamp_page(findings, page_url)
 
     judgement_requests = build_agent_judgement_requests(nodes, visible_text)
