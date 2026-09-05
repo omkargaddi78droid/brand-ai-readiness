@@ -82,15 +82,9 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import ipaddress
 import json
 import re
-import socket
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
-import zlib
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -98,14 +92,19 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from page_fetch import (  # noqa: E402
+    USER_AGENT,
+    FETCH_TIMEOUT_SECONDS,
+    MAX_PAGE_BYTES,
+    decode_content_encoding,
+    is_public_host,
+    fetch_page_html,
+)
 
 OWNER_SKILL = "static-extraction-audit"
 CAPABILITY_IDS = [
     "REN-01", "REN-02", "REN-04", "REN-05", "REN-06", "REN-07", "REN-08", "REN-10", "REN-11", "REN-12",
 ]
-USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
-FETCH_TIMEOUT_SECONDS = 10
-MAX_PAGE_BYTES = 5_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -1494,72 +1493,6 @@ def _unknown_output(site: str, reason: str, page_url: str | None = None) -> dict
         "agent_judgement_required": [],
         "unknown_checks": [UnknownCheck("*", OWNER_SKILL, reason).to_dict()],
     }
-
-
-# ---------------------------------------------------------------------------
-# Fetching (--url mode only)
-# ---------------------------------------------------------------------------
-
-_MAX_DECOMPRESSED_BYTES = 20_000_000
-
-
-def decode_content_encoding(raw: bytes, content_encoding: str) -> bytes:
-    tokens = [t.strip().lower() for t in (content_encoding or "").split(",") if t.strip()]
-    for token in reversed(tokens):
-        if token in ("gzip", "x-gzip"):
-            raw = _bounded_decompress(zlib.decompressobj(zlib.MAX_WBITS | 16), raw)
-        elif token == "deflate":
-            raw = _bounded_decompress(zlib.decompressobj(), raw)
-        elif token in ("identity", ""):
-            continue
-        else:
-            raise ValueError(f"unsupported Content-Encoding {token!r}; refusing to guess")
-    return raw
-
-
-def _bounded_decompress(decompressor, raw: bytes) -> bytes:
-    output = decompressor.decompress(raw, _MAX_DECOMPRESSED_BYTES)
-    if decompressor.unconsumed_tail:
-        raise ValueError(f"decompressed body exceeds {_MAX_DECOMPRESSED_BYTES} bytes")
-    return output + decompressor.flush()
-
-
-def is_public_host(hostname: str) -> bool:
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return False
-    return True
-
-
-def fetch_page_html(url: str) -> tuple[str | None, str]:
-    hostname = urllib.parse.urlparse(url).hostname
-    if not hostname or not is_public_host(hostname):
-        return f"{url} does not resolve to a public address", "unavailable"
-
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
-            content_type = response.headers.get("Content-Type", "")
-            if content_type and "html" not in content_type.lower() and "text" not in content_type.lower():
-                return f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
-            raw = response.read(MAX_PAGE_BYTES)
-            content_encoding = response.headers.get("Content-Encoding", "")
-        raw = decode_content_encoding(raw, content_encoding)
-        return raw.decode("utf-8", errors="replace"), "present"
-    except urllib.error.HTTPError as error:
-        code = error.code
-        error.close()
-        return f"{url} returned HTTP {code}", "unavailable"
-    except Exception as error:
-        return f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
 
 
 def site_label(url_or_domain: str) -> str:

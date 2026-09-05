@@ -12,14 +12,18 @@ against without any error — because nothing checked for it. A wrong result
 this severe, from every page-reading skill at once, and no test caught it
 until a live run did.
 
-Each script has its own independent `decode_content_encoding` (duplication is
-this project's accepted tradeoff for per-skill independence, documented in
-entity-audit's reference doc). `citability-audit` was written after the fix,
-with the corrected function from the start, but is covered here too so a
-future edit to any of the five can't silently reintroduce the bug. This file
-tests all five via a real local HTTP server serving genuinely gzip-compressed
-content — not a mock — so a regression in any one of them fails a real
-end-to-end round trip, not just an isolated unit call.
+Every page-fetching script but perimeter-access-audit now delegates to
+shared/page_fetch.py (cycle 23 consolidation) rather than carrying its own
+copy, so `module.decode_content_encoding`/`module.fetch_page_html` are the
+same function object as `page_fetch`'s for all of them; the SSRF guard they
+each import (`is_public_host`) is patched on `page_fetch` itself, not on the
+individual skill module, since that's where the imported name is actually
+looked up at call time. `check_perimeter.py` deliberately keeps its own
+`fetch_text`/`decode_content_encoding` — it varies User-Agent per AI-crawler
+identity and must not share a cache keyed on URL alone. This file tests all
+six via a real local HTTP server serving genuinely gzip-compressed content —
+not a mock — so a regression in any one of them fails a real end-to-end
+round trip, not just an isolated unit call.
 """
 
 import gzip
@@ -43,13 +47,24 @@ def _load(name: str, relative_path: str):
     return module
 
 
+import page_fetch  # noqa: E402
+
 perimeter = _load("check_perimeter", "skills/perimeter-access-audit/scripts/check_perimeter.py")
 content_quality = _load("check_content_quality", "skills/content-quality-audit/scripts/check_content_quality.py")
 entity_audit = _load("check_entity", "skills/entity-audit/scripts/check_entity.py")
 engagement_audit = _load("check_engagement", "skills/engagement-audit/scripts/check_engagement.py")
 citability_audit = _load("check_citability", "skills/citability-audit/scripts/check_citability.py")
+static_extraction_audit = _load(
+    "check_static_extraction", "skills/static-extraction-audit/scripts/check_static_extraction.py"
+)
+retrieval_readiness_audit = _load(
+    "check_retrieval_readiness", "skills/retrieval-readiness-audit/scripts/check_retrieval_readiness.py"
+)
 
-MODULES_WITH_DECODE = [perimeter, content_quality, entity_audit, engagement_audit, citability_audit]
+MODULES_WITH_DECODE = [
+    perimeter, content_quality, entity_audit, engagement_audit, citability_audit,
+    static_extraction_audit, retrieval_readiness_audit,
+]
 
 SAMPLE_HTML = "<html><body><h1>Example Corp</h1><p>Hello, world.</p></body></html>"
 
@@ -139,10 +154,14 @@ class EndToEndGzipFetchTests(unittest.TestCase):
     so a regression in the actual fetch function (not just the decoder it
     calls) fails this test.
 
-    `content_quality`/`entity_audit`/`engagement_audit`'s fetch functions
-    correctly refuse a loopback address (see each module's own
-    SsrfGuardTests) — that guard is patched out here only for the duration
-    of this narrow decompression check, which is orthogonal to it.
+    `content_quality`/`entity_audit`/`engagement_audit`/`citability_audit`/
+    `static_extraction_audit`/`retrieval_readiness_audit` all import
+    `fetch_page_html` from shared `page_fetch` now, so it's the same function
+    object refusing a loopback address in every one of them (see
+    page_fetch's own SsrfGuardTests) — patched on `page_fetch` itself, since
+    that's the module whose global namespace `fetch_page_html` actually
+    looks `is_public_host` up in, only for the duration of this narrow
+    decompression check, which is orthogonal to the guard.
     `perimeter.fetch_text` has no such guard (it only ever fetches a fixed
     well-known path, never an arbitrary caller-supplied URL), so nothing
     needs patching for it.
@@ -155,26 +174,38 @@ class EndToEndGzipFetchTests(unittest.TestCase):
         self.assertIn("Example Corp", text)
 
     def test_content_quality_fetch_page_html_decompresses_a_real_gzip_response(self):
-        with _GzipServer() as server, patch.object(content_quality, "is_public_host", return_value=True):
+        with _GzipServer() as server, patch.object(page_fetch, "is_public_host", return_value=True):
             html, status = content_quality.fetch_page_html(server.url)
         self.assertEqual(status, "present")
         self.assertIn("Example Corp", html)
 
     def test_entity_audit_fetch_page_html_decompresses_a_real_gzip_response(self):
-        with _GzipServer() as server, patch.object(entity_audit, "is_public_host", return_value=True):
+        with _GzipServer() as server, patch.object(page_fetch, "is_public_host", return_value=True):
             html, status = entity_audit.fetch_page_html(server.url)
         self.assertEqual(status, "present")
         self.assertIn("Example Corp", html)
 
     def test_engagement_audit_fetch_page_html_decompresses_a_real_gzip_response(self):
-        with _GzipServer() as server, patch.object(engagement_audit, "is_public_host", return_value=True):
+        with _GzipServer() as server, patch.object(page_fetch, "is_public_host", return_value=True):
             html, status = engagement_audit.fetch_page_html(server.url)
         self.assertEqual(status, "present")
         self.assertIn("Example Corp", html)
 
     def test_citability_audit_fetch_page_html_decompresses_a_real_gzip_response(self):
-        with _GzipServer() as server, patch.object(citability_audit, "is_public_host", return_value=True):
+        with _GzipServer() as server, patch.object(page_fetch, "is_public_host", return_value=True):
             html, status = citability_audit.fetch_page_html(server.url)
+        self.assertEqual(status, "present")
+        self.assertIn("Example Corp", html)
+
+    def test_static_extraction_audit_fetch_page_html_decompresses_a_real_gzip_response(self):
+        with _GzipServer() as server, patch.object(page_fetch, "is_public_host", return_value=True):
+            html, status = static_extraction_audit.fetch_page_html(server.url)
+        self.assertEqual(status, "present")
+        self.assertIn("Example Corp", html)
+
+    def test_retrieval_readiness_audit_fetch_page_html_decompresses_a_real_gzip_response(self):
+        with _GzipServer() as server, patch.object(page_fetch, "is_public_host", return_value=True):
+            html, status = retrieval_readiness_audit.fetch_page_html(server.url)
         self.assertEqual(status, "present")
         self.assertIn("Example Corp", html)
 

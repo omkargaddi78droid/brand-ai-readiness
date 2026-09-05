@@ -81,15 +81,9 @@ dropping or crashing on them, but resolving it properly is the caller's job.
 from __future__ import annotations
 
 import argparse
-import ipaddress
 import json
 import re
-import socket
 import sys
-import urllib.error
-import urllib.parse
-import urllib.request
-import zlib
 from collections import defaultdict
 from html.parser import HTMLParser
 from pathlib import Path
@@ -99,12 +93,17 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from text_spans import split_sentences  # noqa: E402
+from page_fetch import (  # noqa: E402
+    USER_AGENT,
+    FETCH_TIMEOUT_SECONDS,
+    MAX_PAGE_BYTES,
+    decode_content_encoding,
+    is_public_host,
+    fetch_page_html,
+)
 
 OWNER_SKILL = "content-quality-audit"
 CAPABILITY_IDS = ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12"]
-USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
-FETCH_TIMEOUT_SECONDS = 10
-MAX_PAGE_BYTES = 5_000_000
 
 
 # ---------------------------------------------------------------------------
@@ -984,88 +983,6 @@ def _unknown_output(site: str, reason: str) -> dict:
 # ---------------------------------------------------------------------------
 # Fetching (--url mode only)
 # ---------------------------------------------------------------------------
-
-
-def is_public_host(hostname: str) -> bool:
-    """SSRF guard. This script is the marketplace's only one that fetches an
-    arbitrary page URL rather than a fixed well-known path, so it is the one
-    that needs this check — refuse to resolve to a private, loopback,
-    link-local or reserved address before ever connecting."""
-    try:
-        infos = socket.getaddrinfo(hostname, None)
-    except socket.gaierror:
-        return False
-    for info in infos:
-        try:
-            ip = ipaddress.ip_address(info[4][0])
-        except ValueError:
-            return False
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
-            return False
-    return True
-
-
-_MAX_DECOMPRESSED_BYTES = 20_000_000
-
-
-def decode_content_encoding(raw: bytes, content_encoding: str) -> bytes:
-    """Undo Content-Encoding before the body is treated as text.
-
-    `urllib.request` never auto-decompresses (unlike `requests`), and some
-    CDNs gzip responses regardless of whether the client's Accept-Encoding
-    advertised support for it — observed live against python.org: raw gzip
-    bytes were decoded as UTF-8 text, producing binary garbage in every
-    extracted-text field, and every detector kept running against it rather
-    than failing loudly, because nothing checked for this.
-
-    Bounded to guard against a decompression-bomb response: this reads from
-    the audited site, which is trusted to be a legitimate target but not to
-    be well-behaved.
-    """
-    tokens = [t.strip().lower() for t in (content_encoding or "").split(",") if t.strip()]
-    for token in reversed(tokens):
-        if token in ("gzip", "x-gzip"):
-            raw = _bounded_decompress(zlib.decompressobj(zlib.MAX_WBITS | 16), raw)
-        elif token == "deflate":
-            raw = _bounded_decompress(zlib.decompressobj(), raw)
-        elif token in ("identity", ""):
-            continue
-        else:
-            raise ValueError(f"unsupported Content-Encoding {token!r}; refusing to guess")
-    return raw
-
-
-def _bounded_decompress(decompressor, raw: bytes) -> bytes:
-    output = decompressor.decompress(raw, _MAX_DECOMPRESSED_BYTES)
-    if decompressor.unconsumed_tail:
-        raise ValueError(f"decompressed body exceeds {_MAX_DECOMPRESSED_BYTES} bytes")
-    return output + decompressor.flush()
-
-
-def fetch_page_html(url: str) -> tuple[str | None, str]:
-    """GET one page. Returns (html_or_error, status): "present", "not_html" or
-    "unavailable". Never "absent" — a missing page is a 404, which is itself
-    a finding for a different skill, not a reason to skip this one silently."""
-    hostname = urllib.parse.urlparse(url).hostname
-    if not hostname or not is_public_host(hostname):
-        return f"{url} does not resolve to a public address", "unavailable"
-
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
-    try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
-            content_type = response.headers.get("Content-Type", "")
-            if content_type and "html" not in content_type.lower() and "text" not in content_type.lower():
-                return f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
-            raw = response.read(MAX_PAGE_BYTES)
-            content_encoding = response.headers.get("Content-Encoding", "")
-        raw = decode_content_encoding(raw, content_encoding)
-        return raw.decode("utf-8", errors="replace"), "present"
-    except urllib.error.HTTPError as error:
-        code = error.code
-        error.close()
-        return f"{url} returned HTTP {code}", "unavailable"
-    except Exception as error:
-        return f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
 
 
 def site_label(url_or_domain: str) -> str:

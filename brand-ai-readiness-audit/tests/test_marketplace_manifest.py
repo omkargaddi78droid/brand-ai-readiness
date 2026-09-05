@@ -130,13 +130,9 @@ class SafetyTests(unittest.TestCase):
             "argparse", "collections", "dataclasses", "datetime", "difflib", "hashlib", "html",
             "importlib", "ipaddress", "json", "pathlib", "re", "socket", "sys", "tempfile",
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
-            "jsonld_graph", "__future__",
+            "jsonld_graph", "page_fetch", "__future__",
         }
-        for script in list(REPO_ROOT.glob("skills/*/scripts/*.py")) + [
-            REPO_ROOT / "shared/finding_contract.py",
-            REPO_ROOT / "shared/text_spans.py",
-            REPO_ROOT / "shared/jsonld_graph.py",
-        ]:
+        for script in list(REPO_ROOT.glob("skills/*/scripts/*.py")) + list(REPO_ROOT.glob("shared/*.py")):
             with self.subTest(script=script.name):
                 for line in script.read_text(encoding="utf-8").splitlines():
                     match = re.match(r"^\s*(?:from|import)\s+([A-Za-z_][\w.]*)", line)
