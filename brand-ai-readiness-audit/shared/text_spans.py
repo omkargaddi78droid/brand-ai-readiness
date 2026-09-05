@@ -26,10 +26,10 @@ Two independent coordinate systems are in play:
 `normalized_position` converts an offset in either system into a [0.0, 1.0]
 fraction of the whole, given the total length of that system's stream.
 
-This is a fresh sentence splitter, deliberately not sharing code with the
-three divergent `_split_sentences` implementations already in this repo
-(measure_*.py helpers) — those are being left alone by design; this module
-does not reference them.
+content-quality-audit, citability-audit, and retrieval-readiness-audit each
+call this via a thin local `_split_sentences(text) -> list[str]` wrapper
+that also splits on bare newlines (list/menu items rarely end in sentence
+punctuation) — see any of those scripts for the wrapper.
 """
 
 from __future__ import annotations
@@ -97,6 +97,7 @@ _WEEKDAYS = {
 _COMMON_CAPITALISED_WORDS = {"I"}
 
 _SENTENCE_END_RE = re.compile(r"[.!?]+")
+_OPENING_QUOTES = "\"'‘“"
 _WORD_RE = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
 _ABBREVIATIONS = {
@@ -349,6 +350,13 @@ def _is_decimal_point(text: str, match: re.Match) -> bool:
     return text[start - 1].isdigit() and text[end].isdigit()
 
 
+def _starts_new_sentence(stripped: str) -> bool:
+    idx = 0
+    while idx < len(stripped) and stripped[idx] in _OPENING_QUOTES:
+        idx += 1
+    return idx < len(stripped) and stripped[idx].isupper()
+
+
 def _ends_with_abbreviation(text: str, end: int) -> bool:
     word_start = end - 1
     while word_start > 0 and (text[word_start - 1].isalnum() or text[word_start - 1] == "."):
@@ -360,8 +368,9 @@ def split_sentences(text: str) -> list[Span]:
     """Split `text` into sentence Spans, offsets into `text` itself.
 
     Splits on a run of `.`/`!`/`?` followed by whitespace and an uppercase
-    letter, or by end of string. Does not split on a short, fixed list of
-    common abbreviations (Mr., Mrs., Dr., St., e.g., i.e., vs., etc.,
+    letter (optionally preceded by an opening quote mark, e.g. a quoted
+    testimonial), or by end of string. Does not split on a short, fixed
+    list of common abbreviations (Mr., Mrs., Dr., St., e.g., i.e., vs., etc.,
     approx., no., U.S., U.K.) or on a decimal point directly between two
     digits (e.g. "3.5" stays intact).
     """
@@ -383,7 +392,7 @@ def split_sentences(text: str) -> list[Span]:
         if stripped == rest:
             # No whitespace follows the punctuation: not a sentence break.
             continue
-        if stripped and not stripped[0].isupper():
+        if stripped and not _starts_new_sentence(stripped):
             continue
         boundaries.append(end)
 

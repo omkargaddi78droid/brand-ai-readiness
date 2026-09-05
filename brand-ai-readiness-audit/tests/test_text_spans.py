@@ -165,6 +165,31 @@ class SplitSentencesTests(unittest.TestCase):
     def test_empty_string_returns_empty_list(self):
         self.assertEqual(split_sentences(""), [])
 
+    def test_us_abbreviation_does_not_split(self):
+        text = "Founded in the U.S. in 2010."
+        sentences = split_sentences(text)
+        self.assertEqual(len(sentences), 1)
+        self.assertEqual(sentences[0].text, text)
+
+    def test_inc_abbreviation_does_not_split(self):
+        text = "It raised $4.5 million from Acme Inc. and others."
+        sentences = split_sentences(text)
+        self.assertEqual(len(sentences), 1)
+        self.assertEqual(sentences[0].text, text)
+
+    def test_jan_abbreviation_does_not_split(self):
+        text = "Dr. Smith joined in Jan. 2011."
+        sentences = split_sentences(text)
+        self.assertEqual(len(sentences), 1)
+        self.assertEqual(sentences[0].text, text)
+
+    def test_quoted_sentence_boundary_is_detected(self):
+        text = 'Read what our customers say. “The BEST bacon I have ever had.”'
+        sentences = split_sentences(text)
+        self.assertEqual(len(sentences), 2)
+        self.assertEqual(sentences[0].text, "Read what our customers say.")
+        self.assertEqual(sentences[1].text, "“The BEST bacon I have ever had.”")
+
     def test_offsets_always_reproduce_the_span_text(self):
         text = "Mr. Lee said 3.14 is close to pi. It really is!"
         for sentence in split_sentences(text):

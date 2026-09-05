@@ -639,12 +639,12 @@ def _tokenize_words(text: str) -> list[str]:
 
 
 def _split_sentences(text: str) -> list[str]:
-    """Crude but sufficient: RET-02/03/05/06's agent-judged extraction needs
-    sentence-ish boundaries, not linguistically correct ones — same
-    reimplementation `content-quality-audit` and `citability-audit` each
-    carry independently rather than import, per this project's
-    independently-runnable-skill convention."""
-    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+    """Sentence-boundary splits within each line, plus a split on bare
+    newlines (menu/list items rarely end in sentence punctuation)."""
+    result: list[str] = []
+    for line in text.split("\n"):
+        result.extend(s.text for s in split_sentences(line))
+    return result
 
 
 def _count_ngrams(words: list[str], n: int) -> Counter:

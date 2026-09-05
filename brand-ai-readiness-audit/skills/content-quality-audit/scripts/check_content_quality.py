@@ -98,6 +98,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from text_spans import split_sentences  # noqa: E402
 
 OWNER_SKILL = "content-quality-audit"
 CAPABILITY_IDS = ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12"]
@@ -215,10 +216,12 @@ def extract_h1(html: str) -> str | None:
 
 
 def _split_sentences(text: str) -> list[str]:
-    """Crude but sufficient: these checks need sentence-ish boundaries, not
-    linguistically correct ones. Splits on line breaks and sentence-ending
-    punctuation followed by whitespace."""
-    return [s for s in re.split(r"(?<=[.!?])\s+|\n+", text) if s.strip()]
+    """Sentence-boundary splits within each line, plus a split on bare
+    newlines (menu/list items rarely end in sentence punctuation)."""
+    result: list[str] = []
+    for line in text.split("\n"):
+        result.extend(s.text for s in split_sentences(line))
+    return result
 
 
 # ---------------------------------------------------------------------------
