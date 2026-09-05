@@ -92,6 +92,63 @@ class UnlabelledFieldFindingTests(unittest.TestCase):
         self.assertIsNone(findings[0].gate)
 
 
+class MachineReadableActionTests(unittest.TestCase):
+    """EN-09 extension (cycle 23 Phase 2): schema.org potentialAction /
+    WebMCP detection. Every case below wraps its fields in a real <form>,
+    unlike the label-only fixtures above — form_count is part of the gate."""
+
+    _TWO_FIELD_FORM = '<form><input type="text" id="a"><input type="text" id="b"></form>'
+
+    def test_a_non_trivial_form_with_no_signal_at_all_fires(self):
+        parser = eng.parse_page(self._TWO_FIELD_FORM)
+        findings = eng.find_missing_machine_readable_action(parser)
+        self.assertEqual([f.id for f in findings], ["EN-09-no-machine-readable-action"])
+        self.assertEqual(findings[0].track, "proactive")
+        self.assertEqual(findings[0].severity, "low")
+
+    def test_a_single_field_form_is_too_trivial_to_evaluate(self):
+        html = '<form><input type="text" id="q" placeholder="Search"></form>'
+        parser = eng.parse_page(html)
+        self.assertEqual(eng.find_missing_machine_readable_action(parser), [])
+
+    def test_no_forms_at_all_is_silent(self):
+        parser = eng.parse_page("<p>No forms on this page.</p>")
+        self.assertEqual(eng.find_missing_machine_readable_action(parser), [])
+
+    def test_a_potential_action_in_json_ld_suppresses_the_finding(self):
+        html = self._TWO_FIELD_FORM + (
+            '<script type="application/ld+json">'
+            '{"@type":"WebSite","potentialAction":{"@type":"SearchAction","target":"https://example.com/?q={q}"}}'
+            "</script>"
+        )
+        parser = eng.parse_page(html)
+        self.assertEqual(eng.find_missing_machine_readable_action(parser), [])
+
+    def test_a_webmcp_inline_script_signature_suppresses_the_finding(self):
+        html = self._TWO_FIELD_FORM + "<script>navigator.modelContext.registerTool({});</script>"
+        parser = eng.parse_page(html)
+        self.assertEqual(eng.find_missing_machine_readable_action(parser), [])
+
+    def test_a_webmcp_declarative_form_attribute_suppresses_the_finding(self):
+        html = '<form toolname="book-appointment"><input type="text" id="a"><input type="text" id="b"></form>'
+        parser = eng.parse_page(html)
+        self.assertEqual(eng.find_missing_machine_readable_action(parser), [])
+
+    def test_an_external_script_with_no_src_fetch_never_sees_its_content(self):
+        """This skill never fetches linked JS (same EN-07 narrowing) — a
+        <script src="..."> tag's own attributes/URL are not scanned for
+        WebMCP text, only a truly inline script's body is."""
+        html = self._TWO_FIELD_FORM + '<script src="https://example.com/registerTool-modelContext.js"></script>'
+        parser = eng.parse_page(html)
+        findings = eng.find_missing_machine_readable_action(parser)
+        self.assertEqual([f.id for f in findings], ["EN-09-no-machine-readable-action"])
+
+    def test_finding_validates_against_the_shared_contract(self):
+        parser = eng.parse_page(self._TWO_FIELD_FORM)
+        finding = eng.find_missing_machine_readable_action(parser)[0]
+        self.assertEqual(finding.validate(), [])
+
+
 class InterstitialWallTests(unittest.TestCase):
     def test_a_dismissible_cookie_banner_is_not_flagged(self):
         html = (

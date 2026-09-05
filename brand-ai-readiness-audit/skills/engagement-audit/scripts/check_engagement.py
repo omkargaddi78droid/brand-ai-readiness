@@ -96,6 +96,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from jsonld_graph import flatten  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -121,6 +122,8 @@ _BLOCK_TAGS = {
 }
 _LABELABLE_INPUT_TYPES_EXCLUDED = {"hidden", "submit", "button", "reset", "image"}
 _CTA_TAGS = {"button", "a"}
+_WEBMCP_FORM_ATTRS = ("toolname", "data-toolname")
+_WEBMCP_SCRIPT_PATTERN = re.compile(r"navigator\.modelContext\.registerTool", re.IGNORECASE)
 
 
 class _PageParser(HTMLParser):
@@ -152,6 +155,19 @@ class _PageParser(HTMLParser):
         self._form_depth = 0
         self._current_form_has_password = False
         self.forms_with_password: list[bool] = []  # one bool per form: had a password field
+        self.has_webmcp_form_attribute = False
+
+        # EN-09's machine-readable-action extension (cycle 23, Phase 2):
+        # JSON-LD blocks for schema.org potentialAction detection, and raw
+        # inline (no `src`) <script> text for a static WebMCP signature
+        # scan. Never fetches an external .js file — same narrowing this
+        # skill already applies to CSS/JS/image assets for EN-07.
+        self.json_ld_blocks: list[str] = []
+        self._in_json_ld = False
+        self._json_ld_buffer: list[str] = []
+        self._in_inline_script = False
+        self._inline_script_buffer: list[str] = []
+        self.inline_script_text = ""
 
     # -- element-attribute bookkeeping -----------------------------------
 
@@ -168,6 +184,17 @@ class _PageParser(HTMLParser):
         self._close_tag(tag)
 
     def _open_tag(self, tag, attr_dict):
+        if tag == "script":
+            script_type = (attr_dict.get("type") or "").strip().lower()
+            if script_type == "application/ld+json":
+                self._in_json_ld = True
+                self._json_ld_buffer = []
+            elif "src" not in attr_dict:
+                # Only a truly inline script has text this parser will ever
+                # see — an external .js file is never fetched (same
+                # narrowing this skill already applies for EN-07).
+                self._in_inline_script = True
+                self._inline_script_buffer = []
         if tag == "label":
             self._label_depth += 1
             for_id = attr_dict.get("for")
@@ -177,6 +204,8 @@ class _PageParser(HTMLParser):
             self._form_depth += 1
             self.form_count += 1
             self._current_form_has_password = False
+            if any(key in attr_dict for key in _WEBMCP_FORM_ATTRS):
+                self.has_webmcp_form_attribute = True
         elif tag in ("input", "select", "textarea"):
             field_type = (attr_dict.get("type") or "text").lower() if tag == "input" else tag
             if tag == "input" and field_type == "password":
@@ -221,6 +250,13 @@ class _PageParser(HTMLParser):
             self._id_text.setdefault(element_id, [])
 
     def _close_tag(self, tag):
+        if tag == "script":
+            if self._in_json_ld:
+                self.json_ld_blocks.append("".join(self._json_ld_buffer))
+                self._in_json_ld = False
+            elif self._in_inline_script:
+                self.inline_script_text += "".join(self._inline_script_buffer)
+                self._in_inline_script = False
         if tag == "label" and self._label_depth:
             self._label_depth -= 1
         elif tag == "form" and self._form_depth:
@@ -261,6 +297,12 @@ class _PageParser(HTMLParser):
                 field["labeled_so_far"] = True
 
     def handle_data(self, data):
+        if self._in_json_ld:
+            self._json_ld_buffer.append(data)
+            return
+        if self._in_inline_script:
+            self._inline_script_buffer.append(data)
+            return
         normalized = re.sub(r"\s+", " ", data)
         if self._skip_depth == 0:
             self._text_chunks.append(normalized)
@@ -350,6 +392,88 @@ def find_unlabelled_fields(parser: _PageParser) -> list[Finding]:
             gate=None,
             confidence="high",
             structured_evidence={"unlabelled_count": len(unlabelled), "total_fields": total, "by_type": by_tag},
+        )
+    ]
+
+
+# ---------------------------------------------------------------------------
+# EN-09 (extension, cycle 23 Phase 2) — machine-readable action availability
+#
+# Two independent signals a page can carry to describe what its forms do to
+# something other than a human reading labels: schema.org's established
+# `potentialAction` (JSON-LD), and the emerging, still-draft WebMCP
+# convention (`navigator.modelContext.registerTool`, or a declarative
+# `toolname`/`data-toolname` form attribute). This does not attempt to
+# match a specific form to a specific potentialAction target — resolving a
+# form's `action` URL against a potentialAction's `target`/`urlTemplate`
+# (relative vs. absolute, query strings, EntryPoint indirection) is a real
+# source of false suppression or false firing that this project's
+# calibration discipline does not accept without much stronger evidence
+# than a plain string comparison would give. Instead: page-level — if the
+# page has any non-trivial form (2+ labelable fields, so a lone
+# search/newsletter box doesn't count) and *no* machine-readable action
+# signal anywhere on the page at all, suggest adding one. Reported as a
+# proactive suggestion only, never a defect: near-zero adoption today for
+# either convention, the same posture this skill already takes for llms.txt
+# and `.md` negotiation in the sibling perimeter skill.
+# ---------------------------------------------------------------------------
+
+_EN09_MIN_NON_TRIVIAL_FIELDS = 2
+
+
+def find_missing_machine_readable_action(parser: _PageParser) -> list[Finding]:
+    if parser.form_count == 0 or len(parser.fields) < _EN09_MIN_NON_TRIVIAL_FIELDS:
+        return []
+
+    json_ld_nodes = flatten(parser.json_ld_blocks)
+    has_potential_action = any(node.get("potentialAction") for node in json_ld_nodes)
+    has_webmcp_script = bool(_WEBMCP_SCRIPT_PATTERN.search(parser.inline_script_text))
+    has_webmcp_form_attr = parser.has_webmcp_form_attribute
+    if has_potential_action or has_webmcp_script or has_webmcp_form_attr:
+        return []
+
+    return [
+        Finding(
+            id="EN-09-no-machine-readable-action",
+            title="Interactive forms exist with no machine-readable description of what they do",
+            severity="low",
+            evidence=(
+                f"This page has {parser.form_count} form(s) with {len(parser.fields)} labelable "
+                "field(s) total, but no schema.org potentialAction in its JSON-LD and no WebMCP "
+                "declaration (navigator.modelContext.registerTool, or a toolname/data-toolname "
+                "form attribute)."
+            ),
+            suggested_action=SuggestedAction(
+                summary=(
+                    "Consider adding a schema.org potentialAction (ReserveAction/OrderAction/"
+                    "SearchAction, as appropriate) describing what a form on this page does, or "
+                    "declaring it via the emerging WebMCP convention "
+                    "(navigator.modelContext.registerTool)."
+                ),
+                priority="low",
+                details=(
+                    "A forward-compatibility suggestion, not a defect — near-zero adoption today "
+                    "for either convention. An autonomous agent completing this form still has to "
+                    "infer its purpose from labels and layout alone."
+                ),
+            ),
+            category="engagement",
+            capability_id="EN-09",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "A machine-readable action description lets an autonomous agent understand what a "
+                "form does and how to invoke it correctly, without inferring intent from visual "
+                "layout or label wording alone — the same underlying problem this capability's "
+                "other half (unlabelled fields) addresses at the level of one field, this "
+                "addresses at the level of the action as a whole."
+            ),
+            gate=None,
+            confidence="medium",
+            track="proactive",
+            structured_evidence={
+                "form_count": parser.form_count,
+                "field_count": len(parser.fields),
+            },
         )
     ]
 
@@ -828,6 +952,7 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
 
     findings = (
         find_unlabelled_fields(parser)
+        + find_missing_machine_readable_action(parser)
         + find_interstitial_walls(html)
         + find_missing_viewport(html)
         + find_fixed_width_overflow(html)

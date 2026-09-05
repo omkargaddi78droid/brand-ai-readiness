@@ -105,7 +105,7 @@ before this file's output is handed to the entrypoint.** An unresolved
 | EN-05 | Mobile usability (viewport + overflow only) | Script | No `<meta name="viewport">`, or one without `width=device-width`; or an inline `style="width:NNNpx"` above 480px with no responsive override in the same style attribute |
 | EN-06 | Interstitial & consent-wall friction | Script | A `role="dialog"`/`aria-modal`/modal-classed element contains consent, subscribe or login-wall language with no reject/decline/close option nearby |
 | EN-07 | Perceived-performance friction (static proxies) | Script | 5+ render-blocking resources (`<script src>` with no async/defer, or `<link rel="stylesheet">`) inside `<head>`; 3+ `<img>` with neither width/height nor aspect-ratio; or the fetched HTML document itself exceeds 300KB |
-| EN-09 | Autonomous-agent usability | Script | A form field (`input`/`select`/`textarea`, excluding hidden/submit/button/reset) has no `<label>`, `aria-label`, or `aria-labelledby` |
+| EN-09 | Autonomous-agent usability | Script | A form field (`input`/`select`/`textarea`, excluding hidden/submit/button/reset) has no `<label>`, `aria-label`, or `aria-labelledby`; or a non-trivial form (2+ such fields) exists with no schema.org `potentialAction` in the page's JSON-LD and no WebMCP signal (`navigator.modelContext.registerTool`, or a `toolname`/`data-toolname` form attribute) — the latter reported as a proactive suggestion, not a defect |
 | EN-01 | Visitor orientation | Agent, against the rubric | A first-time visitor cannot tell within seconds what the page is, who it's for, and what to do next |
 | EN-03 | Conversion-path friction | Agent, against the rubric | Forced account creation with no guest option, or fees clearly present but never disclosed anywhere on the page — **not** step-count, which needs navigating the real flow |
 
@@ -131,6 +131,14 @@ before this file's output is handed to the entrypoint.** An unresolved
 - **EN-03's step-count half.** "3 steps vs 8 steps to conversion" needs
   navigating the actual flow across pages; this skill only ever sees one
   page and says so rather than guessing from it.
+- **EN-09's machine-readable-action half does not match a specific form to
+  a specific `potentialAction`.** Resolving a form's `action` URL against a
+  `potentialAction`'s `target`/`urlTemplate` (relative vs. absolute paths,
+  query strings, EntryPoint indirection) is a real source of false
+  suppression or false firing from a plain string comparison — this project
+  requires stronger evidence than that before drawing a conclusion. Instead
+  the check is page-level: any machine-readable action signal anywhere on
+  the page silences it for every non-trivial form on that page.
 - **Gate 1/2/3 discoverability** — `perimeter-access-audit`,
   `content-quality-audit`, `entity-audit`.
 
@@ -178,6 +186,8 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 | The page cannot be fetched (any error) | All capabilities `unknown` |
 | The URL resolves to a private, loopback, link-local or reserved address | Refused before connecting, `unknown` — SSRF guard |
 | The page has no form at all | EN-09 stays silent — nothing to check |
+| The page's only form(s) have a single field (e.g. a search/newsletter box) | The machine-readable-action half of EN-09 stays silent — too trivial to be worth a suggestion, even with no signal |
+| A `<script src="...">` (external, not fetched) happens to mention WebMCP in its URL | Not scanned — only a truly inline script's own body text counts, same narrowing this skill already applies to linked CSS/JS/image assets for EN-07 |
 | The page has no modal-like element at all | EN-06 stays silent |
 | The page has a valid, responsive viewport tag and no oversized fixed-width elements | EN-05 stays silent |
 | The page's head has few/no render-blocking resources, few/no unsized images, and a small HTML document | EN-07 stays silent |
