@@ -1,4 +1,4 @@
-# Content judgement rubric: CQ-01, CQ-02, CQ-04, CQ-09, CQ-12
+# Content judgement rubric: CQ-01, CQ-02, CQ-04, CQ-09, CQ-10, CQ-12
 
 Reference for `content-quality-audit`. These five capabilities are agent-
 judged — the capability matrix names all five as judgement calls, and this
@@ -316,3 +316,69 @@ defect. No finding.
 - `category`: `"discoverability"`, `gate`: `3`.
 - At most one CQ-12 finding per page — this is a page-level judgement, not
   one per filler phrase.
+
+---
+
+## CQ-10 — Cross-page fact collision
+
+### The question
+
+For each candidate — a `label` stated on 3+ pages of the same URL template,
+with `values` showing which distinct value(s) came from which pages — does
+this represent the SAME real-world fact stated two different, conflicting
+ways, or expected, legitimate per-item variation that happens to share a
+label?
+
+### When this capability does not apply — say so, emit nothing
+
+- `candidates` is empty.
+- The label names something that is, by its nature, supposed to differ per
+  page within the same template — a price, a SKU, a model number, a size, a
+  quantity, a per-location phone number. This is the dominant false
+  positive: a same-template stratum is usually a set of *different items*
+  (products, locations, articles) that legitimately each have their own
+  value for a label like "Price" or "SKU". A script cannot tell "this label
+  names a per-item attribute" from "this label names a site-wide fact"
+  without knowing what the label refers to — that judgement is yours.
+- The "different" values are actually the same fact in different formats
+  (e.g. "$49.99" vs. "49.99 USD", or "2020-01-05" vs. "January 5, 2020")
+  that the extraction's typed-value matching didn't normalise together —
+  not a real disagreement.
+
+### Calibration: genuine collision (finding warranted)
+
+> `label: "founded"`, `values: [{"value": "1998", "pages": ["https://acme.com/about"]}, {"value": "2004", "pages": ["https://acme.com/team", "https://acme.com/press"]}]`
+
+"Founded" names a single fact about the one organization behind every page
+in this stratum — there is only one correct founding year, and 2 of 3 pages
+agree on 2004 while the About page states 1998. This is a genuine collision:
+an assistant citing "when was this company founded" gets a different answer
+depending on which page it read. `severity: medium`, `confidence: medium` —
+quote both values and the pages they came from.
+
+### Calibration: acceptable as-is (no finding) — the dominant false positive
+
+> `label: "price"`, `values: [{"value": "$19.99", "pages": ["https://acme.com/product/widget-a"]}, {"value": "$29.99", "pages": ["https://acme.com/product/widget-b"]}]`
+
+These are two different products under the same template — "Price" is
+supposed to differ per item. Different pages, different real-world things,
+not a collision. No finding, regardless of how many pages or how large the
+value spread.
+
+> `label: "sku"`, `values: [{"value": "1024", "pages": [...]}, {"value": "2048", "pages": [...]}]`
+
+Same reasoning — a per-item identifier is expected to vary by design.
+
+### Writing the finding
+
+- `id`: a stable slug incorporating the label, e.g.
+  `CQ-10-fact-collision-founded`.
+- `evidence`: quote the label, every distinct value found, and the pages
+  each came from — a reader must be able to verify the collision without
+  re-fetching every page.
+- `severity`: `medium` for a genuine collision — a citing assistant would
+  get a materially different, non-obviously-per-item fact depending on
+  which page it read.
+- `category`: `"discoverability"`, `gate`: `3`.
+- At most one CQ-10 finding per label per stratum — do not split one
+  collision into several findings for the same label.

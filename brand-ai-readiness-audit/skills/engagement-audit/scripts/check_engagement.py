@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """On-site engagement audit: why visitors who arrive don't stay.
 
-Owns six capabilities, split by whether a verdict can be reached
+Owns eight capabilities, split by whether a verdict can be reached
 deterministically or needs judgement — the project's standing resolution for
 this split (skill-engineering-principles.md §3, §1c): "the host agent is the
 LLM." A script only ever hands the agent evidence; it never fabricates a
@@ -13,14 +13,20 @@ judgement it cannot support with a rule.
          narrowed, cycle 21 — see below) — SCRIPT DECIDES
   EN-07  Perceived-performance friction (static proxies: payload weight,
          render-blocking head resources, unsized images; cycle 21) — SCRIPT DECIDES
+  EN-04  Dead-end/orphan pages (cycle 23, B1+B8, `--sample-file` mode) — SCRIPT DECIDES
   EN-01  Visitor orientation — AGENT DECIDES, against references/engagement-judgement-rubric.md
   EN-03  Conversion-path friction — AGENT DECIDES, against the same rubric
+  EN-11  Content-to-action coherence (cycle 23, C1, `--sample-file` mode) — AGENT DECIDES
+  EN-08  Findability, link-scent slice (cycle 23, C1, `--sample-file` mode) — AGENT DECIDES
 
-EN-06, EN-09, EN-05 and EN-07 are deterministic: a modal with wall language
-and no dismiss option, a form field with no accessible name, a missing
-viewport tag, an unsized `<img>` — each is objectively present or absent, no
-interpretation needed, same evidence-quality bar as every prior detector in
-this marketplace.
+EN-06, EN-09, EN-05, EN-07 and EN-04 are deterministic: a modal with wall
+language and no dismiss option, a form field with no accessible name, a
+missing viewport tag, an unsized `<img>`, a page with zero internal links
+and no CTA — each is objectively present or absent, no interpretation
+needed, same evidence-quality bar as every prior detector in this
+marketplace. EN-04's orphan-within-sample half is capped at Medium severity
+and states its own sample size in its evidence — see the B1+B8 section
+below for why.
 
 **EN-05's own scope, narrowed on purpose (cycle 21).** The capability
 matrix's fuller description names viewport config, tap-target sizing, font
@@ -43,11 +49,10 @@ Stated as a real narrowing, not hidden: a page with a small HTML document
 but enormous linked assets is invisible to this check.
 
 Deliberately does NOT own: EN-02 (context retention across a deep link),
-EN-04 (dead-end/orphan pages), EN-08 (findability/site search), EN-10
-(trust signals), EN-11 (content-to-action coherence). Considered for
-cycle 21 alongside EN-05/EN-07 and discarded: each needs either
-cross-page/crawl-wide context this single-page script does not have, or is
-a judgement call with no concrete scriptable signal identified.
+EN-10 (trust signals) — no concrete scriptable signal identified. EN-08's
+site-search/navigation-depth half also stays out of scope: only the
+link-information-scent slice ships (see C1 below); the rest still needs
+crawl-wide context this project does not have.
 
 Category
 --------
@@ -89,6 +94,7 @@ import hashlib
 import json
 import re
 import sys
+import urllib.parse
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -105,9 +111,11 @@ from page_fetch import (  # noqa: E402
     is_public_host,
     fetch_page_html,
 )
+from links import LinkRef, extract_links, is_internal_link  # noqa: E402
+from fuzzy_match import token_sort_ratio  # noqa: E402
 
 OWNER_SKILL = "engagement-audit"
-CAPABILITY_IDS = ["EN-01", "EN-03", "EN-05", "EN-06", "EN-07", "EN-09"]
+CAPABILITY_IDS = ["EN-01", "EN-03", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"]
 
 
 # ---------------------------------------------------------------------------
@@ -942,6 +950,326 @@ def build_agent_judgement_requests(parser: _PageParser, visible_text: str) -> li
 
 
 # ---------------------------------------------------------------------------
+# C1 — Information-scent link/CTA coherence (--sample-file mode only)
+# ---------------------------------------------------------------------------
+#
+# Grounds EN-11 (content-to-action coherence) and the EN-08 findability
+# slice in Information Foraging Theory (Pirolli & Card 1999, Psychological
+# Review 106:643-675): a visitor follows the cue (a CTA's own wording, or a
+# link's anchor text) that promises the best "scent" of what they want; a
+# cue with low lexical overlap to what it actually leads to is a weak-scent
+# defect, whether the cue and its destination are the same page (EN-11's
+# own CTA vs. that page's H1) or two different pages (EN-08's anchor text
+# vs. the target page's H1). Both need the bounded page sample, so both
+# live in this one --sample-file mode rather than --url mode.
+#
+# Script narrows candidates only — a low lexical-overlap score is common
+# and NOT always a defect (a "Get Started" CTA is legitimate brand voice on
+# almost any SaaS page; "Home" linking to a welcome-copy H1 is not weak
+# scent, it's a nav landmark). Every candidate below still needs the
+# agent's judgement against references/engagement-judgement-rubric.md
+# §EN-11/§EN-08, the same agent_judgement_required pattern EN-01/EN-03 use.
+
+_INFO_SCENT_LOW_OVERLAP_THRESHOLD = 35.0
+_INFO_SCENT_MAX_CANDIDATES = 8
+
+# Anchor text this common is site-wide navigational chrome, not a
+# content-shaped cue — comparing it to a target's H1 is the dominant false
+# positive this check must not produce (e.g. a "Home" link to a welcome
+# page, or a "Contact" link whose target H1 is "Get in touch").
+_NAV_CHROME_ANCHOR_TEXTS = frozenset({
+    "home", "about", "about us", "contact", "contact us", "login", "log in",
+    "sign in", "sign up", "register", "cart", "shop", "search", "menu",
+    "blog", "careers", "privacy policy", "terms", "terms of service",
+    "terms & conditions", "faq", "help", "support", "back", "next",
+    "previous", "read more", "learn more", "more", "here", "click here",
+})
+
+
+def _primary_cta(parser: _PageParser) -> str | None:
+    """The page's first call-to-action text in document order — the
+    hero/primary action a real visitor sees first. Later CTAs (footer
+    links, secondary buttons) are out of scope: EN-11 is about the one
+    action a page foregrounds, not every clickable element on it."""
+    return parser.cta_texts[0] if parser.cta_texts else None
+
+
+def _cta_coherence_candidate(page_url: str, h1_text: str, primary_cta: str) -> dict | None:
+    score = token_sort_ratio(primary_cta, h1_text)
+    if score >= _INFO_SCENT_LOW_OVERLAP_THRESHOLD:
+        return None
+    return {
+        "page_url": page_url,
+        "h1_text": h1_text,
+        "primary_cta_text": primary_cta,
+        "lexical_overlap_score": round(score, 1),
+    }
+
+
+def _link_scent_candidates(
+    page_h1: dict[str, str], internal_links: dict[str, list[LinkRef]]
+) -> list[dict]:
+    """One candidate per (source, target) internal link whose anchor text
+    scores below threshold against the target page's own H1. Only a link
+    whose target is itself in the sampled set is considered — a target
+    outside the sample has no known H1 to score against. Capped and sorted
+    lowest-score-first so a page with many weak links doesn't flood the
+    agent with redundant candidates."""
+    candidates = []
+    for source_url, links in internal_links.items():
+        for link in links:
+            target_h1 = page_h1.get(link.url)
+            if not target_h1 or not link.anchor_text:
+                continue
+            score = token_sort_ratio(link.anchor_text, target_h1)
+            if score < _INFO_SCENT_LOW_OVERLAP_THRESHOLD:
+                candidates.append({
+                    "source_page_url": source_url,
+                    "target_page_url": link.url,
+                    "anchor_text": link.anchor_text,
+                    "target_h1_text": target_h1,
+                    "lexical_overlap_score": round(score, 1),
+                })
+    candidates.sort(key=lambda c: c["lexical_overlap_score"])
+    return candidates[:_INFO_SCENT_MAX_CANDIDATES]
+
+
+# ---------------------------------------------------------------------------
+# B1 + B8 — Dead-end and orphan pages (--sample-file mode only)
+# ---------------------------------------------------------------------------
+#
+# EN-04's two sub-questions get different evidentiary treatment on purpose
+# (docs/02-project-plan.md Phase 4, adopting the minority objection's
+# discipline while still shipping the majority view):
+#
+# B8a (dead end) is a direct fact about the fetched page itself — zero
+# internal outbound links AND no call-to-action — and can be stated plainly
+# at ordinary confidence, no sample-scope caveat needed.
+#
+# B1 (orphan-within-sample) is a structurally biased estimate: a page with
+# zero inbound internal links *among the pages sampled* is not proven to be
+# a site-wide orphan — pages reachable only via pagination, deep facets, or
+# a nav menu this sampler's template-stratified pass never selected are
+# structurally invisible to this check, and that exclusion correlates with
+# the very starvation being measured. Every such finding is capped at
+# Medium severity and states its own sample size in its evidence string, so
+# it can never be misread as a site-wide claim.
+
+_HOMEPAGE_PATHS = ("", "/")
+
+
+def _is_homepage(url: str) -> bool:
+    """The sample's entry point is expected to have few or no *inbound*
+    internal links — visitors and search engines arrive at it from outside
+    the site, not by following an internal link — so it is excluded from
+    the orphan check entirely rather than flagged as a false positive."""
+    return urllib.parse.urlparse(url).path in _HOMEPAGE_PATHS
+
+
+def _dead_end_finding(page_url: str) -> Finding:
+    slug = _stable_slug(page_url)
+    return Finding(
+        id=f"EN-04-dead-end-{slug}",
+        title="Page offers no next action",
+        severity="medium",
+        evidence=(
+            f"{page_url} has no internal outbound link and no call-to-action element — a visitor "
+            "(or an autonomous agent following links) who lands here has nowhere to go next on "
+            "this site."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Add at least one relevant internal link or call-to-action to this page so "
+                "visitors and crawling agents have a next step from it."
+            ),
+            priority="medium",
+        ),
+        category="engagement",
+        capability_id="EN-04",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "A page with zero internal links and no CTA is a structural dead end: neither a "
+            "human visitor nor a crawling agent has any path onward from it, isolating whatever "
+            "value the page has from the rest of the site."
+        ),
+        gate=None,
+        confidence="high",
+        structured_evidence={"page_url": page_url},
+    )
+
+
+def find_dead_end_pages(
+    raw_internal_links: dict[str, list[LinkRef]], page_cta: dict[str, str]
+) -> list[Finding]:
+    """B8a: a sampled page with zero internal outbound links and no primary
+    CTA at all. Stated plainly — this is a direct fact about the fetched
+    page's own markup, not an estimate over the bounded sample."""
+    return [
+        _dead_end_finding(page_url)
+        for page_url, links in raw_internal_links.items()
+        if not links and page_url not in page_cta
+    ]
+
+
+def _orphan_finding(page_url: str, sample_size: int) -> Finding:
+    slug = _stable_slug(page_url)
+    return Finding(
+        id=f"EN-04-orphan-in-sample-{slug}",
+        title="No internal link to this page found within the sampled pages",
+        severity="medium",
+        evidence=(
+            f"Within the {sample_size} pages sampled for this audit, no internal link pointed to "
+            f"{page_url} — this does not prove site-wide orphan status, only that no link path to "
+            "it was found within the sampled subset."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Add an internal link to this page from elsewhere on the site (navigation, a "
+                "related-content section, or a sitemap) so both visitors and crawlers can reach "
+                "it by following links, not only by a direct URL."
+            ),
+            priority="medium",
+        ),
+        category="engagement",
+        capability_id="EN-04",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "A page reachable only by a direct URL — never via an internal link from the pages "
+            "this audit sampled — is invisible to link-following crawlers and to visitors "
+            "browsing rather than typing a known address, starving it of whatever internal link "
+            "authority the rest of the site could pass to it. A bounded sample cannot rule out an "
+            "inbound link from a page outside it, which is exactly why this is capped at Medium "
+            "severity and states its own sample size rather than claiming site-wide scope."
+        ),
+        gate=None,
+        confidence="medium",
+        structured_evidence={"page_url": page_url, "sample_size": sample_size},
+    )
+
+
+def find_orphan_pages(raw_internal_links: dict[str, list[LinkRef]]) -> list[Finding]:
+    """B1: a sampled page (other than the homepage) with zero inbound
+    internal links from any other page in the same sample."""
+    sample_size = len(raw_internal_links)
+    in_degree = {page_url: 0 for page_url in raw_internal_links}
+    for links in raw_internal_links.values():
+        for link in links:
+            if link.url in in_degree:
+                in_degree[link.url] += 1
+    return [
+        _orphan_finding(page_url, sample_size)
+        for page_url, count in in_degree.items()
+        if count == 0 and not _is_homepage(page_url)
+    ]
+
+
+def _gather_sample_pages(
+    site: str, page_urls: list[str]
+) -> tuple[dict[str, str], dict[str, str], dict[str, list[LinkRef]], dict[str, list[LinkRef]], list[UnknownCheck]]:
+    """One fetch pass over `page_urls`, shared by C1 (EN-08/EN-11) and B1+B8
+    (EN-04) so the sample is only ever fetched once per script invocation.
+    Returns (page_h1, page_cta, raw_internal_links, scent_internal_links,
+    unknowns) — `raw_internal_links` keeps every internal link (EN-04's
+    dead-end/orphan checks need to know a link exists at all, including a
+    plain "Home" link); `scent_internal_links` drops navigational chrome
+    (EN-08's information-scent check needs only content-shaped links)."""
+    unknowns: list[UnknownCheck] = []
+    page_h1: dict[str, str] = {}
+    page_cta: dict[str, str] = {}
+    raw_internal_links: dict[str, list[LinkRef]] = {}
+    scent_internal_links: dict[str, list[LinkRef]] = {}
+
+    for page_url in page_urls:
+        html_or_error, status = fetch_page_html(page_url)
+        if status != "present" or html_or_error is None:
+            unknowns.append(UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
+            continue
+        parser = parse_page(html_or_error)
+        if parser.h1_text:
+            page_h1[page_url] = parser.h1_text
+        primary_cta = _primary_cta(parser)
+        if primary_cta:
+            page_cta[page_url] = primary_cta
+        links = extract_links(html_or_error, page_url)
+        internal = [link for link in links if is_internal_link(link.url, site)]
+        raw_internal_links[page_url] = internal
+        scent_internal_links[page_url] = [
+            link for link in internal if link.anchor_text.lower() not in _NAV_CHROME_ANCHOR_TEXTS
+        ]
+
+    return page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns
+
+
+def audit_sampled_pages(site: str, page_urls: list[str]) -> dict:
+    """The combined multi-page mode — fetches every on-site URL in
+    `page_urls` (the orchestrator's own bounded page sample) once, then runs
+    two independent capability clusters over that one fetch: C1's
+    information-scent narrowing (EN-11, the EN-08 slice — agent-judged) and
+    B1+B8's dead-end/orphan detection (EN-04 — script-decided). A separate,
+    once-per-run mode from `audit_html`'s once-per-page mode, the same
+    relationship ENT-07's `audit_service_domains` has to `audit_html` in
+    entity-audit."""
+    page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns = _gather_sample_pages(site, page_urls)
+
+    findings = find_dead_end_pages(raw_internal_links, page_cta)
+    findings += find_orphan_pages(raw_internal_links)
+
+    cta_candidates = []
+    for page_url, cta_text in page_cta.items():
+        h1_text = page_h1.get(page_url)
+        if not h1_text:
+            continue
+        candidate = _cta_coherence_candidate(page_url, h1_text, cta_text)
+        if candidate:
+            cta_candidates.append(candidate)
+    cta_candidates.sort(key=lambda c: c["lexical_overlap_score"])
+    cta_candidates = cta_candidates[:_INFO_SCENT_MAX_CANDIDATES]
+
+    link_candidates = _link_scent_candidates(page_h1, scent_internal_links)
+
+    judgement_requests = []
+    if cta_candidates:
+        judgement_requests.append({
+            "capability_id": "EN-11",
+            "instructions": (
+                "Read references/engagement-judgement-rubric.md §EN-11. For each candidate, the "
+                "page's own H1/topic and its primary (first, most prominent) call-to-action text "
+                "scored below the lexical-overlap threshold. Decide whether the CTA is actually "
+                "unrelated to the intent that brought a visitor to this page's content, or is a "
+                "legitimate generic/brand-voice action (e.g. 'Get Started' on almost any SaaS "
+                "page) that a low lexical score alone does not condemn. Only hand-author a "
+                "Finding, capped at Medium severity, for a candidate where the mismatch is real."
+            ),
+            "observations": {"candidates": cta_candidates},
+        })
+    if link_candidates:
+        judgement_requests.append({
+            "capability_id": "EN-08",
+            "instructions": (
+                "Read references/engagement-judgement-rubric.md §EN-08. For each candidate, an "
+                "internal link's anchor text scored below the lexical-overlap threshold against "
+                "the target page's own H1 — the link's wording may not set correct expectations "
+                "for what the visitor will find (weak information scent, Pirolli & Card 1999). "
+                "Common navigational chrome is already excluded from these candidates; judge "
+                "whether a content-shaped link (an in-body reference, a related-article teaser, "
+                "a category link) actually misleads about its destination. Only hand-author a "
+                "Finding, capped at Medium severity, where the wording is genuinely misleading, "
+                "not merely a reasonable paraphrase."
+            ),
+            "observations": {"candidates": link_candidates},
+        })
+
+    return {
+        "owner_skill": OWNER_SKILL,
+        "capability_ids": CAPABILITY_IDS,
+        "site": site,
+        "findings": [f.to_dict() for f in findings],
+        "agent_judgement_required": judgement_requests,
+        "unknown_checks": [u.to_dict() for u in unknowns],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Orchestration within the skill
 # ---------------------------------------------------------------------------
 
@@ -1019,7 +1347,30 @@ def main(argv: list[str] | None = None) -> int:
     parser_.add_argument("--site", help="Site label for the report, e.g. example.com")
     parser_.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
     parser_.add_argument("--page-url", help="Label findings with this page URL (default: --url)")
+    parser_.add_argument(
+        "--sample-file",
+        help=(
+            "Run only the multi-page checks (C1's information-scent, EN-11 + the EN-08 slice; "
+            "and B1+B8's dead-end/orphan detection, EN-04) across a local file of on-site page "
+            "URLs (one per line — the sample_urls from audit-orchestrator's sample_pages.py) "
+            "instead of auditing a single page. Fetches each page itself (same as --url). "
+            "Requires --site."
+        ),
+    )
     args = parser_.parse_args(argv)
+
+    if args.sample_file:
+        if not args.site:
+            parser_.error("--site is required with --sample-file")
+        site = site_label(args.site)
+        page_urls = [
+            line.strip()
+            for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+        json.dump(audit_sampled_pages(site, page_urls), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
 
     if not any((args.url, args.site)):
         parser_.error("one of --url or --site is required")

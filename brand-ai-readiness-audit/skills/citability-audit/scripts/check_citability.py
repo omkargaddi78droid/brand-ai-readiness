@@ -3,13 +3,17 @@
 fact from — the selection function appendix B describes for how assistants
 pick sources.
 
-Owns six capabilities, split by whether a verdict is deterministic or needs
+Owns eight capabilities, split by whether a verdict is deterministic or needs
 judgement — the same split engagement-audit uses between EN-01/03 and EN-06/09:
 
   CIT-01  Trust-signal authority (About-page discoverability) — SCRIPT DECIDES
   CIT-02  Explicit source attribution — SCRIPT DECIDES
   CIT-06  Statistics density / numeric verifiability — SCRIPT DECIDES
   CIT-07  Citation-position weighting — SCRIPT DECIDES
+  CIT-08  Hub/authority link-graph structure (cycle 23, B1+B8, `--sample-file`
+          mode) — SCRIPT DECIDES
+  CIT-09  Comparison-content gap (cycle 23, Phase 4 B5, shares CIT-08's
+          `--sample-file` mode; proactive track only) — SCRIPT DECIDES
   CIT-04  Citation recall (load-bearing claims with no source) — AGENT DECIDES,
           against references/citability-judgement-rubric.md
   CIT-13  Off-site corroboration (agent-supplied off-site URLs; cycle 19) —
@@ -46,6 +50,37 @@ it is genuinely worth flagging as fragile (appendix D: single-source
 claims are fragile) rather than an obviously fine unsourced detail (a
 price, a date) is, like CIT-04, the agent's call.
 
+**CIT-08 is a cycle-23 addition, `--sample-file` mode**, reversed from
+"needs crawl-wide context this project does not have" once Phase 1's
+template-stratified page sampler existed to bound a link graph over.
+Builds a directed internal-link graph from the sampled pages (reusing
+`shared/links.extract_links`/`is_internal_link`, the same extraction C1 and
+B1+B8 use in engagement-audit) and runs `shared/graph_metrics.pagerank`
+over it. Flags a fact-dense page (`MIN_SUBSTANTIAL_WORD_COUNT`+ words — the
+same "substantial" threshold CIT-01/02 already use) whose PageRank is
+starved (well below the sample's mean) while a non-fact-dense page holds
+the sample's single highest PageRank — the concrete, scriptable shape of
+"navigational hubs and fact-dense authority pages not separated; trust
+flows badly." Adopts the minority objection's discipline while shipping the
+majority view (`docs/02-project-plan.md` Phase 4): a bounded,
+template-stratified subgraph is a structurally biased estimate of
+site-wide link authority (pages reachable only via pagination or a deep
+facet are invisible to it, and that exclusion correlates with the very
+starvation being measured), so every finding is capped at Medium severity
+and states its own sample size in its evidence, never claiming site-wide
+scope — the identical discipline `engagement-audit` applies to EN-04's
+orphan-within-sample half.
+
+**CIT-09 is a cycle-23 addition, Phase 4 B5, sharing CIT-08's `--sample-file`
+mode.** A zero-crawl lexical scan of each already-fetched sampled page's URL
+slug and `<title>` for a comparison shape ("vs", "versus", "alternative to",
+"compared to"). Fires only on total absence across the sample — never a
+claim this brand *needs* comparison content, since absence proves nothing
+(a personal blog, a policy page, a support portal has no reason to publish
+one). `track: "proactive"`, lowest severity: this is a suggestion an
+assistant answering a comparison-shaped query has no page to select, not a
+defect on any existing page.
+
 Deliberately does NOT own: CIT-03 (citation precision — does a cited source
 actually support the claim it's attached to) and CIT-12 (abstractiveness vs
 faithfulness) — both need reading comprehension across the claim and its
@@ -55,14 +90,10 @@ attribution patterns vary too widely to script at this project's
 false-positive bar, and CIT-10 would fire on nearly every vendor-authored
 comparison page, since disclosure language is rare in practice regardless of
 whether the page is legitimate — a pattern that fires on the overwhelming
-majority of both good and bad pages is not a detector. CIT-08 (link-graph
-structure) and CIT-09 (comparison-content gap) need crawl-wide or off-site
-context a single-page script does not have — unlike CIT-13, both are about
-the audited site's OWN missing content (no comparison page, no link-graph
-separation), not off-site corroboration, so hard constraint 2 does not
-reach them. CIT-11 remains `DEFERRED`: matching a page's own declarative
-claim text against forum/social opinion for provenance is a fuzzy-matching
-complexity problem, not a policy block — see capability matrix.
+majority of both good and bad pages is not a detector. CIT-11 remains
+`DEFERRED`: matching a page's own declarative claim text against
+forum/social opinion for provenance is a fuzzy-matching complexity problem,
+not a policy block — see capability matrix.
 
 Category
 --------
@@ -97,6 +128,7 @@ report, exactly as engagement-audit's does for EN-01/EN-03.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -118,9 +150,11 @@ from page_fetch import (  # noqa: E402
     is_public_host,
     fetch_page_html,
 )
+from links import extract_links, is_internal_link  # noqa: E402
+from graph_metrics import pagerank  # noqa: E402
 
 OWNER_SKILL = "citability-audit"
-CAPABILITY_IDS = ["CIT-01", "CIT-02", "CIT-04", "CIT-06", "CIT-07", "CIT-13"]
+CAPABILITY_IDS = ["CIT-01", "CIT-02", "CIT-04", "CIT-06", "CIT-07", "CIT-08", "CIT-09", "CIT-13"]
 MIN_SUBSTANTIAL_WORD_COUNT = 500
 
 
@@ -766,6 +800,227 @@ def fetch_offsite_pages(urls: list[str]) -> tuple[list[dict], list[UnknownCheck]
     return pages, unknowns
 
 
+# ---------------------------------------------------------------------------
+# CIT-08 — Hub/authority link-graph structure (--sample-file mode only)
+# ---------------------------------------------------------------------------
+
+_MIN_SAMPLE_SIZE_FOR_PAGERANK = 5
+_STARVED_RANK_RATIO = 0.5
+
+
+def _link_authority_starved_finding(
+    page_url: str, page_rank: float, mean_rank: float, hub_url: str, sample_size: int
+) -> Finding:
+    slug = hashlib.sha256(page_url.encode("utf-8")).hexdigest()[:8]
+    return Finding(
+        id=f"CIT-08-link-authority-starved-{slug}",
+        title="Fact-dense page is starved of internal link authority within a navigational hub",
+        severity="medium",
+        evidence=(
+            f"Within the {sample_size} pages sampled for this audit, {page_url} has "
+            f"{MIN_SUBSTANTIAL_WORD_COUNT}+ words of content but a PageRank of {page_rank:.4f} — "
+            f"under half the sample's mean of {mean_rank:.4f} — while {hub_url}, a page with no "
+            "comparable content density, holds the sample's single highest PageRank. This does "
+            "not prove site-wide link starvation, only that the internal link structure among "
+            "the sampled pages routes trust to a navigational hub rather than to this content."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Add internal links from high-traffic navigational pages (the homepage, main "
+                "menu, category hubs) directly to this fact-dense page, so it receives internal "
+                "link authority instead of only navigational pages receiving it."
+            ),
+            priority="medium",
+        ),
+        category="discoverability",
+        capability_id="CIT-08",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "An assistant selecting a source weighs a page's internal link authority alongside "
+            "its content — a fact-dense page starved of internal links, while a content-thin "
+            "navigational hub absorbs most of the site's internal link equity, is structurally "
+            "less likely to be selected or trusted than its content alone would warrant. A "
+            "bounded sample cannot rule out inbound links from pages outside it, which is exactly "
+            "why this is capped at Medium severity and states its own sample size rather than "
+            "claiming site-wide scope."
+        ),
+        gate=3,
+        confidence="medium",
+        structured_evidence={
+            "page_url": page_url,
+            "page_rank": page_rank,
+            "sample_mean_rank": mean_rank,
+            "hub_url": hub_url,
+            "sample_size": sample_size,
+        },
+    )
+
+
+def find_link_authority_starved_pages(
+    node_ids: list[str], edges: list[tuple[str, str]], page_word_counts: dict[str, int]
+) -> list[Finding]:
+    """CIT-08: a fact-dense page (MIN_SUBSTANTIAL_WORD_COUNT+ words) whose
+    PageRank over the sampled internal-link graph is well below the
+    sample's mean, while a non-fact-dense page holds the sample's single
+    highest PageRank — the concrete signature of a navigational hub
+    absorbing link equity that a content-dense page needs. Requires at
+    least `_MIN_SAMPLE_SIZE_FOR_PAGERANK` pages: PageRank over a smaller
+    graph is too noisy to support even a sample-scoped claim."""
+    if len(node_ids) < _MIN_SAMPLE_SIZE_FOR_PAGERANK:
+        return []
+    ranks = pagerank(node_ids, edges)
+    if not ranks:
+        return []
+    mean_rank = sum(ranks.values()) / len(ranks)
+    if mean_rank <= 0:
+        return []
+    substantial = {url for url, count in page_word_counts.items() if count >= MIN_SUBSTANTIAL_WORD_COUNT}
+    if not substantial:
+        return []
+    hub_url = max(ranks, key=ranks.get)
+    if hub_url in substantial:
+        # The sample's own top-authority page is itself fact-dense — hub
+        # and authority coincide here, no separation problem to report.
+        return []
+    return [
+        _link_authority_starved_finding(url, ranks[url], mean_rank, hub_url, len(node_ids))
+        for url in substantial
+        if ranks.get(url, 0) < mean_rank * _STARVED_RANK_RATIO
+    ]
+
+
+# ---------------------------------------------------------------------------
+# CIT-09 — Comparison-content gap (proactive; shares CIT-08's fetch pass)
+# ---------------------------------------------------------------------------
+#
+# Zero-crawl: reuses the same sampled pages CIT-08 already fetches, no crawl
+# of its own. A lexical scan of each page's URL slug and <title> for a
+# comparison shape ("vs", "versus", "alternative to", "compared to") —
+# never a claim this brand NEEDS comparison content, since absence proves
+# nothing: a personal blog, a policy page, or a support portal has no
+# reason to publish one. Proactive track only, lowest severity, worded as a
+# suggestion rather than a defect — the finding says "consider", not
+# "missing."
+
+_CIT09_SLUG_PATTERN = re.compile(
+    r"(?:^|[/-])(?:vs|versus|alternatives?(?:-to)?|compared-to|comparison)(?:[/-]|$)",
+    re.IGNORECASE,
+)
+_CIT09_TITLE_PATTERN = re.compile(
+    r"\b(?:vs\.?|versus|alternatives?\s+to|compared\s+to|comparison)\b",
+    re.IGNORECASE,
+)
+_CIT09_MIN_SAMPLE_SIZE = 5
+
+
+def _extract_title(html: str) -> str:
+    match = re.search(r"<title[^>]*>(.*?)</title>", html, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return ""
+    return re.sub(r"\s+", " ", match.group(1)).strip()
+
+
+def _looks_like_comparison_page(url: str, title: str) -> bool:
+    path = urllib.parse.urlparse(url).path
+    if _CIT09_SLUG_PATTERN.search(path):
+        return True
+    return bool(title) and bool(_CIT09_TITLE_PATTERN.search(title))
+
+
+def find_comparison_content_gap(page_titles: dict[str, str]) -> list[Finding]:
+    """CIT-09. Fires only when NONE of the sampled pages' URL slug or
+    `<title>` looks comparison-shaped. This is an absence, not a scored
+    judgement — plenty of legitimate sites have no reason to publish
+    comparison content — so this stays a `proactive` suggestion, never a
+    defect, and is gated to a minimum sample size the same as CIT-08."""
+    if len(page_titles) < _CIT09_MIN_SAMPLE_SIZE:
+        return []
+    if any(_looks_like_comparison_page(url, title) for url, title in page_titles.items()):
+        return []
+
+    return [
+        Finding(
+            id="CIT-09-no-comparison-content",
+            title="No comparison-shaped page (vs./versus/alternative-to) found in the sampled pages",
+            severity="low",
+            evidence=(
+                f"None of the {len(page_titles)} sampled pages' URL or <title> mentions a "
+                'comparison shape ("vs", "versus", "alternative to", "compared to").'
+            ),
+            suggested_action=SuggestedAction(
+                summary=(
+                    "Consider publishing a comparison page (this brand vs. a named competitor, or "
+                    "a category buyer's guide) if that fits the product — comparison queries are a "
+                    "distinct, high-intent share of AI-search traffic this site currently has no "
+                    "page shaped to answer."
+                ),
+                priority="low",
+                details=(
+                    "Absence proves nothing on its own: many legitimate sites (a personal blog, a "
+                    "policy page, a support portal) have no reason to publish comparison content. "
+                    "This is a proactive suggestion, not a defect, and is scoped only to the "
+                    f"{len(page_titles)} pages in this sample."
+                ),
+            ),
+            category="discoverability",
+            capability_id="CIT-09",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "An assistant answering a comparison-shaped query (\"X vs Y\", \"alternatives to "
+                "X\") strongly prefers a page shaped to answer exactly that query over inferring "
+                "a comparison from separate single-subject pages. A site with no such page simply "
+                "is not a candidate source for that entire query shape."
+            ),
+            gate=3,
+            confidence="low",
+            track="proactive",
+            structured_evidence={"sample_size": len(page_titles)},
+        )
+    ]
+
+
+def audit_link_graph(site: str, page_urls: list[str]) -> dict:
+    """CIT-08's and CIT-09's shared multi-page mode — fetches every on-site
+    URL in `page_urls` (the orchestrator's own bounded page sample) once,
+    building the sampled internal-link graph and each page's `<title>` off
+    that one fetch pass, then runs both capabilities: CIT-08 flags a
+    fact-dense page starved of PageRank relative to a non-fact-dense hub;
+    CIT-09 flags the sample-wide absence of any comparison-shaped page. A
+    separate, once-per-run mode from `audit_html`'s once-per-page mode, the
+    same relationship ENT-07's `audit_service_domains` has to `audit_html`
+    in entity-audit."""
+    unknowns: list[UnknownCheck] = []
+    node_ids: list[str] = []
+    edges: list[tuple[str, str]] = []
+    page_word_counts: dict[str, int] = {}
+    page_titles: dict[str, str] = {}
+
+    for page_url in page_urls:
+        html_or_error, status = fetch_page_html(page_url)
+        if status != "present" or html_or_error is None:
+            unknowns.append(UnknownCheck("CIT-08", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
+            continue
+        node_ids.append(page_url)
+        _, _, visible_text = parse_page(html_or_error)
+        page_word_counts[page_url] = len(visible_text.split())
+        page_titles[page_url] = _extract_title(html_or_error)
+        for link in extract_links(html_or_error, page_url):
+            if is_internal_link(link.url, site):
+                edges.append((page_url, link.url))
+
+    findings = find_link_authority_starved_pages(node_ids, edges, page_word_counts)
+    findings += find_comparison_content_gap(page_titles)
+
+    return {
+        "owner_skill": OWNER_SKILL,
+        "capability_ids": CAPABILITY_IDS,
+        "site": site,
+        "findings": [f.to_dict() for f in findings],
+        "agent_judgement_required": [],
+        "unknown_checks": [u.to_dict() for u in unknowns],
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     parser_ = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser_.add_argument("--url", help="A single page URL to fetch and audit")
@@ -782,7 +1037,29 @@ def main(argv: list[str] | None = None) -> int:
             "numeric claims. Fetched only if that host's own robots.txt allows it."
         ),
     )
+    parser_.add_argument(
+        "--sample-file",
+        help=(
+            "Run CIT-08's hub/authority link-graph check and CIT-09's comparison-content-gap "
+            "check across a local file of on-site page URLs (one per line — the sample_urls "
+            "from audit-orchestrator's sample_pages.py) instead of auditing a single page. "
+            "Fetches each page itself (same as --url). Requires --site."
+        ),
+    )
     args = parser_.parse_args(argv)
+
+    if args.sample_file:
+        if not args.site:
+            parser_.error("--site is required with --sample-file")
+        site = site_label(args.site)
+        page_urls = [
+            line.strip()
+            for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+        json.dump(audit_link_graph(site, page_urls), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
 
     if not any((args.url, args.site)):
         parser_.error("one of --url or --site is required")

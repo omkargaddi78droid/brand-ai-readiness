@@ -907,6 +907,53 @@ class BridgesBackToSiteTests(unittest.TestCase):
         self.assertFalse(ent._bridges_back_to_site([], "acmewidgets.com"))
 
 
+class ExtractAddressCandidateTests(unittest.TestCase):
+    def test_finds_a_standard_us_style_address(self):
+        text = "Visit us at 123 Main St, Springfield, IL 62701 during business hours."
+        self.assertEqual(ent.extract_address_candidate(text), "123 Main St, Springfield, IL 62701")
+
+    def test_no_address_shaped_text_returns_none(self):
+        self.assertIsNone(ent.extract_address_candidate("Welcome to our website. We sell widgets."))
+
+    def test_zip_plus_four_is_recognised(self):
+        text = "456 Oak Avenue, Denver, CO 80202-1234"
+        self.assertEqual(ent.extract_address_candidate(text), "456 Oak Avenue, Denver, CO 80202-1234")
+
+
+class FindAddressInconsistenciesTests(unittest.TestCase):
+    def test_two_clearly_different_addresses_across_pages_is_flagged(self):
+        page_addresses = {
+            "https://acme.com/contact": "123 Main St, Springfield, IL 62701",
+            "https://acme.com/about": "9876 Ocean Blvd, Miami, FL 33139",
+        }
+        findings = ent.find_address_inconsistencies(page_addresses, ["unrelated text", "more unrelated text"])
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].capability_id, "ENT-08")
+        self.assertEqual(findings[0].severity, "medium")
+
+    def test_the_same_address_repeated_across_pages_is_not_flagged(self):
+        page_addresses = {
+            "https://acme.com/contact": "123 Main St, Springfield, IL 62701",
+            "https://acme.com/about": "123 Main St, Springfield, IL 62701",
+        }
+        self.assertEqual(ent.find_address_inconsistencies(page_addresses, ["", ""]), [])
+
+    def test_multiple_location_language_on_any_page_suppresses_the_finding(self):
+        page_addresses = {
+            "https://acme.com/contact": "123 Main St, Springfield, IL 62701",
+            "https://acme.com/about": "9876 Ocean Blvd, Miami, FL 33139",
+        }
+        texts = ["Use our store locator to find a location near you.", "some other text"]
+        self.assertEqual(ent.find_address_inconsistencies(page_addresses, texts), [])
+
+    def test_fewer_than_two_pages_with_an_address_is_not_flagged(self):
+        page_addresses = {"https://acme.com/contact": "123 Main St, Springfield, IL 62701"}
+        self.assertEqual(ent.find_address_inconsistencies(page_addresses, ["text"]), [])
+
+    def test_no_addresses_at_all_is_not_flagged(self):
+        self.assertEqual(ent.find_address_inconsistencies({}, ["text", "more text"]), [])
+
+
 class AuditServiceDomainsTests(unittest.TestCase):
     def test_an_unreachable_sampled_page_becomes_one_unknown_check(self):
         out = ent.audit_service_domains("acmewidgets.com", ["https://this-host-does-not-exist.invalid/page"])

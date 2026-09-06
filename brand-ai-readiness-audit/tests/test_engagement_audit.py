@@ -419,5 +419,197 @@ class SsrfGuardTests(unittest.TestCase):
         self.assertFalse(eng.is_public_host("10.0.0.5"))
 
 
+class PrimaryCtaTests(unittest.TestCase):
+    def test_returns_the_first_cta_text_in_document_order(self):
+        parser = eng.parse_page('<a href="/a">Start free trial</a><a href="/b">Learn more</a>')
+        self.assertEqual(eng._primary_cta(parser), "Start free trial")
+
+    def test_no_cta_at_all_returns_none(self):
+        parser = eng.parse_page("<p>No buttons or links here.</p>")
+        self.assertIsNone(eng._primary_cta(parser))
+
+
+class CtaCoherenceCandidateTests(unittest.TestCase):
+    def test_a_cta_sharing_no_vocabulary_with_the_h1_is_a_candidate(self):
+        candidate = eng._cta_coherence_candidate(
+            "https://acme.com/refund-policy", "Refund Policy", "Subscribe to our newsletter"
+        )
+        self.assertIsNotNone(candidate)
+        self.assertEqual(candidate["page_url"], "https://acme.com/refund-policy")
+        self.assertLess(candidate["lexical_overlap_score"], eng._INFO_SCENT_LOW_OVERLAP_THRESHOLD)
+
+    def test_a_cta_that_echoes_the_h1_is_not_a_candidate(self):
+        candidate = eng._cta_coherence_candidate(
+            "https://acme.com/pricing", "Pricing Plans", "See pricing plans"
+        )
+        self.assertIsNone(candidate)
+
+
+class LinkScentCandidateTests(unittest.TestCase):
+    def test_anchor_text_unrelated_to_target_h1_is_a_candidate(self):
+        page_h1 = {"https://acme.com/returns": "Return & Refund Policy"}
+        internal_links = {
+            "https://acme.com/home": [
+                eng.LinkRef(url="https://acme.com/returns", anchor_text="Check this out")
+            ]
+        }
+        candidates = eng._link_scent_candidates(page_h1, internal_links)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["target_page_url"], "https://acme.com/returns")
+
+    def test_anchor_text_matching_target_h1_is_not_a_candidate(self):
+        page_h1 = {"https://acme.com/returns": "Return & Refund Policy"}
+        internal_links = {
+            "https://acme.com/home": [
+                eng.LinkRef(url="https://acme.com/returns", anchor_text="Refund Policy")
+            ]
+        }
+        self.assertEqual(eng._link_scent_candidates(page_h1, internal_links), [])
+
+    def test_link_to_a_page_outside_the_sample_is_not_a_candidate(self):
+        """A target with no known H1 (not itself in the sample) cannot be
+        scored — silently skipped, not flagged."""
+        internal_links = {
+            "https://acme.com/home": [
+                eng.LinkRef(url="https://acme.com/unsampled", anchor_text="Random text")
+            ]
+        }
+        self.assertEqual(eng._link_scent_candidates({}, internal_links), [])
+
+    def test_empty_anchor_text_is_not_a_candidate(self):
+        page_h1 = {"https://acme.com/returns": "Return & Refund Policy"}
+        internal_links = {
+            "https://acme.com/home": [eng.LinkRef(url="https://acme.com/returns", anchor_text="")]
+        }
+        self.assertEqual(eng._link_scent_candidates(page_h1, internal_links), [])
+
+    def test_candidates_are_capped_and_sorted_lowest_score_first(self):
+        page_h1 = {f"https://acme.com/page{i}": f"Topic {i} specifics" for i in range(20)}
+        internal_links = {
+            "https://acme.com/home": [
+                eng.LinkRef(url=f"https://acme.com/page{i}", anchor_text="Click here now")
+                for i in range(20)
+            ]
+        }
+        candidates = eng._link_scent_candidates(page_h1, internal_links)
+        self.assertLessEqual(len(candidates), eng._INFO_SCENT_MAX_CANDIDATES)
+        scores = [c["lexical_overlap_score"] for c in candidates]
+        self.assertEqual(scores, sorted(scores))
+
+
+class AuditSampledPagesTests(unittest.TestCase):
+    def test_an_unreachable_page_becomes_one_unknown_check(self):
+        out = eng.audit_sampled_pages("acme.com", ["https://this-host-does-not-exist.invalid/page"])
+        self.assertEqual(out["agent_judgement_required"], [])
+        self.assertEqual(len(out["unknown_checks"]), 1)
+        self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
+
+    def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
+        out = eng.audit_sampled_pages("acme.com", [])
+        self.assertEqual(out["agent_judgement_required"], [])
+        self.assertEqual(out["unknown_checks"], [])
+
+    def test_output_always_carries_the_capability_ids(self):
+        out = eng.audit_sampled_pages("acme.com", [])
+        self.assertEqual(out["capability_ids"], eng.CAPABILITY_IDS)
+        self.assertIn("EN-11", out["capability_ids"])
+        self.assertIn("EN-08", out["capability_ids"])
+
+    def test_navigational_chrome_anchor_text_is_excluded_before_scoring(self):
+        """Dominant false positive: a plain 'Home' link to a welcome-copy H1
+        would otherwise score low and wrongly look like weak scent — this is
+        why `audit_sampled_pages` drops nav-chrome anchor text from
+        `internal_links` before `_link_scent_candidates` ever sees it."""
+        self.assertIn("home", eng._NAV_CHROME_ANCHOR_TEXTS)
+        self.assertIn("contact", eng._NAV_CHROME_ANCHOR_TEXTS)
+        # Sanity: without the filter this pair WOULD score low, confirming
+        # the filter (not a coincidentally high score) is what protects it.
+        page_h1 = {"https://acme.com/": "Welcome to Acme Widgets"}
+        internal_links = {
+            "https://acme.com/about": [eng.LinkRef(url="https://acme.com/", anchor_text="Home")]
+        }
+        self.assertEqual(len(eng._link_scent_candidates(page_h1, internal_links)), 1)
+
+
+class DeadEndPageTests(unittest.TestCase):
+    def test_zero_internal_links_and_no_cta_is_a_dead_end(self):
+        raw_internal_links = {"https://acme.com/thanks": []}
+        findings = eng.find_dead_end_pages(raw_internal_links, page_cta={})
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].capability_id, "EN-04")
+        self.assertIn("https://acme.com/thanks", findings[0].evidence)
+
+    def test_zero_internal_links_but_has_a_cta_is_not_a_dead_end(self):
+        """Dominant false positive: a page whose only actions are external
+        (e.g. an off-site payment redirect button) still has a next step."""
+        raw_internal_links = {"https://acme.com/checkout": []}
+        page_cta = {"https://acme.com/checkout": "Pay with Stripe"}
+        self.assertEqual(eng.find_dead_end_pages(raw_internal_links, page_cta), [])
+
+    def test_has_internal_links_but_no_cta_is_not_a_dead_end(self):
+        """A nav-only page (e.g. a category hub) with real internal links
+        but no CTA text still gives a visitor somewhere to go."""
+        raw_internal_links = {
+            "https://acme.com/category": [eng.LinkRef(url="https://acme.com/item1", anchor_text="Item 1")]
+        }
+        self.assertEqual(eng.find_dead_end_pages(raw_internal_links, page_cta={}), [])
+
+    def test_finding_validates_against_the_shared_contract(self):
+        raw_internal_links = {"https://acme.com/thanks": []}
+        finding = eng.find_dead_end_pages(raw_internal_links, page_cta={})[0]
+        self.assertEqual(finding.validate(), [])
+
+
+class OrphanPageTests(unittest.TestCase):
+    def test_a_page_with_no_inbound_internal_link_is_flagged(self):
+        raw_internal_links = {
+            "https://acme.com/": [eng.LinkRef(url="https://acme.com/about", anchor_text="About")],
+            "https://acme.com/about": [],
+            "https://acme.com/orphan": [],
+        }
+        findings = eng.find_orphan_pages(raw_internal_links)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("orphan", findings[0].id)
+        self.assertEqual(findings[0].severity, "medium")
+
+    def test_the_homepage_is_never_flagged_as_an_orphan(self):
+        """Dominant false positive: a site's homepage is expected to have
+        few or no inbound *internal* links — visitors arrive at it from
+        outside the site, not by following an internal link. Isolated as a
+        single-page sample so the homepage's own 0 in-degree is the only
+        thing under test — without the exemption this would be flagged."""
+        raw_internal_links = {"https://acme.com/": []}
+        self.assertEqual(eng.find_orphan_pages(raw_internal_links), [])
+
+    def test_a_page_linked_from_another_sampled_page_is_not_an_orphan(self):
+        raw_internal_links = {
+            "https://acme.com/": [eng.LinkRef(url="https://acme.com/pricing", anchor_text="Pricing")],
+            "https://acme.com/pricing": [],
+        }
+        self.assertEqual(eng.find_orphan_pages(raw_internal_links), [])
+
+    def test_evidence_states_its_own_sample_size_never_site_wide_scope(self):
+        raw_internal_links = {"https://acme.com/": [], "https://acme.com/orphan": []}
+        finding = eng.find_orphan_pages(raw_internal_links)[0]
+        self.assertIn("2 pages sampled", finding.evidence)
+        self.assertIn("does not prove site-wide orphan status", finding.evidence)
+
+    def test_finding_validates_against_the_shared_contract(self):
+        raw_internal_links = {"https://acme.com/": [], "https://acme.com/orphan": []}
+        finding = eng.find_orphan_pages(raw_internal_links)[0]
+        self.assertEqual(finding.validate(), [])
+
+
+class IsHomepageTests(unittest.TestCase):
+    def test_root_path_is_the_homepage(self):
+        self.assertTrue(eng._is_homepage("https://acme.com/"))
+
+    def test_empty_path_is_the_homepage(self):
+        self.assertTrue(eng._is_homepage("https://acme.com"))
+
+    def test_a_subpage_is_not_the_homepage(self):
+        self.assertFalse(eng._is_homepage("https://acme.com/about"))
+
+
 if __name__ == "__main__":
     unittest.main()

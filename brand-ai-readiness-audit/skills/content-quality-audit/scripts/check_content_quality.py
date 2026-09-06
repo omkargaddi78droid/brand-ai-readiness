@@ -2,7 +2,7 @@
 """Gate-3 content-quality audit: text anti-patterns, script-decided and
 agent-judged.
 
-Owns eleven capabilities, split by whether a verdict is deterministic or
+Owns twelve capabilities, split by whether a verdict is deterministic or
 needs judgement — the same split `engagement-audit` and `citability-audit`
 already use for their agent-judged capabilities:
 
@@ -25,7 +25,22 @@ calibration discipline exists to prevent):
   CQ-02  Non-answer templates — boilerplate hedging ("it depends") standing in for an answerable fact
   CQ-04  Granularity mismatch — a vague magnitude word where a query needs a precise number
   CQ-09  Marketing/procedure interleaving — promotional language breaking up numbered how-to steps
+  CQ-10  Cross-page fact collision — cycle 23 addition, `--sample-file` mode (multi-page, see below)
   CQ-12  Signal-to-filler ratio — substance drowning in stock transitional phrasing
+
+**CQ-10 is a cycle-23 addition, Phase 4 B4, sharing CQ-13's `--sample-file`
+mode.** Within the same same-template strata CQ-13 already computes, this
+extracts every "Label: value" line whose value is typed (a price, a date, or
+a thousands-grouped count) and groups by normalized label across the
+stratum's pages. A label stated on 3+ pages with more than one distinct
+value is a *candidate*, never a verdict: legitimate per-item variation
+(price, SKU, model number differing page to page by design) is the dominant
+false positive this capability's own plan calls out, and no script-side
+heuristic can safely tell that apart from a genuine collision (the SAME
+real-world fact — a founding year, a phone number — stated two different
+ways) without reading what the label actually refers to. The agent resolves
+`agent_judgement_required` against `references/content-judgement-rubric.md`
+§CQ-10, the same procedure as this skill's other agent-judged capabilities.
 
 **CQ-13 is a cycle-23 addition, `--sample-file` mode.** Cluster A's own
 "Deferred, 4" note (docs/capability-matrix.md) previously held near-duplicate/
@@ -46,9 +61,9 @@ meaningless, since a pricing page and a blog post are expected to differ.
 Entirely script-decided; no agent judgement needed for a shingle-overlap
 threshold.
 
-Deliberately does NOT own: CQ-06/CQ-10 (decay prediction, cross-page
-contradiction) — need multi-page context this project does not build. Those
-belong to a sibling skill.
+Deliberately does NOT own: CQ-06 (decay prediction) — needs a change-history
+signal (a diff over time) this project has no way to observe from a single
+crawl; not the same shape as CQ-10's within-one-sample label comparison.
 
 This is gate 3: it operates on a single page's visible text, not on whether
 the crawler could reach the page (gate 1, perimeter-access-audit) or whether
@@ -128,7 +143,7 @@ from page_fetch import (  # noqa: E402
 
 OWNER_SKILL = "content-quality-audit"
 CAPABILITY_IDS = [
-    "CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12", "CQ-13",
+    "CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-10", "CQ-11", "CQ-12", "CQ-13",
 ]
 
 
@@ -1125,10 +1140,118 @@ def find_near_duplicate_clusters(page_texts: dict[str, str]) -> list[Finding]:
     return findings
 
 
+# ---------------------------------------------------------------------------
+# CQ-10 — Cross-page fact collision; extraction only, agent judges survivors
+# (--sample-file mode, shares CQ-13's fetch pass and template strata)
+# ---------------------------------------------------------------------------
+
+_CQ10_LABEL_LINE_PATTERN = re.compile(r"^([A-Z][A-Za-z0-9 /&\-]{1,40}):\s*(.+)$")
+_CQ10_VALUE_PATTERNS = (
+    re.compile(r"\$\s?\d[\d,]*(?:\.\d{1,2})?"),  # price
+    re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),  # ISO date
+    re.compile(r"\b\d{1,2}/\d{1,2}/\d{2,4}\b"),  # slash date
+    re.compile(
+        r"\b(?:January|February|March|April|May|June|July|August|"
+        r"September|October|November|December)\s+\d{1,2},?\s+\d{4}\b",
+        re.IGNORECASE,
+    ),  # month-name date
+    re.compile(r"\b(?:19|20)\d{2}\b"),  # bare year
+    re.compile(r"\b\d{1,3}(?:,\d{3})+\b"),  # thousands-grouped count
+)
+_CQ10_MIN_LABEL_PAGES = 3
+_CQ10_MAX_CANDIDATES = 8
+
+
+def _typed_value(value_text: str) -> str | None:
+    for pattern in _CQ10_VALUE_PATTERNS:
+        match = pattern.search(value_text)
+        if match:
+            return match.group(0).strip()
+    return None
+
+
+def extract_labeled_facts(text: str) -> dict[str, str]:
+    """(normalized label -> typed value) for every "Label: value" line in
+    `text` whose value looks like a price, a date, or a thousands-grouped
+    count — the shapes a cross-page comparison can safely line up without a
+    reading-comprehension pass. Only the last occurrence of a repeated label
+    on one page wins (rare, and there is no principled way to prefer one
+    occurrence of the same label over another on the same page)."""
+    facts: dict[str, str] = {}
+    for line in text.split("\n"):
+        match = _CQ10_LABEL_LINE_PATTERN.match(line.strip())
+        if not match:
+            continue
+        label, value_text = match.groups()
+        typed_value = _typed_value(value_text)
+        if typed_value is None:
+            continue
+        facts[label.strip().lower()] = typed_value
+    return facts
+
+
+def find_fact_collision_candidates(page_texts: dict[str, str]) -> list[dict]:
+    """CQ-10. Within same-template strata (comparing a pricing page against
+    a blog post proves nothing), groups every "Label: value" fact by
+    normalized label across the stratum's pages. A label stated on
+    `_CQ10_MIN_LABEL_PAGES`+ pages of the same stratum with more than one
+    distinct value is a candidate — never a verdict: same-template pages
+    disagreeing on a label is very often correct, expected per-item
+    variation (price, SKU, model number differ page to page by design) —
+    the dominant false positive this capability's own plan calls out —
+    rather than a genuine collision (the same real-world fact stated two
+    different ways). The agent judges each candidate against
+    `references/content-judgement-rubric.md` §CQ-10."""
+    strata: dict[str, list[str]] = {}
+    for url in page_texts:
+        strata.setdefault(template_key(urllib.parse.urlsplit(url).path or "/"), []).append(url)
+
+    candidates: list[dict] = []
+    for key, urls in strata.items():
+        label_values: dict[str, dict[str, list[str]]] = {}
+        for url in urls:
+            for label, value in extract_labeled_facts(page_texts[url]).items():
+                label_values.setdefault(label, {}).setdefault(value, []).append(url)
+
+        for label, values_to_pages in label_values.items():
+            pages_with_label = sum(len(pages) for pages in values_to_pages.values())
+            if pages_with_label < _CQ10_MIN_LABEL_PAGES or len(values_to_pages) < 2:
+                continue
+            candidates.append(
+                {
+                    "template_key": key,
+                    "label": label,
+                    "values": [{"value": v, "pages": pages} for v, pages in values_to_pages.items()],
+                }
+            )
+    return candidates[:_CQ10_MAX_CANDIDATES]
+
+
+def build_fact_collision_judgement_requests(candidates: list[dict]) -> list[dict]:
+    return [
+        {
+            "capability_id": "CQ-10",
+            "instructions": (
+                "Read references/content-judgement-rubric.md §CQ-10. For each candidate below, "
+                "decide whether the differing values are a genuine fact collision — the SAME "
+                "real-world fact (e.g. a founding year, a phone number, a headline count) stated "
+                "differently across pages of the same template — or expected, legitimate per-item "
+                "variation (price, SKU, model number differing page to page by design, the "
+                "dominant false positive here). Hand-author a Finding only for genuine collisions, "
+                "quoting the conflicting values and the pages they came from. If none qualify, "
+                "emit nothing."
+            ),
+            "observations": {"candidates": candidates},
+        }
+    ]
+
+
 def audit_near_duplicates(site: str, page_urls: list[str]) -> dict:
-    """CQ-13's multi-page mode — fetches every on-site URL in `page_urls`
-    (the orchestrator's own bounded page sample) and checks for
-    near-duplicate clusters within same-template strata.
+    """CQ-13's and CQ-10's shared multi-page mode — fetches every on-site
+    URL in `page_urls` (the orchestrator's own bounded page sample) once and
+    runs both capabilities off that fetch pass. CQ-13's near-duplicate
+    clustering is entirely script-decided; CQ-10 only narrows candidates
+    into `agent_judgement_required` for the calling agent to resolve.
 
     A separate, once-per-run mode from `audit_text`'s once-per-page mode."""
     unknowns: list[UnknownCheck] = []
@@ -1141,12 +1264,13 @@ def audit_near_duplicates(site: str, page_urls: list[str]) -> dict:
         page_texts[page_url] = extract_visible_text(html_or_error)
 
     findings = find_near_duplicate_clusters(page_texts)
+    judgement_requests = build_fact_collision_judgement_requests(find_fact_collision_candidates(page_texts))
     return {
         "owner_skill": OWNER_SKILL,
         "capability_ids": CAPABILITY_IDS,
         "site": site,
         "findings": [f.to_dict() for f in findings],
-        "agent_judgement_required": [],
+        "agent_judgement_required": judgement_requests,
         "unknown_checks": [u.to_dict() for u in unknowns],
     }
 
@@ -1180,10 +1304,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sample-file",
         help=(
-            "Run only CQ-13's near-duplicate/template-dilution check across a local file of "
-            "on-site page URLs (one per line — the sample_urls from audit-orchestrator's "
-            "sample_pages.py) instead of auditing a single page's text. Fetches each page itself "
-            "(same as --url). Requires --site."
+            "Run CQ-13's near-duplicate/template-dilution check and CQ-10's cross-page "
+            "fact-collision check across a local file of on-site page URLs (one per line — the "
+            "sample_urls from audit-orchestrator's sample_pages.py) instead of auditing a single "
+            "page's text. Fetches each page itself (same as --url). Requires --site."
         ),
     )
     args = parser.parse_args(argv)

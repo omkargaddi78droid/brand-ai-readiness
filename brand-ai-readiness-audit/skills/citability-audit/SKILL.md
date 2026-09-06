@@ -7,11 +7,15 @@ description: >
   citations buried late in the page (CIT-07), superlatives with no number
   (CIT-06); and, agent-judged, load-bearing claims with no citation
   (CIT-04) or a numeric claim uncorroborated by any agent-supplied
-  off-site page (CIT-13). Use when content is reachable and well-structured
-  but still isn't cited, or as the citability half of an AI-readiness
-  audit. Not for whether a cited source supports its claim (out of scope),
-  not for reachability or structured-data problems (perimeter-access-audit,
-  entity-audit), not for content anti-patterns unrelated to sourcing.
+  off-site page (CIT-13). Given a sampled page list: a fact-dense page
+  starved of internal-link PageRank while a thin navigational hub holds the
+  sample's top rank (CIT-08), and the sample-wide absence of any
+  comparison-shaped page (CIT-09, proactive suggestion only). Use when
+  content is reachable and well-structured but still isn't cited, or as the
+  citability half of an AI-readiness audit. Not for whether a cited source
+  supports its claim (out of scope), not for reachability or
+  structured-data problems (perimeter-access-audit, entity-audit), not for
+  content anti-patterns unrelated to sourcing.
 license: MIT
 allowed-tools: Bash
 ---
@@ -52,6 +56,9 @@ search or crawling). Pass each candidate off-site page via
 - `--site` for the report label; derived from `--url` if omitted.
 - `--offsite-url URL` (repeatable, optional) — enables CIT-13, checking
   this page's own numeric claims for off-site corroboration.
+- `--sample-file PATH` + `--site` — runs CIT-08's hub/authority link-graph
+  check and CIT-09's comparison-content-gap check instead of auditing a
+  single page. See "Hub/authority mode" below.
 
 ## Procedure
 
@@ -93,6 +100,43 @@ search or crawling). Pass each candidate off-site page via
    CIT-13 is the one exception: if you never passed `--offsite-url`, it was
    never asked to run, so it is simply absent, not `unknown`.
 
+## Hub/authority mode (CIT-08 + CIT-09)
+
+A separate mode from steps 1-6 above — it takes a list of on-site page URLs,
+not one page:
+
+```bash
+python3 scripts/check_citability.py --site example.com \
+    --sample-file /tmp/audit/page-sample.txt
+```
+
+`--sample-file` is one on-site URL per line — pass the `sample_urls` from
+`audit-orchestrator`'s `sample_pages.py` (INF-01). The script fetches each
+page once and runs both capabilities off that one fetch pass:
+
+- **CIT-08** builds a directed internal-link graph (`shared/links`) and
+  runs `shared/graph_metrics.pagerank` over it. It flags a fact-dense page
+  (500+ words, the same threshold CIT-02 uses) whose PageRank is well
+  below the sample's mean while a non-fact-dense page holds the sample's
+  single highest PageRank — a navigational hub absorbing the internal link
+  equity a content-dense page needs, the concrete shape of "hubs and
+  authority pages not separated; trust flows badly."
+- **CIT-09** scans each fetched page's URL slug and `<title>` for a
+  comparison shape ("vs", "versus", "alternative to", "compared to").
+  Fires only when NONE of the sampled pages look comparison-shaped at
+  all — a `track: "proactive"` suggestion, never a defect, since absence
+  proves nothing: a personal blog, a policy page, or a support portal has
+  no reason to publish comparison content.
+
+A bounded, template-stratified subgraph is a structurally biased estimate
+of site-wide link authority — a page reachable only via pagination or a
+deep facet outside the sample is invisible to CIT-08, and that exclusion
+correlates with the very starvation being measured. CIT-08's finding is
+therefore capped at Medium severity and states its own sample size in its
+evidence, never claiming site-wide scope. Both capabilities are entirely
+script-decided — no `agent_judgement_required` entries come out of this
+mode.
+
 ## What it checks
 
 | ID | Check | Who decides | Fires when |
@@ -101,6 +145,8 @@ search or crawling). Pass each candidate off-site page via
 | CIT-02 | Source attribution | Script | A page with 500+ words links to zero other domains |
 | CIT-06 | Statistics density | Script | A superlative claim ("the best", "industry-leading") appears with no number in the same sentence, and is not inside a quoted customer testimonial |
 | CIT-07 | Citation-position weighting | Script | Every outbound (external) citation on a substantial page falls in the last 20% of the page — reuses CIT-02's own external-link definition |
+| CIT-08 | Hub/authority link-graph structure | Script (`--sample-file` mode) | A 500+-word page's PageRank over the sampled internal-link graph is under half the sample's mean, while a page with no comparable content density holds the sample's single highest PageRank; requires 5+ sampled pages |
+| CIT-09 | Comparison-content gap | Script, proactive (`--sample-file` mode) | None of the 5+ sampled pages' URL slug or `<title>` mentions a comparison shape ("vs", "versus", "alternative to", "compared to") |
 | CIT-04 | Citation recall | Agent, against the rubric | An unsourced numeric claim is judged load-bearing to the page's purpose |
 | CIT-13 | Off-site corroboration | Agent, against the rubric | A numeric claim's own number was not found on any agent-supplied off-site page, and the agent judges it genuinely fragile for being single-sourced |
 
@@ -115,10 +161,26 @@ search or crawling). Pass each candidate off-site page via
   every vendor-authored comparison page, since disclosure language is rare
   regardless of legitimacy — a pattern that fires on the overwhelming
   majority of both good and bad pages is not a detector.
-- **CIT-08, CIT-09** — link-graph structure and comparison-content gaps need
-  crawl-wide or off-site context a single-page script does not have. Unlike
-  CIT-13, these are about the audited site's own missing content, not
-  off-site corroboration, so hard constraint 2 does not reach them.
+- **CIT-09 only proves absence within this sample, never site-wide** — a
+  comparison page that exists but was not sampled is indistinguishable from
+  one that does not exist at all. This is why it stays a `proactive`
+  suggestion rather than a defect: it is weak evidence by design, worded as
+  "consider adding" rather than "missing."
+- **CIT-09 is a lexical slug/title scan, not a semantic one.** A comparison
+  page whose URL and title both avoid every recognised keyword (an unusual
+  naming choice) is invisible to it; conversely, a page merely mentioning
+  "versus" in an unrelated context (rare, but possible) would be treated as
+  satisfying the check.
+- **CIT-08 only ever proves "starved within this sample," never "starved
+  site-wide."** A page reachable via internal links outside the sampled
+  set is indistinguishable from a true site-wide authority page by this
+  check — exactly why it is capped at Medium severity and states its own
+  sample size rather than a site-wide claim.
+- **CIT-08 requires both a hub and a starved fact-dense page to coexist.**
+  A uniformly-linked site (no page dominates PageRank) or a site where the
+  top-authority page is itself fact-dense produces no findings — this is
+  not a general "some pages have less PageRank than others" check, it is
+  specifically the hub-absorbs-equity-that-content-needs shape.
 - **CIT-11** — deferred: claim-vs-forum-opinion provenance matching is a
   fuzzy-matching complexity problem, not a policy block. See capability
   matrix.
@@ -146,6 +208,9 @@ reaches the entrypoint.
 | No `--offsite-url` given | CIT-13 omitted entirely, not `unknown` — nothing was asked of it |
 | An `--offsite-url` is disallowed by its own robots.txt, or cannot be fetched | One `unknown_checks` entry for that URL, `capability_id: "CIT-13"`; the other URLs still run |
 | That URL's own robots.txt cannot be fetched at all | Treated as allow-all (RFC 9309 convention) — the fetch is still attempted |
+| A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page (`capability_id: "CIT-08"`); the others still run |
+| Fewer than 5 pages were successfully fetched, no page reaches 500 words, the sample's top-ranked page is itself 500+ words, or link equity is not concentrated in any one hub | CIT-08 produces an empty, clean report — not `unknown` |
+| At least one sampled page's URL or `<title>` looks comparison-shaped, or fewer than 5 pages were successfully fetched | CIT-09 produces an empty, clean report — not `unknown` |
 
 ## Safety
 

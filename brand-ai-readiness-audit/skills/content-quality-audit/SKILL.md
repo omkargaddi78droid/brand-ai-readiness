@@ -7,15 +7,14 @@ description: >
   page's own numbers, and very-difficult-to-read prose (script-decided); no
   concise answer near the top, boilerplate hedging standing in for a fact,
   vague magnitude words needing a precise number, marketing language
-  breaking up how-to steps, and substance drowning in filler (agent-decided
-  against a rubric); and, given a sampled page list, near-duplicate content
+  breaking up how-to steps, substance drowning in filler, and (given a page
+  sample) a labeled fact with different values across same-template pages
+  (agent-decided); and, given that same sample, near-duplicate content
   clustering within a same-template stratum (script-decided). Use when
-  auditing whether a page's facts are internally consistent and quotable,
-  free of patterns that hinder accurate summarisation, or whether several
-  pages of the same kind substantively repeat each other. Not for
-  content-decay or cross-page factual contradiction; not for reachability
-  (perimeter-access-audit) or main-content boundary detection
-  (render/extraction, not yet built).
+  auditing whether a page's facts are consistent and quotable, or whether
+  several pages of the same kind repeat or contradict each other. Not for
+  content-decay; not for reachability (perimeter-access-audit) or
+  main-content boundary detection (render/extraction, not yet built).
 license: MIT
 allowed-tools: Bash
 ---
@@ -39,18 +38,20 @@ Use it per page, not per site: pick pages that carry claims worth getting
 right — pricing, specs, policies, dated announcements, how-to guides — not
 navigational or purely marketing pages with few extractable facts.
 
-## A note before you run this: five capabilities need your judgement
+## A note before you run this: six capabilities need your judgement
 
 CQ-03/05/07/08/11 are deterministic — the script decides, same as every
-other detector in this marketplace. **CQ-01, CQ-02, CQ-04, CQ-09 and CQ-12
-are not.** The script extracts candidate sentences or page-level signals
-only (a hedge phrase, a vague spec claim, a marketing-flavoured step line, a
-filler-phrase count, the opening block and H1) into `agent_judgement_required`
-and emits no verdict — asserting "this hedge is a non-answer" from a phrase
-match alone would assert a judgement the pattern match cannot support.
-**You must resolve `agent_judgement_required` yourself before this file's
-output reaches the entrypoint** — the identical procedure `engagement-audit`
-uses for EN-01/EN-03 and `citability-audit` uses for CIT-04.
+other detector in this marketplace. **CQ-01, CQ-02, CQ-04, CQ-09, CQ-10 and
+CQ-12 are not.** The script extracts candidate sentences or page-level
+signals only (a hedge phrase, a vague spec claim, a marketing-flavoured step
+line, a filler-phrase count, the opening block and H1, or — CQ-10 — a
+labeled fact stated with more than one value across same-template pages)
+into `agent_judgement_required` and emits no verdict — asserting "this hedge
+is a non-answer" from a phrase match alone would assert a judgement the
+pattern match cannot support. **You must resolve `agent_judgement_required`
+yourself before this file's output reaches the entrypoint** — the identical
+procedure `engagement-audit` uses for EN-01/EN-03 and `citability-audit`
+uses for CIT-04.
 
 CQ-01 carries one extra caveat: this project has no main-content boundary
 detection yet, so its opening-text signal is windowed from document start
@@ -65,8 +66,9 @@ evidence of a missing answer, it is the extraction's known blind spot.
 - Offline/fixture mode: `--html-file PATH` (raw HTML, extracted the same way
   as `--url`) or `--text-file PATH` (already-extracted plain text).
 - `--site` for the report label; derived from `--url` if omitted.
-- `--sample-file PATH` + `--site` — runs CQ-13's near-duplicate mode instead
-  of auditing a single page. See "Near-duplicate mode" below.
+- `--sample-file PATH` + `--site` — runs CQ-13's near-duplicate mode and
+  CQ-10's fact-collision mode instead of auditing a single page. See
+  "Multi-page mode" below.
 
 ## Procedure
 
@@ -108,7 +110,7 @@ evidence of a missing answer, it is the extraction's known blind spot.
    capabilities as unknown with the error text — CQ-02/04/09/12 included,
    since you cannot judge what you were never given.
 
-## Near-duplicate mode (CQ-13)
+## Multi-page mode (CQ-13 + CQ-10)
 
 A separate mode from steps 1-5 above — it takes a list of on-site page URLs,
 not one page:
@@ -120,12 +122,23 @@ python3 scripts/check_content_quality.py --site example.com \
 
 `--sample-file` is one on-site URL per line — pass the `sample_urls` from
 `audit-orchestrator`'s `sample_pages.py` (INF-01). The script fetches each
-page itself, strips lines repeated verbatim across at least half the sample
-(shared nav/footer/boilerplate), groups the remainder by URL template
-(same logic as `sample_pages.py`'s own clustering), and flags any
-same-template group of 2+ pages scoring ≥0.7 on 5-word-shingle Jaccard
-similarity. Entirely script-decided — no `agent_judgement_required` entries
-come out of this mode.
+page once and runs both capabilities off that one fetch pass:
+
+- **CQ-13** strips lines repeated verbatim across at least half the sample
+  (shared nav/footer/boilerplate), groups the remainder by URL template
+  (same logic as `sample_pages.py`'s own clustering), and flags any
+  same-template group of 2+ pages scoring ≥0.7 on 5-word-shingle Jaccard
+  similarity. Entirely script-decided.
+- **CQ-10** extracts every "Label: value" line whose value is typed (a
+  price, a date, or a count) from each page, and within the same
+  same-template strata CQ-13 uses, narrows to a label stated on 3+ pages
+  with more than one distinct value — a *candidate* only, into
+  `agent_judgement_required`. Resolve it the same way as step 3 above,
+  against `references/content-judgement-rubric.md` §CQ-10: same-template
+  pages disagreeing on a label is very often correct, expected per-item
+  variation (price, SKU, model number differ page to page by design) rather
+  than a genuine collision (the same real-world fact stated two different
+  ways) — hand-author a `Finding` only for genuine collisions.
 
 ## What it checks
 
@@ -142,19 +155,28 @@ come out of this mode.
 | CQ-09 | Marketing/procedure interleaving | Agent, against the rubric | Promotional language inside a numbered step line is judged to actually disrupt the instruction |
 | CQ-12 | Signal-to-filler ratio | Agent, against the rubric | Stock transitional phrasing is judged to be drowning out genuine substance |
 | CQ-13 | Near-duplicate / template dilution | Script (`--sample-file` mode) | 2+ pages sharing a URL template score ≥0.7 5-word-shingle Jaccard similarity on their main content, after chrome-stripping and after excluding any page with under 30 remaining words |
+| CQ-10 | Cross-page fact collision | Agent, against the rubric (`--sample-file` mode) | A "Label: value" fact (typed as a price, date, or count) is stated on 3+ same-template pages with more than one distinct value, and the agent judges it a genuine collision rather than expected per-item variation |
 
 Full detection rules, worked examples, and every false-positive guard for
 CQ-03/05/07/08/11 are in `references/content-anti-patterns.md`.
-CQ-01/02/04/09/12's extraction rules and judgement calibration are in
+CQ-01/02/04/09/10/12's extraction rules and judgement calibration are in
 `references/content-judgement-rubric.md` — read both before extending any of
-these ten, since each guard exists because an earlier version of a check
+these twelve, since each guard exists because an earlier version of a check
 fired wrongly (or silently missed) on a specific, now-documented case.
 
 ## Excludes
 
-- **CQ-06, CQ-10** — content-decay prediction, cross-page factual
-  contradiction. Need comparing the same fact's *value* across pages, a
-  different problem from CQ-13's content-*similarity* check.
+- **CQ-06** — content-decay prediction. Needs a change-history signal (a
+  diff over time) this project has no way to observe from a single crawl.
+- **CQ-10 only extracts "Label: value" lines with a typed value** (a price,
+  a date, or a count) — a fact stated in free prose with no colon-labeled
+  shape is invisible to it. It also only narrows candidates: same-template
+  pages disagreeing on a label is very often correct, expected per-item
+  variation, not a defect — see "Multi-page mode" above for the dominant
+  false positive this gates against.
+- **CQ-10 only compares pages already in the given `--sample-file`.** A
+  collision where the conflicting page was not sampled cannot be found —
+  this is a heuristic net over the bounded sample, not a site-wide scan.
 - **Gate 1/2** — reachability (`perimeter-access-audit`) and main-content
   boundary detection (render/extraction, not yet built) — CQ-01's opening-
   text window is document-start, not boundary-aware, for exactly this
@@ -177,7 +199,7 @@ One JSON object on stdout, same shape as `perimeter-access-audit`:
 ```json
 {
   "owner_skill": "content-quality-audit",
-  "capability_ids": ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-11", "CQ-12", "CQ-13"],
+  "capability_ids": ["CQ-01", "CQ-02", "CQ-03", "CQ-04", "CQ-05", "CQ-07", "CQ-08", "CQ-09", "CQ-10", "CQ-11", "CQ-12", "CQ-13"],
   "site": "example.com",
   "findings": [
     {
@@ -217,6 +239,7 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 | A detector finds nothing | No finding for that capability. Silence is the expected, common case |
 | A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page; the others still run |
 | No same-template stratum has 2+ pages with ≥30 words of content | CQ-13 produces an empty, clean report — not `unknown` |
+| No label reaches 3 same-template pages with more than one distinct value | CQ-10's `candidates` list is empty; nothing to judge |
 
 ## Safety
 

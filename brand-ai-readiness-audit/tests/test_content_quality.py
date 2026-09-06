@@ -599,6 +599,78 @@ class FindNearDuplicateClustersTests(unittest.TestCase):
             self.assertEqual(finding.validate(), [])
 
 
+class ExtractLabeledFactsTests(unittest.TestCase):
+    def test_a_price_labeled_line_is_extracted(self):
+        facts = cq.extract_labeled_facts("Price: $49.99\nSome other text.")
+        self.assertEqual(facts["price"], "$49.99")
+
+    def test_an_iso_date_labeled_line_is_extracted(self):
+        facts = cq.extract_labeled_facts("Founded: 1998-04-12")
+        self.assertEqual(facts["founded"], "1998-04-12")
+
+    def test_a_month_name_date_is_extracted(self):
+        facts = cq.extract_labeled_facts("Launched: January 5, 2020")
+        self.assertEqual(facts["launched"], "January 5, 2020")
+
+    def test_a_thousands_grouped_count_is_extracted(self):
+        facts = cq.extract_labeled_facts("Employees: 1,200")
+        self.assertEqual(facts["employees"], "1,200")
+
+    def test_an_untyped_value_is_not_extracted(self):
+        facts = cq.extract_labeled_facts("Description: A great product for everyone.")
+        self.assertEqual(facts, {})
+
+    def test_a_line_with_no_label_colon_shape_is_ignored(self):
+        facts = cq.extract_labeled_facts("This costs $49.99 but is not a label line.")
+        self.assertEqual(facts, {})
+
+
+class FindFactCollisionCandidatesTests(unittest.TestCase):
+    def test_same_label_different_value_across_three_same_template_pages_is_a_candidate(self):
+        # "/store/1", "/store/2", "/store/3" collapse to the same template
+        # ("/store/*") since a numeric segment is recognised as variable.
+        page_texts = {
+            "https://acme.com/store/1": "Founded: 1998",
+            "https://acme.com/store/2": "Founded: 2001",
+            "https://acme.com/store/3": "Founded: 1998",
+        }
+        candidates = cq.find_fact_collision_candidates(page_texts)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["label"], "founded")
+
+    def test_per_sku_price_variation_across_product_pages_is_not_flagged_below_the_page_threshold(self):
+        # Only 2 pages state a price at all — below the 3-page minimum, so
+        # this never becomes a candidate regardless of value agreement.
+        page_texts = {
+            "https://acme.com/product/1": "Price: $19.99",
+            "https://acme.com/product/2": "Price: $29.99",
+        }
+        self.assertEqual(cq.find_fact_collision_candidates(page_texts), [])
+
+    def test_the_same_value_on_every_page_is_not_a_candidate(self):
+        page_texts = {
+            "https://acme.com/store/1": "Founded: 1998",
+            "https://acme.com/store/2": "Founded: 1998",
+            "https://acme.com/store/3": "Founded: 1998",
+        }
+        self.assertEqual(cq.find_fact_collision_candidates(page_texts), [])
+
+    def test_pages_in_different_template_strata_are_not_compared(self):
+        page_texts = {
+            "https://acme.com/product/1": "Founded: 1998",
+            "https://acme.com/blog/1": "Founded: 2001",
+            "https://acme.com/blog/2": "Founded: 2001",
+        }
+        # "founded" appears on 3 pages total, but split across two distinct
+        # template strata (product/* vs blog/*) — neither stratum alone
+        # reaches the 3-page minimum, so no candidate is produced.
+        self.assertEqual(cq.find_fact_collision_candidates(page_texts), [])
+
+    def test_no_labeled_facts_anywhere_produces_no_candidates(self):
+        page_texts = {"https://acme.com/store/1": "Welcome to our site.", "https://acme.com/store/2": "Meet the team."}
+        self.assertEqual(cq.find_fact_collision_candidates(page_texts), [])
+
+
 class AuditNearDuplicatesTests(unittest.TestCase):
     def test_an_unreachable_page_becomes_one_unknown_check(self):
         out = cq.audit_near_duplicates("acme.com", ["https://this-host-does-not-exist.invalid/page"])
@@ -615,6 +687,13 @@ class AuditNearDuplicatesTests(unittest.TestCase):
         out = cq.audit_near_duplicates("acme.com", [])
         self.assertEqual(out["capability_ids"], cq.CAPABILITY_IDS)
         self.assertIn("CQ-13", out["capability_ids"])
+        self.assertIn("CQ-10", out["capability_ids"])
+
+    def test_cq10_judgement_request_is_always_present_even_with_no_pages(self):
+        out = cq.audit_near_duplicates("acme.com", [])
+        self.assertEqual(len(out["agent_judgement_required"]), 1)
+        self.assertEqual(out["agent_judgement_required"][0]["capability_id"], "CQ-10")
+        self.assertEqual(out["agent_judgement_required"][0]["observations"]["candidates"], [])
 
 
 if __name__ == "__main__":

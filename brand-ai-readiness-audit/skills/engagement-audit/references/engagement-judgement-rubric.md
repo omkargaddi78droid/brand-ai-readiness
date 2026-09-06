@@ -1,11 +1,13 @@
-# Engagement judgement rubric: EN-01 and EN-03
+# Engagement judgement rubric: EN-01, EN-03, EN-11, EN-08
 
 Reference for `engagement-audit`. EN-01 and EN-03 are judgement calls — the
 capability matrix names EN-01 explicitly as one, and EN-03's own test
 criterion ("3 steps vs 8 steps") needs multi-page navigation a script cannot
-do from one page. This document is what makes the judgement repeatable
-instead of arbitrary: read it before scoring either capability, per
-SKILL.md's procedure.
+do from one page. EN-11 and the EN-08 slice (cycle 23, C1) are judgement
+calls for the same reason a low lexical-overlap score cannot stand on its
+own: it flags a candidate, not a verdict. This document is what makes the
+judgement repeatable instead of arbitrary: read it before scoring any of
+these four capabilities, per SKILL.md's procedure.
 
 If you find yourself unsure whether something qualifies, the calibration
 examples below are the standard to match against — not your own instinct
@@ -191,3 +193,112 @@ a demand that every fee be pre-computed on this exact page.
   beyond what a single page can support — stop and either drop the finding
   or reframe it around the specific signal you actually observed (the
   password field, the missing disclosure).
+
+---
+
+## EN-11 — Content-to-action coherence
+
+### The question
+
+Given a page's H1 (its own topic) and its primary CTA text (the first,
+most prominent call-to-action in document order), does the CTA actually
+relate to what a visitor who came for this page's content would want next?
+`check_engagement.py`'s `--sample-file` mode hands you every page whose
+CTA scored below the lexical-overlap threshold against its own H1 — grounds
+for suspicion, not proof.
+
+### When this capability does not apply — say so, emit nothing
+
+- The candidate's CTA is generic brand-voice wording that fits almost any
+  page on almost any site — "Get Started", "Sign Up", "Contact Us", "Learn
+  More" as a *secondary* action alongside a topic-specific one. A low
+  lexical score against a specific H1 ("Refund Policy") is expected and
+  not evidence of incoherence; a site's standard header/footer CTA
+  repeating across every page is a design choice, not a per-page defect.
+- The page is not really an "arrive with an intent" page at all (a legal
+  boilerplate page, a sitemap page) — there is no visitor intent for a CTA
+  to serve or fail to serve.
+
+### Calibration: incoherent (finding warranted)
+
+- H1 "Return & Refund Policy", primary CTA "Subscribe to our newsletter" —
+  a visitor reading a return policy (likely trying to resolve a specific
+  order problem) is offered an unrelated marketing action instead of
+  anything related to returns (start a return, contact support, track an
+  order).
+- H1 "Enterprise Pricing", primary CTA "Follow us on social media" — the
+  page's entire content is a purchase decision; the highlighted action is
+  disconnected from that decision.
+
+### Calibration: coherent (no finding)
+
+- H1 "Free Trial Signup", primary CTA "Start your free trial" — expected,
+  high overlap, would not even reach this candidate list.
+- H1 "Enterprise Pricing", primary CTA "Talk to sales" — different words,
+  same intent; a human reading both immediately sees the connection even
+  though the lexical score is low. This is exactly the case the script
+  cannot tell apart from a real defect — that's why it's your call.
+
+### Writing the finding
+
+- `id`: `EN-11-cta-content-mismatch-<slug of page_url>`.
+- `evidence`: quote the H1 and the primary CTA text verbatim, plus the
+  lexical-overlap score — never an adjective in place of the quote.
+- `severity`: cap at `medium` — a mismatched CTA loses a conversion, it
+  does not block access to anything.
+- `structured_evidence`: `{"page_url": ..., "h1_text": ..., "primary_cta_text": ..., "lexical_overlap_score": ...}`.
+
+---
+
+## EN-08 — Findability (link information-scent slice)
+
+### The question
+
+Given an internal link's anchor text and the H1 of the page it points to,
+does the link's wording set a visitor's expectations correctly for what
+they'll find? This is Information Foraging Theory's "information scent"
+(Pirolli & Card 1999): a visitor follows the cue that seems to promise the
+best path to their goal, and a cue that promises one thing while the
+destination delivers another wastes the visitor's trust even when the
+destination itself is fine. `check_engagement.py` hands you only links
+whose anchor text scored below threshold against the target's own H1, with
+common navigational chrome already excluded.
+
+### When this capability does not apply — say so, emit nothing
+
+- The anchor text is a reasonable paraphrase, abbreviation, or a narrower
+  reference than the target's H1 (e.g. anchor "our return process" linking
+  to H1 "Return & Refund Policy" — related enough that a low character-level
+  score is the metric's limitation, not a real defect).
+- The link is a teaser/preview link whose anchor text is deliberately a
+  hook rather than a literal description (e.g. editorial "you won't
+  believe what happened next"-style content) — judge these by the site's
+  own genre norms, not this rubric's default expectation of literal
+  correspondence.
+
+### Calibration: weak scent (finding warranted)
+
+- Anchor text "Check this out" linking to H1 "Return & Refund Policy" — the
+  anchor gives no information at all about the destination; a visitor
+  cannot decide whether to click based on genuine interest.
+- Anchor text "Learn about our amazing story" linking to H1 "Enterprise
+  Pricing" — actively misleading: the anchor promises brand narrative, the
+  destination is a purchase decision page.
+
+### Calibration: adequate scent (no finding)
+
+- Anchor text "our refund policy" linking to H1 "Return & Refund Policy" —
+  would not even reach this candidate list (high overlap).
+- Anchor text "how to send it back" linking to H1 "Return & Refund Policy"
+  — different words, same intent, a human reader immediately understands
+  the connection. Exactly the case the lexical score cannot distinguish
+  from a real defect — your call.
+
+### Writing the finding
+
+- `id`: `EN-08-weak-link-scent-<slug of source_page_url>-<slug of target_page_url>`.
+- `evidence`: quote the anchor text, the source and target URLs, and the
+  target's H1 verbatim, plus the lexical-overlap score.
+- `severity`: cap at `medium` — weak scent degrades navigation, it does
+  not block it (the link still works).
+- `structured_evidence`: `{"source_page_url": ..., "target_page_url": ..., "anchor_text": ..., "target_h1_text": ..., "lexical_overlap_score": ...}`.

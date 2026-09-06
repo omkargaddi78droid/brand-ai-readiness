@@ -13,6 +13,8 @@ entity mix-ups unless something clearly distinguishes them):
   ENT-05  Brand-name entity collision (agent-judged; off-site — see below)
   ENT-06  Lookalike domain impersonation (agent-judged; off-site — see below)
   ENT-07  Cross-domain service attribution (multi-page; --sample-file mode — see below)
+  ENT-08  Address/NAP clustering — a stated address that disagrees across sampled
+          pages of the same brand (multi-page; --sample-file mode — see below)
   ENT-09  Taxonomy consistency — a declared category/section contradicting the page's
           own body text (agent-judged; see below)
   ENT-11  JSON-LD graph referential integrity — dangling/cross-page @id references
@@ -54,10 +56,19 @@ rather than deferring it to agent judgement, since "does this hostname
 contain our brand name and a service keyword, and does its own markup name
 us back" is fully mechanical.
 
-Deliberately does NOT own: ENT-08 (NAP consistency), which needs comparing
-several pages' visible address text against each other — a genuinely
-semantic clustering problem (B3, still-deferred Phase 4 work), unlike ENT-07's
-mechanical domain/markup check; ENT-04's crawl-wide half (slug variants,
+**ENT-08 is a cycle-23 addition, Phase 4 B3, same `--sample-file` mode as
+ENT-07.** Earlier cycles deferred it as "needs comparing several pages'
+visible address text against each other — a genuinely semantic clustering
+problem." Cycle 23's `shared/fuzzy_match.py` (single-linkage clustering over
+`difflib.SequenceMatcher`, no external dependency) makes the clustering half
+mechanical; the remaining judgement call — a chain or any real multi-location
+business legitimately has several different, all-correct addresses — is
+handled by a script-decided gate, not agent judgement: if any sampled page
+uses multiple-location language ("store locator", "find a location", ...),
+the check stays silent entirely, per the plan's explicit instruction to
+gate the clustering behind this check as the dominant false positive.
+
+Deliberately does NOT own: ENT-04's crawl-wide half (slug variants,
 trailing-slash forks across many URLs) — that needs a sitemap and a
 canonical map spanning the whole site, not one page.
 
@@ -143,10 +154,12 @@ from page_fetch import (  # noqa: E402
     fetch_page_html,
 )
 from public_suffix import registrable_domain, same_entity  # noqa: E402
+from links import extract_outbound_links  # noqa: E402
+from fuzzy_match import single_linkage_clusters  # noqa: E402
 
 OWNER_SKILL = "entity-audit"
 CAPABILITY_IDS = [
-    "ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-07", "ENT-09", "ENT-11", "ENT-12",
+    "ENT-01", "ENT-02", "ENT-03", "ENT-04", "ENT-05", "ENT-06", "ENT-07", "ENT-08", "ENT-09", "ENT-11", "ENT-12",
 ]
 
 
@@ -1391,43 +1404,6 @@ _SERVICE_KEYWORDS = ("support", "help", "docs", "status")
 _ENT07_MIN_SOURCE_PAGES = 2
 
 
-class _LinkParser(HTMLParser):
-    """Collects every <a href> target on a page — the minimal extraction
-    ENT-07 needs, kept separate from `_PageParser` rather than folded into
-    it: this only runs in `--sample-file` mode, and `_PageParser`'s existing
-    consumers (ENT-01/03/04/09/11/12) have no use for outbound links."""
-
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.hrefs: list[str] = []
-
-    def handle_starttag(self, tag, attrs):
-        if tag == "a":
-            href = dict(attrs).get("href")
-            if href:
-                self.hrefs.append(href.strip())
-
-    def handle_startendtag(self, tag, attrs):
-        self.handle_starttag(tag, attrs)
-
-
-def extract_outbound_links(html: str, page_url: str) -> list[str]:
-    """Every http(s) link target on the page, resolved to an absolute URL
-    against `page_url`. mailto:/tel:/javascript:/fragment-only hrefs are
-    dropped — none of them can be a cross-domain service homepage."""
-    parser = _LinkParser()
-    parser.feed(html)
-    parser.close()
-    resolved = []
-    for href in parser.hrefs:
-        if href.startswith("#"):
-            continue
-        absolute = urllib.parse.urljoin(page_url, href)
-        if urllib.parse.urlparse(absolute).scheme in ("http", "https"):
-            resolved.append(absolute)
-    return resolved
-
-
 def _brand_token(site: str) -> str:
     """The first label of `site`'s own registrable domain, lowercased —
     "acme" from "acme.com" or "www.acme.co.uk". See
@@ -1557,25 +1533,149 @@ def find_cross_domain_service_attribution(
     return findings, unknowns
 
 
+# ---------------------------------------------------------------------------
+# ENT-08 — Address/NAP clustering (--sample-file mode, cycle 23 Phase 4 B3)
+# ---------------------------------------------------------------------------
+#
+# NAP (name/address/phone) consistency is a foundational local-entity-
+# resolution signal. This half checks only the "A": whether the brand's own
+# pages state the same address. Phone-number consistency overlaps REN-10
+# (see capability matrix) and is not duplicated here.
+
+_ENT08_ADDRESS_PATTERN = re.compile(
+    r"\d{1,5}\s[\w.\-]+(?:\s[\w.\-]+){0,4}?\s"
+    r"(?:Street|St|Avenue|Ave|Boulevard|Blvd|Road|Rd|Drive|Dr|Lane|Ln|Way|Court|Ct|"
+    r"Plaza|Suite|Ste|Circle|Cir|Place|Pl)\.?,?\s*(?:[\w.\-]+,\s*)?[A-Z]{2}\s+\d{5}(?:-\d{4})?"
+)
+_ENT08_MULTI_LOCATION_PATTERN = re.compile(
+    r"\b(?:multiple locations|several locations|various locations|find a location|"
+    r"store locator|locations near you|all our locations|all of our locations|"
+    r"one of our (?:many )?locations)\b",
+    re.IGNORECASE,
+)
+_ENT08_MIN_PAGES_WITH_ADDRESS = 2
+_ENT08_CLUSTER_THRESHOLD = 65.0
+
+
+def extract_address_candidate(visible_text: str) -> str | None:
+    """First US-style street-address-shaped match in `visible_text` — number,
+    street name, suffix, optional city, two-letter state, zip. Only the
+    first match per page (not every one): a page listing several addresses
+    itself (a store locator) is a different, already-legitimate shape this
+    check does not compare against itself — see `find_address_inconsistencies`
+    for the multi-location language gate that gets the final say instead."""
+    match = _ENT08_ADDRESS_PATTERN.search(visible_text)
+    return match.group(0).strip() if match else None
+
+
+def find_address_inconsistencies(page_addresses: dict[str, str], all_page_texts: list[str]) -> list[Finding]:
+    """ENT-08. Clusters one address candidate per sampled page by fuzzy
+    text similarity (`shared/fuzzy_match.single_linkage_clusters`); if two
+    or more pages land in mutually dissimilar clusters, the brand's stated
+    address disagrees across its own pages — an assistant reading two of
+    this brand's pages gets two different answers to "where is this
+    business."
+
+    Gated behind an explicit multi-location check, the dominant false
+    positive this capability's own plan calls out: a chain, or any brand
+    with several real locations, legitimately has different, all-correct
+    addresses on different pages. If ANY sampled page uses multiple-location
+    language ("store locator", "find a location", ...), this stays silent
+    entirely rather than guess which address is the "real" one."""
+    if len(page_addresses) < _ENT08_MIN_PAGES_WITH_ADDRESS:
+        return []
+    if any(_ENT08_MULTI_LOCATION_PATTERN.search(text) for text in all_page_texts):
+        return []
+
+    pages = list(page_addresses.keys())
+    addresses = [page_addresses[p] for p in pages]
+    clusters = single_linkage_clusters(addresses, _ENT08_CLUSTER_THRESHOLD)
+    if len(clusters) < 2:
+        return []
+
+    clusters = sorted(clusters, key=len, reverse=True)
+    return [_address_inconsistency_finding(clusters, pages, addresses)]
+
+
+def _address_inconsistency_finding(clusters: list[list[int]], pages: list[str], addresses: list[str]) -> Finding:
+    shown = clusters[:3]
+    lines = []
+    for cluster in shown:
+        example_idx = cluster[0]
+        cluster_pages = ", ".join(pages[i] for i in cluster[:3])
+        lines.append(f'"{addresses[example_idx]}" (on {cluster_pages})')
+    more = f" (+{len(clusters) - 3} more distinct address(es))" if len(clusters) > 3 else ""
+    slug = hashlib.sha256("|".join(sorted(addresses)).encode("utf-8")).hexdigest()[:8]
+
+    return Finding(
+        id=f"ENT-08-address-inconsistency-{slug}",
+        title="This brand states different addresses on different pages of the same sampled set",
+        severity="medium",
+        evidence=(
+            f"Across {len(pages)} sampled pages that carry an address, {len(clusters)} mutually "
+            f"dissimilar addresses were found: {'; '.join(lines)}{more}. No sampled page used "
+            'multiple-location language ("store locator", "find a location", ...), so this does '
+            "not look like a legitimate multi-location brand. This is a within-sample finding "
+            f"only, over {len(pages)} page(s) carrying an address — a page outside the sample may "
+            "resolve or explain the disagreement."
+        ),
+        suggested_action=SuggestedAction(
+            summary=(
+                "Confirm the brand's correct address and make it consistent across every page "
+                "(footer, About, Contact, LocalBusiness JSON-LD) — or, if this is genuinely a "
+                "multi-location business, add explicit location-selector language so an assistant "
+                "does not treat the pages as contradicting each other."
+            ),
+            priority="medium",
+        ),
+        category="discoverability",
+        capability_id="ENT-08",
+        owner_skill=OWNER_SKILL,
+        mechanism=(
+            "NAP (name/address/phone) consistency is a foundational local-entity-resolution "
+            "signal: when a brand's own pages disagree on its address, an assistant has no "
+            "principled way to decide which is current, and may quote the wrong one, or treat "
+            "the brand as ambiguous for location-based queries."
+        ),
+        gate=3,
+        confidence="medium",
+        structured_evidence={
+            "sample_size": len(pages),
+            "cluster_count": len(clusters),
+            "addresses": addresses,
+            "pages": pages,
+        },
+    )
+
+
 def audit_service_domains(site: str, page_urls: list[str]) -> dict:
-    """ENT-07's multi-page mode — fetches every on-site URL in `page_urls`
-    (the orchestrator's own bounded page sample), extracts outbound links,
-    and checks any recurring brand-named service domain for a bridge back.
+    """ENT-07 and ENT-08's shared multi-page mode — fetches every on-site
+    URL in `page_urls` (the orchestrator's own bounded page sample) once,
+    extracting both outbound links (ENT-07) and visible text (ENT-08) from
+    the same fetch pass, then runs each capability's own detector.
 
     A separate, once-per-run mode from `audit_html`'s once-per-page mode,
     the same relationship `audit_offsite` has to it for ENT-05/06."""
     unknowns: list[UnknownCheck] = []
     page_links: dict[str, list[str]] = {}
+    page_addresses: dict[str, str] = {}
+    all_page_texts: list[str] = []
     for page_url in page_urls:
         html_or_error, status = fetch_page_html(page_url)
         if status != "present" or html_or_error is None:
             unknowns.append(UnknownCheck("ENT-07", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
             continue
         page_links[page_url] = extract_outbound_links(html_or_error, page_url)
+        _, _, _, visible_text = parse_page(html_or_error)
+        all_page_texts.append(visible_text)
+        address = extract_address_candidate(visible_text)
+        if address:
+            page_addresses[page_url] = address
 
     candidates = find_service_domain_candidates(site, page_links)
     findings, fetch_unknowns = find_cross_domain_service_attribution(site, candidates)
     unknowns.extend(fetch_unknowns)
+    findings += find_address_inconsistencies(page_addresses, all_page_texts)
 
     return {
         "owner_skill": OWNER_SKILL,
@@ -1684,11 +1784,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sample-file",
         help=(
-            "Run only ENT-07's cross-domain service-attribution check across a local file of "
-            "on-site page URLs (one per line — the sample_urls from audit-orchestrator's "
-            "sample_pages.py) instead of auditing a single page's HTML. Fetches each on-site page "
-            "directly (same as --url), plus, for any surviving candidate domain, that candidate's "
-            "own third-party homepage (robots.txt-checked, same as --offsite-url). Requires --site."
+            "Run ENT-07's cross-domain service-attribution check and ENT-08's address/NAP "
+            "clustering check across a local file of on-site page URLs (one per line — the "
+            "sample_urls from audit-orchestrator's sample_pages.py) instead of auditing a single "
+            "page's HTML. Fetches each on-site page directly (same as --url), plus, for any "
+            "surviving ENT-07 candidate domain, that candidate's own third-party homepage "
+            "(robots.txt-checked, same as --offsite-url). Requires --site."
         ),
     )
     args = parser.parse_args(argv)

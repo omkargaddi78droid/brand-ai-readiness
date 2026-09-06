@@ -420,5 +420,145 @@ class SsrfGuardTests(unittest.TestCase):
         self.assertFalse(cit.is_public_host("10.0.0.5"))
 
 
+def _hub_and_spoke_graph(num_spokes=6):
+    """A hub page ("/") linked from and to every spoke; a separate
+    "factdense" page links out to the hub but receives no inbound link at
+    all. The hub soaks up nearly all PageRank from the reciprocal spokes,
+    leaving the unlinked-to fact-dense page starved — exactly the shape
+    CIT-08 exists to catch."""
+    node_ids = (
+        ["https://acme.com/"]
+        + [f"https://acme.com/spoke{i}" for i in range(num_spokes)]
+        + ["https://acme.com/factdense"]
+    )
+    edges = [("https://acme.com/factdense", "https://acme.com/")]
+    for spoke in node_ids[1:-1]:
+        edges.append(("https://acme.com/", spoke))
+        edges.append((spoke, "https://acme.com/"))
+    return node_ids, edges
+
+
+class FindLinkAuthorityStarvedPagesTests(unittest.TestCase):
+    def test_a_fact_dense_page_starved_by_a_thin_hub_is_flagged(self):
+        node_ids, edges = _hub_and_spoke_graph()
+        word_counts = {"https://acme.com/factdense": 800}
+        findings = cit.find_link_authority_starved_pages(node_ids, edges, word_counts)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].capability_id, "CIT-08")
+        self.assertEqual(findings[0].severity, "medium")
+
+    def test_below_minimum_sample_size_never_fires(self):
+        """Dominant false positive: PageRank over a tiny graph is too noisy
+        to support even a sample-scoped claim."""
+        node_ids, edges = _hub_and_spoke_graph(num_spokes=1)
+        word_counts = {"https://acme.com/factdense": 800}
+        self.assertEqual(cit.find_link_authority_starved_pages(node_ids, edges, word_counts), [])
+
+    def test_no_fact_dense_page_in_the_sample_never_fires(self):
+        node_ids, edges = _hub_and_spoke_graph()
+        self.assertEqual(cit.find_link_authority_starved_pages(node_ids, edges, {}), [])
+
+    def test_the_hub_itself_being_fact_dense_never_fires(self):
+        """Dominant false positive: when the sample's top-authority page IS
+        itself content-dense, hub and authority coincide — no separation
+        problem exists to report."""
+        node_ids, edges = _hub_and_spoke_graph()
+        word_counts = {"https://acme.com/": 900, "https://acme.com/factdense": 800}
+        self.assertEqual(cit.find_link_authority_starved_pages(node_ids, edges, word_counts), [])
+
+    def test_a_uniformly_linked_graph_with_no_starvation_never_fires(self):
+        """No dominant hub soaking up equity — every page links to every
+        other page, so PageRank is roughly uniform and nothing is starved."""
+        node_ids = [f"https://acme.com/p{i}" for i in range(6)]
+        edges = [(a, b) for a in node_ids for b in node_ids if a != b]
+        word_counts = {"https://acme.com/p0": 800}
+        self.assertEqual(cit.find_link_authority_starved_pages(node_ids, edges, word_counts), [])
+
+    def test_evidence_states_its_own_sample_size_never_site_wide_scope(self):
+        node_ids, edges = _hub_and_spoke_graph()
+        word_counts = {"https://acme.com/factdense": 800}
+        finding = cit.find_link_authority_starved_pages(node_ids, edges, word_counts)[0]
+        self.assertIn(f"{len(node_ids)} pages sampled", finding.evidence)
+        self.assertIn("does not prove site-wide link starvation", finding.evidence)
+
+    def test_finding_validates_against_the_shared_contract(self):
+        node_ids, edges = _hub_and_spoke_graph()
+        word_counts = {"https://acme.com/factdense": 800}
+        finding = cit.find_link_authority_starved_pages(node_ids, edges, word_counts)[0]
+        self.assertEqual(finding.validate(), [])
+
+
+class AuditLinkGraphTests(unittest.TestCase):
+    def test_an_unreachable_page_becomes_one_unknown_check(self):
+        out = cit.audit_link_graph("acme.com", ["https://this-host-does-not-exist.invalid/page"])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(len(out["unknown_checks"]), 1)
+        self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
+
+    def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
+        out = cit.audit_link_graph("acme.com", [])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["unknown_checks"], [])
+
+    def test_output_always_carries_the_capability_ids(self):
+        out = cit.audit_link_graph("acme.com", [])
+        self.assertEqual(out["capability_ids"], cit.CAPABILITY_IDS)
+        self.assertIn("CIT-08", out["capability_ids"])
+        self.assertIn("CIT-09", out["capability_ids"])
+
+
+class ExtractTitleTests(unittest.TestCase):
+    def test_a_title_tag_is_extracted(self):
+        self.assertEqual(cit._extract_title("<html><head><title>Acme Widgets</title></head></html>"), "Acme Widgets")
+
+    def test_whitespace_in_the_title_is_collapsed(self):
+        html = "<title>Acme\n   Widgets  Co</title>"
+        self.assertEqual(cit._extract_title(html), "Acme Widgets Co")
+
+    def test_no_title_tag_returns_empty_string(self):
+        self.assertEqual(cit._extract_title("<html><body>Hi</body></html>"), "")
+
+
+class LooksLikeComparisonPageTests(unittest.TestCase):
+    def test_a_vs_slug_is_recognised(self):
+        self.assertTrue(cit._looks_like_comparison_page("https://acme.com/acme-vs-widgetco", ""))
+
+    def test_an_alternatives_to_slug_is_recognised(self):
+        self.assertTrue(cit._looks_like_comparison_page("https://acme.com/alternatives-to-widgetco", ""))
+
+    def test_a_versus_title_is_recognised(self):
+        self.assertTrue(cit._looks_like_comparison_page("https://acme.com/compare", "Acme Versus WidgetCo"))
+
+    def test_a_compared_to_title_is_recognised(self):
+        self.assertTrue(cit._looks_like_comparison_page("https://acme.com/page", "Acme compared to WidgetCo"))
+
+    def test_an_ordinary_page_is_not_recognised(self):
+        self.assertFalse(cit._looks_like_comparison_page("https://acme.com/pricing", "Pricing - Acme"))
+
+
+class FindComparisonContentGapTests(unittest.TestCase):
+    def test_no_comparison_page_anywhere_in_a_large_enough_sample_is_flagged(self):
+        page_titles = {f"https://acme.com/p{i}": f"Page {i}" for i in range(5)}
+        findings = cit.find_comparison_content_gap(page_titles)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].capability_id, "CIT-09")
+        self.assertEqual(findings[0].track, "proactive")
+        self.assertEqual(findings[0].severity, "low")
+
+    def test_a_single_comparison_page_anywhere_suppresses_the_finding(self):
+        page_titles = {f"https://acme.com/p{i}": f"Page {i}" for i in range(4)}
+        page_titles["https://acme.com/acme-vs-widgetco"] = "Acme vs WidgetCo"
+        self.assertEqual(cit.find_comparison_content_gap(page_titles), [])
+
+    def test_below_minimum_sample_size_never_fires(self):
+        page_titles = {f"https://acme.com/p{i}": f"Page {i}" for i in range(3)}
+        self.assertEqual(cit.find_comparison_content_gap(page_titles), [])
+
+    def test_finding_validates_against_the_shared_contract(self):
+        page_titles = {f"https://acme.com/p{i}": f"Page {i}" for i in range(5)}
+        finding = cit.find_comparison_content_gap(page_titles)[0]
+        self.assertEqual(finding.validate(), [])
+
+
 if __name__ == "__main__":
     unittest.main()

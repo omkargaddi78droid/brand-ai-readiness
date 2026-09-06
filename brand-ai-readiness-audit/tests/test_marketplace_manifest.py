@@ -142,7 +142,7 @@ class SafetyTests(unittest.TestCase):
             "importlib", "ipaddress", "json", "pathlib", "re", "socket", "sys", "tempfile",
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
             "jsonld_graph", "page_fetch", "graph_metrics", "page_sample", "xml", "budget",
-            "public_suffix", "fuzzy_match", "shingles", "__future__",
+            "public_suffix", "fuzzy_match", "shingles", "links", "__future__",
         }
         for script in list(REPO_ROOT.glob("skills/*/scripts/*.py")) + list(REPO_ROOT.glob("shared/*.py")):
             with self.subTest(script=script.name):
