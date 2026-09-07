@@ -515,6 +515,26 @@ class AuditSampledPagesTests(unittest.TestCase):
         self.assertIn("EN-11", out["capability_ids"])
         self.assertIn("EN-08", out["capability_ids"])
 
+    def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
+        out = eng.audit_sampled_pages("acme.com", [])
+        self.assertEqual(len(out["coverage"]["stages"]), 1)
+        self.assertFalse(out["coverage"]["stages"][0]["expired"])
+
+    def test_pages_beyond_the_fetch_budget_get_an_unknown_check_not_a_hang(self):
+        calls = {"n": 0}
+
+        def fake_clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] == 1 else 1000.0
+
+        page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
+        out = eng.audit_sampled_pages("acme.com", page_urls, clock=fake_clock)
+        self.assertEqual(len(out["unknown_checks"]), 2)
+        for unknown in out["unknown_checks"]:
+            self.assertEqual(unknown["capability_id"], "*")
+            self.assertIn("budget", unknown["reason"])
+        self.assertTrue(out["coverage"]["stages"][0]["expired"])
+
     def test_navigational_chrome_anchor_text_is_excluded_before_scoring(self):
         """Dominant false positive: a plain 'Home' link to a welcome-copy H1
         would otherwise score low and wrongly look like weak scent — this is

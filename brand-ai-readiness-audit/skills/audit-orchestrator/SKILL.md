@@ -96,7 +96,10 @@ or otherwise alters the audited site.
    from the sample built above. Five of its per-page capabilities (CQ-01,
    CQ-02, CQ-04, CQ-09, CQ-12) are judgement calls the script deliberately
    does not resolve, the same pattern as `engagement-audit` and
-   `citability-audit` below:
+   `citability-audit` below. The same `--url` invocation also runs CQ-10's
+   freshness half (script-decided, no judgement needed) off the same fetch,
+   comparing the page's own claimed update date against its HTTP
+   `Last-Modified` header:
 
    ```bash
    python3 ../content-quality-audit/scripts/check_content_quality.py \
@@ -302,7 +305,14 @@ or otherwise alters the audited site.
 
 8. **If a skill produced nothing usable**, the composer records it as an
    `unknown_checks` entry naming that skill, and the report is still emitted
-   from whatever did run. Reduced coverage is reported, never hidden.
+   from whatever did run. Reduced coverage is reported, never hidden. The
+   four `--sample-file` skills (`entity-audit`, `content-quality-audit`,
+   `citability-audit`, `engagement-audit`) each cap their own fetch loop at
+   90s via `shared/budget.StageBudget` (INF-10) — if that cap is hit mid-run,
+   `compose_report.py` merges each skill's own `coverage.stages` entry into
+   the final report's `coverage.stages`, so a partially-covered sample is
+   visible in the report itself, not just inferrable from a shorter-than-
+   expected findings list.
 
 ## Skill registry
 
@@ -313,7 +323,7 @@ composition bug.
 | Skill | Owns | Gate | Runs |
 |---|---|---|---|
 | `perimeter-access-audit` | PER-01 AI-crawler access by tier · PER-02 blanket block · PER-03 CDN/edge blocking · PER-04 llms.txt presence and validity · PER-05 llms-full.txt · PER-06 sitemap discovery · PER-07 Markdown negotiation · PER-08 sitemap discoverability (robots.txt reference + llms.txt/sitemap URL-set agreement) · PER-09 cross-layer access-signal contradiction (robots.txt/`X-Robots-Tag`/meta-robots/TDMRep/llms.txt/sitemap.xml agreement) | 1 | Once per site |
-| `content-quality-audit` | CQ-03 template leakage · CQ-05 relative-date anchors · CQ-07 scope-ambiguous numerics · CQ-08 computed-stat integrity · CQ-11 fluency/readability · CQ-13 near-duplicate/template dilution (multi-page) · CQ-01 answer extractability (agent-judged) · CQ-02 non-answer templates (agent-judged) · CQ-04 granularity mismatch (agent-judged) · CQ-09 marketing/procedure interleaving (agent-judged) · CQ-10 cross-page fact collision (agent-judged, multi-page) · CQ-12 signal-to-filler ratio (agent-judged) | 3 | Once per sampled page, plus once per site for CQ-13/CQ-10's `--sample-file` mode |
+| `content-quality-audit` | CQ-03 template leakage · CQ-05 relative-date anchors · CQ-07 scope-ambiguous numerics · CQ-08 computed-stat integrity · CQ-10 freshness self-contradiction (`--url` mode) · CQ-11 fluency/readability · CQ-13 near-duplicate/template dilution (multi-page) · CQ-01 answer extractability (agent-judged) · CQ-02 non-answer templates (agent-judged) · CQ-04 granularity mismatch (agent-judged) · CQ-09 marketing/procedure interleaving (agent-judged) · CQ-10 cross-page fact collision (agent-judged, multi-page) · CQ-12 signal-to-filler ratio (agent-judged) | 3 | Once per sampled page (CQ-10 freshness half included), plus once per site for CQ-13/CQ-10 fact-collision's `--sample-file` mode |
 | `entity-audit` | ENT-01 schema.org/JSON-LD validity · ENT-02 knowledge-graph grounding · ENT-03 markup/text agreement · ENT-04 canonicalisation (single-page + sitemap-scoped fork detection) · ENT-07 cross-domain service attribution + ENT-08 address/NAP clustering (multi-page) · ENT-11 JSON-LD graph referential integrity (dangling/cross-page @id references, orphan identity nodes) · ENT-12 JSON-LD entity-graph fragmentation · ENT-09 taxonomy consistency (agent-judged) · ENT-05 brand-name collision + ENT-06 lookalike-domain impersonation (agent-judged, optional off-site mode) | 3 | Once per sampled page, plus once per site for ENT-04's sitemap-scoped half, ENT-07/08's `--sample-file` mode, and (optional) ENT-05/06's off-site mode |
 | `engagement-audit` | EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (agent-judged) · EN-05 mobile usability · EN-06 interstitial/consent-wall friction · EN-07 perceived-performance friction · EN-09 autonomous-agent usability · EN-04 dead-end/orphan pages (multi-page) · EN-11 content-to-action coherence (multi-page, agent-judged) · EN-08 findability link-scent slice (multi-page, agent-judged) | none — engagement, not gated | Once per sampled page, plus once per site for the `--sample-file` multi-page mode |
 | `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-08 hub/authority link-graph structure + CIT-09 comparison-content gap (multi-page, proactive) · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per sampled page, plus once per site for CIT-08/09's `--sample-file` mode |

@@ -318,6 +318,7 @@ came from.
 | That URL's own robots.txt cannot be fetched at all | Treated as allow-all (RFC 9309 convention: no reachable robots.txt means unrestricted access) — the fetch is still attempted, and can still fail on its own |
 | No `--offsite-url` given | ENT-05/06 silently skipped (empty candidate lists), not `unknown` |
 | A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page; the others still run |
+| The `--sample-file` fetch loop runs past its 90s stage budget (`shared/budget.StageBudget`) | Fetching stops; findings still come from whatever pages were already fetched; every remaining un-fetched page gets its own `unknown_checks` entry naming the cap; `coverage.stages` in the output records the cutoff |
 | A candidate domain's own homepage is disallowed by its robots.txt, or cannot be fetched | One `unknown_checks` entry for that domain — ENT-07 does not assume a defect it could not check |
 | No candidate domains survive `--sample-file`'s filters | ENT-07 produces an empty, clean report — not `unknown` |
 | Fewer than 2 sampled pages carry an extractable address, or the addresses found all cluster into one group | ENT-08 produces an empty, clean report — not `unknown` |

@@ -138,7 +138,7 @@ class SafetyTests(unittest.TestCase):
 
     def test_scripts_import_no_third_party_packages(self):
         allowed_roots = {
-            "argparse", "collections", "dataclasses", "datetime", "difflib", "hashlib", "html",
+            "argparse", "collections", "dataclasses", "datetime", "difflib", "email", "hashlib", "html",
             "importlib", "ipaddress", "json", "pathlib", "re", "socket", "sys", "tempfile",
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
             "jsonld_graph", "page_fetch", "graph_metrics", "page_sample", "xml", "budget",

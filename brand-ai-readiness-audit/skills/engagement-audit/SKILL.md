@@ -262,6 +262,7 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 | The page's head has few/no render-blocking resources, few/no unsized images, and a small HTML document | EN-07 stays silent |
 | The page plainly is not a landing or conversion page | Say so explicitly and emit nothing for EN-01/EN-03, rather than forcing a verdict on a page the check does not apply to |
 | A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page; the others still run |
+| The `--sample-file` fetch loop runs past its 90s stage budget (`shared/budget.StageBudget`) | Fetching stops; findings still come from whatever pages were already fetched; every remaining un-fetched page gets its own `unknown_checks` entry naming the cap; `coverage.stages` in the output records the cutoff |
 | No page has both a primary CTA and its own H1, or no internal link's target is itself in the sample | C1 produces no `agent_judgement_required` entries — not `unknown` |
 | Every sampled page has at least one internal outbound link (or a CTA) and at least one inbound internal link (or is the homepage) | EN-04 produces no findings — not `unknown` |
 

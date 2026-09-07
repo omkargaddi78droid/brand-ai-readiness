@@ -156,6 +156,7 @@ from page_fetch import (  # noqa: E402
 from public_suffix import registrable_domain, same_entity  # noqa: E402
 from links import extract_outbound_links  # noqa: E402
 from fuzzy_match import single_linkage_clusters  # noqa: E402
+from budget import StageBudget, coverage_manifest  # noqa: E402
 
 OWNER_SKILL = "entity-audit"
 CAPABILITY_IDS = [
@@ -1648,19 +1649,45 @@ def _address_inconsistency_finding(clusters: list[list[int]], pages: list[str], 
     )
 
 
-def audit_service_domains(site: str, page_urls: list[str]) -> dict:
+_SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+
+
+def audit_service_domains(site: str, page_urls: list[str], *, clock=None) -> dict:
     """ENT-07 and ENT-08's shared multi-page mode — fetches every on-site
     URL in `page_urls` (the orchestrator's own bounded page sample) once,
     extracting both outbound links (ENT-07) and visible text (ENT-08) from
     the same fetch pass, then runs each capability's own detector.
 
     A separate, once-per-run mode from `audit_html`'s once-per-page mode,
-    the same relationship `audit_offsite` has to it for ENT-05/06."""
+    the same relationship `audit_offsite` has to it for ENT-05/06.
+
+    The fetch loop is capped by `shared/budget.StageBudget` (INF-10,
+    `_SAMPLE_FETCH_BUDGET_SECONDS`) — a sample of unresponsive pages each
+    burning their own fetch timeout could otherwise run well past what one
+    skill invocation should cost inside the audit's overall 5-minute
+    budget. On expiry, fetching stops; already-fetched pages still get
+    findings computed over them (reduced coverage, not a failed
+    capability), and every remaining un-fetched page gets its own
+    `unknown_checks` entry naming the cap as the reason.
+    `coverage_manifest` is always attached to the output."""
+    clock_kwargs = {"clock": clock} if clock is not None else {}
+    budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
     page_links: dict[str, list[str]] = {}
     page_addresses: dict[str, str] = {}
     all_page_texts: list[str] = []
-    for page_url in page_urls:
+    for index, page_url in enumerate(page_urls):
+        if budget.expired():
+            for skipped_url in page_urls[index:]:
+                unknowns.append(
+                    UnknownCheck(
+                        "ENT-07",
+                        OWNER_SKILL,
+                        f"{skipped_url} was not fetched: {budget.stage} budget of "
+                        f"{budget.cap_seconds}s was exceeded",
+                    )
+                )
+            break
         html_or_error, status = fetch_page_html(page_url)
         if status != "present" or html_or_error is None:
             unknowns.append(UnknownCheck("ENT-07", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
@@ -1684,6 +1711,7 @@ def audit_service_domains(site: str, page_urls: list[str]) -> dict:
         "findings": [f.to_dict() for f in findings],
         "agent_judgement_required": [],
         "unknown_checks": [u.to_dict() for u in unknowns],
+        "coverage": coverage_manifest([budget]),
     }
 
 

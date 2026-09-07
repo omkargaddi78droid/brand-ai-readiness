@@ -113,6 +113,7 @@ from page_fetch import (  # noqa: E402
 )
 from links import LinkRef, extract_links, is_internal_link  # noqa: E402
 from fuzzy_match import token_sort_ratio  # noqa: E402
+from budget import StageBudget, coverage_manifest  # noqa: E402
 
 OWNER_SKILL = "engagement-audit"
 CAPABILITY_IDS = ["EN-01", "EN-03", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"]
@@ -1163,23 +1164,51 @@ def find_orphan_pages(raw_internal_links: dict[str, list[LinkRef]]) -> list[Find
     ]
 
 
+_SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+
+
 def _gather_sample_pages(
-    site: str, page_urls: list[str]
-) -> tuple[dict[str, str], dict[str, str], dict[str, list[LinkRef]], dict[str, list[LinkRef]], list[UnknownCheck]]:
+    site: str, page_urls: list[str], *, clock=None
+) -> tuple[
+    dict[str, str], dict[str, str], dict[str, list[LinkRef]], dict[str, list[LinkRef]], list[UnknownCheck], StageBudget
+]:
     """One fetch pass over `page_urls`, shared by C1 (EN-08/EN-11) and B1+B8
     (EN-04) so the sample is only ever fetched once per script invocation.
     Returns (page_h1, page_cta, raw_internal_links, scent_internal_links,
-    unknowns) — `raw_internal_links` keeps every internal link (EN-04's
-    dead-end/orphan checks need to know a link exists at all, including a
-    plain "Home" link); `scent_internal_links` drops navigational chrome
-    (EN-08's information-scent check needs only content-shaped links)."""
+    unknowns, budget) — `raw_internal_links` keeps every internal link
+    (EN-04's dead-end/orphan checks need to know a link exists at all,
+    including a plain "Home" link); `scent_internal_links` drops
+    navigational chrome (EN-08's information-scent check needs only
+    content-shaped links).
+
+    Capped by `shared/budget.StageBudget` (INF-10, `_SAMPLE_FETCH_BUDGET_SECONDS`)
+    — a sample of unresponsive pages each burning their own fetch timeout
+    could otherwise run well past what one skill invocation should cost
+    inside the audit's overall 5-minute budget. On expiry, fetching stops;
+    already-fetched pages still get findings computed over them (reduced
+    coverage, not a failed capability), and every remaining un-fetched page
+    gets its own `unknown_checks` entry naming the cap as the reason. The
+    caller attaches `coverage_manifest([budget])` to its output."""
+    clock_kwargs = {"clock": clock} if clock is not None else {}
+    budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
     page_h1: dict[str, str] = {}
     page_cta: dict[str, str] = {}
     raw_internal_links: dict[str, list[LinkRef]] = {}
     scent_internal_links: dict[str, list[LinkRef]] = {}
 
-    for page_url in page_urls:
+    for index, page_url in enumerate(page_urls):
+        if budget.expired():
+            for skipped_url in page_urls[index:]:
+                unknowns.append(
+                    UnknownCheck(
+                        "*",
+                        OWNER_SKILL,
+                        f"{skipped_url} was not fetched: {budget.stage} budget of "
+                        f"{budget.cap_seconds}s was exceeded",
+                    )
+                )
+            break
         html_or_error, status = fetch_page_html(page_url)
         if status != "present" or html_or_error is None:
             unknowns.append(UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
@@ -1197,10 +1226,10 @@ def _gather_sample_pages(
             link for link in internal if link.anchor_text.lower() not in _NAV_CHROME_ANCHOR_TEXTS
         ]
 
-    return page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns
+    return page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns, budget
 
 
-def audit_sampled_pages(site: str, page_urls: list[str]) -> dict:
+def audit_sampled_pages(site: str, page_urls: list[str], *, clock=None) -> dict:
     """The combined multi-page mode — fetches every on-site URL in
     `page_urls` (the orchestrator's own bounded page sample) once, then runs
     two independent capability clusters over that one fetch: C1's
@@ -1209,7 +1238,9 @@ def audit_sampled_pages(site: str, page_urls: list[str]) -> dict:
     once-per-run mode from `audit_html`'s once-per-page mode, the same
     relationship ENT-07's `audit_service_domains` has to `audit_html` in
     entity-audit."""
-    page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns = _gather_sample_pages(site, page_urls)
+    page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns, budget = _gather_sample_pages(
+        site, page_urls, clock=clock
+    )
 
     findings = find_dead_end_pages(raw_internal_links, page_cta)
     findings += find_orphan_pages(raw_internal_links)
@@ -1266,6 +1297,7 @@ def audit_sampled_pages(site: str, page_urls: list[str]) -> dict:
         "findings": [f.to_dict() for f in findings],
         "agent_judgement_required": judgement_requests,
         "unknown_checks": [u.to_dict() for u in unknowns],
+        "coverage": coverage_manifest([budget]),
     }
 
 

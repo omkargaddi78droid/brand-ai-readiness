@@ -15,6 +15,8 @@ rather than asserting a judgement):
   CQ-08  Computed-stat integrity — a stated average that does not match the arithmetic of the page's own listed numbers
   CQ-11  Fluency/readability — Flesch Reading Ease below the "very difficult" band, on a large enough sample
   CQ-13  Near-duplicate/template dilution — cycle 23 addition, `--sample-file` mode (multi-page, see below)
+  CQ-10  Freshness self-contradiction — cycle 23 Phase 2 addition, `--url` mode single-page half (see below;
+         CQ-10's other half, cross-page fact collision, is agent-decided and listed below too)
 
 Agent decides, against references/content-judgement-rubric.md (the script
 extracts candidate sentences only and emits no verdict — asserting "this
@@ -41,6 +43,21 @@ real-world fact — a founding year, a phone number — stated two different
 ways) without reading what the label actually refers to. The agent resolves
 `agent_judgement_required` against `references/content-judgement-rubric.md`
 §CQ-10, the same procedure as this skill's other agent-judged capabilities.
+
+**CQ-10 also has a single-page half, `find_freshness_contradiction`, a
+cycle-23 Phase 2 addition (B7) that runs in `--url` mode.** It compares a
+visible "Last updated"/"As of" string (or a JSON-LD `dateModified`) against
+the HTTP `Last-Modified` response header captured by `shared/page_fetch.fetch_page`.
+A claimed date substantially *newer* than what `Last-Modified` supports is a
+freshness claim the transport layer itself contradicts. Unlike the
+cross-page half, this is entirely script-decided — the comparison is a plain
+date arithmetic, not a judgement call — but it stays capped at Medium
+confidence and refuses to fire at all when `Last-Modified` sits within an
+hour of the fetch time, since a CDN that stamps `Last-Modified` with serve
+time rather than true edit time is the dominant false positive here and a
+single fetch cannot tell the two apart. `--html-file`/`--text-file` modes
+have no live HTTP headers to compare against, so this half never fires
+there — not a defect, just nothing to compare.
 
 **CQ-13 is a cycle-23 addition, `--sample-file` mode.** Cluster A's own
 "Deferred, 4" note (docs/capability-matrix.md) previously held near-duplicate/
@@ -116,12 +133,14 @@ dropping or crashing on them, but resolving it properly is the caller's job.
 from __future__ import annotations
 
 import argparse
+import email.utils
 import hashlib
 import json
 import re
 import sys
 import urllib.parse
 from collections import defaultdict
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 
@@ -139,7 +158,9 @@ from page_fetch import (  # noqa: E402
     decode_content_encoding,
     is_public_host,
     fetch_page_html,
+    fetch_page,
 )
+from budget import StageBudget, coverage_manifest  # noqa: E402
 
 OWNER_SKILL = "content-quality-audit"
 CAPABILITY_IDS = [
@@ -964,6 +985,142 @@ def build_agent_judgement_requests(text: str, h1_text: str | None = None) -> lis
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# CQ-10 — Freshness self-contradiction (single-page half, --url mode; B7)
+# ---------------------------------------------------------------------------
+
+_CQ10_FRESHNESS_TEXT_PATTERN = re.compile(
+    r"\b(?:Last\s+updated|Last\s+modified|Updated|As\s+of)\s*[:\-]?\s*"
+    r"([A-Za-z]+\s+\d{1,2},?\s+\d{4}|\d{4}-\d{2}-\d{2}|\d{1,2}/\d{1,2}/\d{2,4})",
+    re.IGNORECASE,
+)
+_CQ10_JSONLD_DATEMODIFIED_PATTERN = re.compile(r'"dateModified"\s*:\s*"([^"]+)"')
+_CQ10_FRESHNESS_MIN_GAP_DAYS = 30
+_CQ10_LAST_MODIFIED_TRUST_WINDOW_SECONDS = 3600
+
+
+def _header(headers: dict[str, str], name: str) -> str | None:
+    lname = name.lower()
+    for key, value in headers.items():
+        if key.lower() == lname:
+            return value
+    return None
+
+
+def _parse_claimed_date(value: str):
+    value = value.strip().rstrip(",")
+    try:
+        return datetime.strptime(value[:10], "%Y-%m-%d").date()
+    except ValueError:
+        pass
+    for fmt in ("%m/%d/%Y", "%m/%d/%y"):
+        try:
+            return datetime.strptime(value, fmt).date()
+        except ValueError:
+            continue
+    for fmt in ("%B %d %Y", "%b %d %Y"):
+        try:
+            return datetime.strptime(value.replace(",", ""), fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+def find_freshness_contradiction(
+    text: str, html: str, headers: dict[str, str], *, fetched_at: datetime | None = None
+) -> list[Finding]:
+    """CQ-10's single-page freshness half (cycle 23 Phase 2, B7). Compares a
+    visible "Last updated"/"As of" claim (or a JSON-LD `dateModified`)
+    against the HTTP `Last-Modified` response header. A claimed date
+    substantially *newer* than what `Last-Modified` supports is a freshness
+    claim the transport layer itself contradicts — the page asserts it was
+    touched more recently than the server's own header backs up.
+
+    The dominant false positive: a CDN that stamps `Last-Modified` with the
+    time it served (or last cached) the response, not the time the content
+    actually changed, would make the header always look "just now" and is
+    indistinguishable, from a single fetch, from a genuine recent edit. So
+    this refuses to fire at all when `Last-Modified` sits within
+    `_CQ10_LAST_MODIFIED_TRUST_WINDOW_SECONDS` of the fetch time — the header
+    carries no reliable signal in that window either way — and stays capped
+    at Medium confidence even when it does fire.
+    """
+    last_modified_raw = _header(headers, "Last-Modified")
+    if not last_modified_raw:
+        return []
+    try:
+        last_modified_dt = email.utils.parsedate_to_datetime(last_modified_raw)
+    except (TypeError, ValueError):
+        return []
+    if last_modified_dt.tzinfo is None:
+        last_modified_dt = last_modified_dt.replace(tzinfo=timezone.utc)
+
+    now = fetched_at or datetime.now(timezone.utc)
+    if abs((now - last_modified_dt).total_seconds()) < _CQ10_LAST_MODIFIED_TRUST_WINDOW_SECONDS:
+        return []
+
+    claimed_raw = None
+    text_match = _CQ10_FRESHNESS_TEXT_PATTERN.search(text)
+    if text_match:
+        claimed_raw = text_match.group(1)
+    else:
+        jsonld_match = _CQ10_JSONLD_DATEMODIFIED_PATTERN.search(html)
+        if jsonld_match:
+            claimed_raw = jsonld_match.group(1)
+    if not claimed_raw:
+        return []
+
+    claimed_date = _parse_claimed_date(claimed_raw)
+    if claimed_date is None:
+        return []
+
+    gap_days = (claimed_date - last_modified_dt.date()).days
+    if gap_days < _CQ10_FRESHNESS_MIN_GAP_DAYS:
+        return []
+
+    finding_id = (
+        "CQ-10-freshness-contradiction-"
+        + hashlib.sha256(f"{claimed_raw}|{last_modified_raw}".encode()).hexdigest()[:8]
+    )
+    return [
+        Finding(
+            id=finding_id,
+            title="Page's own stated update date is contradicted by the server's Last-Modified header",
+            severity="medium",
+            evidence=(
+                f"The page claims it was last updated {claimed_raw!r}, but the HTTP "
+                f"Last-Modified header reports {last_modified_raw!r} — {gap_days} day(s) "
+                f"earlier than the page's own claim."
+            ),
+            suggested_action=SuggestedAction(
+                summary=(
+                    "Either make the visible/JSON-LD update date match when the page's "
+                    "content actually last changed, or stop bumping it unless the content "
+                    "itself changed."
+                ),
+                priority="medium",
+            ),
+            category="discoverability",
+            capability_id="CQ-10",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "An assistant weighing whether to trust a page's currency reads the page's own "
+                "stated freshness as a strong signal. When that claim outruns the server's own "
+                "record of when the resource changed, the claim is unverifiable at best and "
+                "manipulated at worst — citing it as current risks repeating stale information "
+                "under a false recency label."
+            ),
+            gate=3,
+            confidence="medium",
+            structured_evidence={
+                "claimed_date": claimed_raw,
+                "last_modified_header": last_modified_raw,
+                "gap_days": gap_days,
+            },
+        )
+    ]
+
+
 def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
     """This skill runs once per page (see SKILL.md), so a report with several
     pages audited will carry several findings sharing the exact same
@@ -984,14 +1141,24 @@ def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
 
 
 def audit_text(
-    site: str, text: str, page_url: str | None = None, h1_text: str | None = None
+    site: str,
+    text: str,
+    page_url: str | None = None,
+    h1_text: str | None = None,
+    html: str | None = None,
+    headers: dict[str, str] | None = None,
+    fetched_at: datetime | None = None,
 ) -> dict:
     readability_finding = measure_readability(text)
+    freshness_findings = (
+        find_freshness_contradiction(text, html or "", headers, fetched_at=fetched_at) if headers else []
+    )
     findings = _stamp_page(
         find_template_leakage(text)
         + find_relative_date_anchors(text)
         + find_scope_ambiguous_numbers(text)
         + find_computed_stat_mismatches(text)
+        + freshness_findings
         + ([readability_finding] if readability_finding else []),
         page_url,
     )
@@ -1246,17 +1413,45 @@ def build_fact_collision_judgement_requests(candidates: list[dict]) -> list[dict
     ]
 
 
-def audit_near_duplicates(site: str, page_urls: list[str]) -> dict:
+_SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+
+
+def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dict:
     """CQ-13's and CQ-10's shared multi-page mode — fetches every on-site
     URL in `page_urls` (the orchestrator's own bounded page sample) once and
     runs both capabilities off that fetch pass. CQ-13's near-duplicate
     clustering is entirely script-decided; CQ-10 only narrows candidates
     into `agent_judgement_required` for the calling agent to resolve.
 
-    A separate, once-per-run mode from `audit_text`'s once-per-page mode."""
+    A separate, once-per-run mode from `audit_text`'s once-per-page mode.
+
+    The fetch loop is capped by `shared/budget.StageBudget` (INF-10,
+    `_SAMPLE_FETCH_BUDGET_SECONDS`): a sample of unresponsive pages each
+    burning their own fetch timeout could otherwise run well past what one
+    skill invocation should cost inside the audit's overall 5-minute
+    budget. On expiry the loop stops fetching further pages — already-
+    fetched pages still get findings computed over them, this is reduced
+    coverage, not a failed capability — and the remaining, un-fetched pages
+    each get their own `unknown_checks` entry naming the cap as the reason.
+    `coverage_manifest` is always attached so a reduced-coverage run is
+    visible in the report rather than looking identical to a full one that
+    simply found less."""
+    clock_kwargs = {"clock": clock} if clock is not None else {}
+    budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
     page_texts: dict[str, str] = {}
-    for page_url in page_urls:
+    for index, page_url in enumerate(page_urls):
+        if budget.expired():
+            for skipped_url in page_urls[index:]:
+                unknowns.append(
+                    UnknownCheck(
+                        "CQ-13",
+                        OWNER_SKILL,
+                        f"{skipped_url} was not fetched: {budget.stage} budget of "
+                        f"{budget.cap_seconds}s was exceeded",
+                    )
+                )
+            break
         html_or_error, status = fetch_page_html(page_url)
         if status != "present" or html_or_error is None:
             unknowns.append(UnknownCheck("CQ-13", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
@@ -1272,6 +1467,7 @@ def audit_near_duplicates(site: str, page_urls: list[str]) -> dict:
         "findings": [f.to_dict() for f in findings],
         "agent_judgement_required": judgement_requests,
         "unknown_checks": [u.to_dict() for u in unknowns],
+        "coverage": coverage_manifest([budget]),
     }
 
 
@@ -1331,6 +1527,8 @@ def main(argv: list[str] | None = None) -> int:
     page_url = args.page_url or args.url
 
     h1_text: str | None = None
+    html: str | None = None
+    headers: dict[str, str] | None = None
     if args.text_file:
         text = Path(args.text_file).read_text(encoding="utf-8", errors="replace")
         # No raw HTML in this mode, so no H1 to extract — CQ-01's agent
@@ -1341,20 +1539,28 @@ def main(argv: list[str] | None = None) -> int:
         html = Path(args.html_file).read_text(encoding="utf-8", errors="replace")
         text = extract_visible_text(html)
         h1_text = extract_h1(html)
+        # A local file has no live HTTP response, so no Last-Modified header
+        # to compare against — CQ-10's freshness half simply never fires here.
     elif args.url:
-        html_or_error, status = fetch_page_html(args.url)
-        if status != "present":
-            json.dump(_unknown_output(site, html_or_error or "fetch failed"), sys.stdout, indent=2)
+        bundle = fetch_page(args.url)
+        if bundle.status != "present" or bundle.html is None:
+            json.dump(_unknown_output(site, bundle.error or "fetch failed"), sys.stdout, indent=2)
             sys.stdout.write("\n")
             return 0
-        text = extract_visible_text(html_or_error)
-        h1_text = extract_h1(html_or_error)
+        html = bundle.html
+        headers = bundle.headers
+        text = extract_visible_text(html)
+        h1_text = extract_h1(html)
     else:
         json.dump(_unknown_output(site, "no --url, --html-file or --text-file given"), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
 
-    json.dump(audit_text(site, text, page_url=page_url, h1_text=h1_text), sys.stdout, indent=2)
+    json.dump(
+        audit_text(site, text, page_url=page_url, h1_text=h1_text, html=html, headers=headers),
+        sys.stdout,
+        indent=2,
+    )
     sys.stdout.write("\n")
     return 0
 

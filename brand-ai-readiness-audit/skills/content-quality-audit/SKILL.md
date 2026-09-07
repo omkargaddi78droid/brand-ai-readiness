@@ -4,16 +4,16 @@ description: >
   Audits a page's visible text for content anti-patterns: unrendered
   template syntax, changes dated only in relative time, the same metric
   stated twice with different values, a stated average contradicting the
-  page's own numbers, and very-difficult-to-read prose (script-decided); no
+  page's own numbers, a claimed update date newer than its own
+  Last-Modified header, and very-difficult-to-read prose (script-decided); no
   concise answer near the top, boilerplate hedging standing in for a fact,
   vague magnitude words needing a precise number, marketing language
   breaking up how-to steps, substance drowning in filler, and (given a page
   sample) a labeled fact with different values across same-template pages
   (agent-decided); and, given that same sample, near-duplicate content
   clustering within a same-template stratum (script-decided). Use when
-  auditing whether a page's facts are consistent and quotable, or whether
-  several pages of the same kind repeat or contradict each other. Not for
-  content-decay; not for reachability (perimeter-access-audit) or
+  auditing whether a page's facts are consistent, quotable, and current.
+  Not for content-decay; not for reachability (perimeter-access-audit) or
   main-content boundary detection (render/extraction, not yet built).
 license: MIT
 allowed-tools: Bash
@@ -26,13 +26,15 @@ allowed-tools: Bash
 Run this on individual pages once gate 1 (perimeter) and gate 2 (markup
 machine-readability, render/extraction — not to be confused with CQ-11's
 prose readability score below, a gate-3 check) are known to be clear — a
-page nobody can fetch has no content quality to audit yet. Five of its ten checks (CQ-03/05/07/08/11) show the exact
-contradiction or the exact formula (the wrong token, the missing date, the
-two conflicting numbers, the arithmetic, the readability score) rather than
-asserting a judgement, which is what keeps their false-positive rate low
-enough to run unattended. The other five (CQ-01/02/04/09/12) are judgement
-calls the capability matrix itself names as such — see the note below
-before running this skill for the first time.
+page nobody can fetch has no content quality to audit yet. Six of its eleven
+single-page checks (CQ-03/05/07/08/11, plus CQ-10's freshness half, `--url`
+mode only) show the exact contradiction or the exact formula (the wrong
+token, the missing date, the two conflicting numbers, the arithmetic, the
+readability score, the Last-Modified mismatch) rather than asserting a
+judgement, which is what keeps their false-positive rate low enough to run
+unattended. The other five (CQ-01/02/04/09/12) are judgement calls the
+capability matrix itself names as such — see the note below before running
+this skill for the first time.
 
 Use it per page, not per site: pick pages that carry claims worth getting
 right — pricing, specs, policies, dated announcements, how-to guides — not
@@ -53,6 +55,12 @@ yourself before this file's output reaches the entrypoint** — the identical
 procedure `engagement-audit` uses for EN-01/EN-03 and `citability-audit`
 uses for CIT-04.
 
+CQ-10 has a second, unrelated half you do **not** need to judge: a
+single-page freshness check that only runs in `--url` mode (see "What it
+checks" below) is entirely script-decided and never appears in
+`agent_judgement_required`. Only its cross-page fact-collision half
+(`--sample-file` mode) needs your judgement.
+
 CQ-01 carries one extra caveat: this project has no main-content boundary
 detection yet, so its opening-text signal is windowed from document start
 and is frequently nav/header chrome on a real page, not article prose. Read
@@ -62,9 +70,12 @@ evidence of a missing answer, it is the extraction's known blind spot.
 
 ## Inputs
 
-- A single page URL (`--url`). Fetches exactly that page, never a crawl.
+- A single page URL (`--url`). Fetches exactly that page, never a crawl, and
+  captures its response headers for CQ-10's freshness half (see below).
 - Offline/fixture mode: `--html-file PATH` (raw HTML, extracted the same way
-  as `--url`) or `--text-file PATH` (already-extracted plain text).
+  as `--url`, but with no live HTTP headers — CQ-10's freshness half never
+  fires here) or `--text-file PATH` (already-extracted plain text, same
+  caveat).
 - `--site` for the report label; derived from `--url` if omitted.
 - `--sample-file PATH` + `--site` — runs CQ-13's near-duplicate mode and
   CQ-10's fact-collision mode instead of auditing a single page. See
@@ -149,6 +160,7 @@ page once and runs both capabilities off that one fetch pass:
 | CQ-07 | Scope-ambiguous numeric claims | Script | A colon-labeled metric (`Battery life: 10 hours`) is stated twice with different values and no qualifier ("up to", "starting at", "depending on", ...) near either mention |
 | CQ-08 | Computed-stat integrity | Script | A colon-labeled list of 3+ numbers has a stated average elsewhere on the page that does not match the list's actual mean, beyond rounding tolerance |
 | CQ-11 | Fluency / readability | Script | The page's Flesch Reading Ease score falls in the "very difficult" band (<30), on at least 300 words |
+| CQ-10 | Freshness self-contradiction | Script (`--url` mode) | A visible "Last updated"/"As of" string, or JSON-LD `dateModified`, claims a date 30+ days newer than the HTTP `Last-Modified` header supports — and `Last-Modified` is not itself within an hour of the fetch time |
 | CQ-01 | Answer extractability | Agent, against the rubric | The first ~150 words of the page are judged to give no concise, quotable answer to the page's own implied question — missing or buried under marketing |
 | CQ-02 | Non-answer templates | Agent, against the rubric | A hedge phrase ("it depends", "results may vary") is judged to be standing in for a fact the page could have stated |
 | CQ-04 | Granularity mismatch | Agent, against the rubric | A vague magnitude word ("large", "substantial") next to a spec-shaped attribute (weight, size, ...) with no number is judged to need precision here |
@@ -156,6 +168,10 @@ page once and runs both capabilities off that one fetch pass:
 | CQ-12 | Signal-to-filler ratio | Agent, against the rubric | Stock transitional phrasing is judged to be drowning out genuine substance |
 | CQ-13 | Near-duplicate / template dilution | Script (`--sample-file` mode) | 2+ pages sharing a URL template score ≥0.7 5-word-shingle Jaccard similarity on their main content, after chrome-stripping and after excluding any page with under 30 remaining words |
 | CQ-10 | Cross-page fact collision | Agent, against the rubric (`--sample-file` mode) | A "Label: value" fact (typed as a price, date, or count) is stated on 3+ same-template pages with more than one distinct value, and the agent judges it a genuine collision rather than expected per-item variation |
+
+CQ-10 rows above cover its two independent halves — same capability id,
+different mode, different decider. A report can carry findings from one,
+both, or neither depending on which mode(s) were run.
 
 Full detection rules, worked examples, and every false-positive guard for
 CQ-03/05/07/08/11 are in `references/content-anti-patterns.md`.
@@ -177,6 +193,12 @@ fired wrongly (or silently missed) on a specific, now-documented case.
 - **CQ-10 only compares pages already in the given `--sample-file`.** A
   collision where the conflicting page was not sampled cannot be found —
   this is a heuristic net over the bounded sample, not a site-wide scan.
+- **CQ-10's freshness half compares one fetch's headers, never a real
+  edit history.** It cannot tell a genuine content edit from a CDN
+  refreshing its cache, which is why it refuses to fire at all when
+  `Last-Modified` is within an hour of the fetch time, requires a 30+ day
+  gap even outside that window, and stays capped at Medium confidence and
+  severity even when it does fire.
 - **Gate 1/2** — reachability (`perimeter-access-audit`) and main-content
   boundary detection (render/extraction, not yet built) — CQ-01's opening-
   text window is document-start, not boundary-aware, for exactly this
@@ -238,8 +260,11 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 | No `--url`, `--html-file` or `--text-file` given | `unknown` |
 | A detector finds nothing | No finding for that capability. Silence is the expected, common case |
 | A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page; the others still run |
+| The `--sample-file` fetch loop runs past its 90s stage budget (`shared/budget.StageBudget`) | Fetching stops; findings still come from whatever pages were already fetched; every remaining un-fetched page gets its own `unknown_checks` entry naming the cap; `coverage.stages` in the output records the cutoff |
 | No same-template stratum has 2+ pages with ≥30 words of content | CQ-13 produces an empty, clean report — not `unknown` |
 | No label reaches 3 same-template pages with more than one distinct value | CQ-10's `candidates` list is empty; nothing to judge |
+| `--url` mode: no `Last-Modified` header, no parseable claimed date, the gap is under 30 days, or `Last-Modified` is within an hour of the fetch time | CQ-10's freshness half stays silent — not `unknown` |
+| `--html-file`/`--text-file` mode | CQ-10's freshness half never runs — no live HTTP headers to compare against, not `unknown` |
 
 ## Safety
 

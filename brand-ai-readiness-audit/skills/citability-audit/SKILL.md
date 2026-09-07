@@ -209,6 +209,7 @@ reaches the entrypoint.
 | An `--offsite-url` is disallowed by its own robots.txt, or cannot be fetched | One `unknown_checks` entry for that URL, `capability_id: "CIT-13"`; the other URLs still run |
 | That URL's own robots.txt cannot be fetched at all | Treated as allow-all (RFC 9309 convention) — the fetch is still attempted |
 | A `--sample-file` page cannot be fetched | One `unknown_checks` entry for that page (`capability_id: "CIT-08"`); the others still run |
+| The `--sample-file` fetch loop runs past its 90s stage budget (`shared/budget.StageBudget`) | Fetching stops; findings still come from whatever pages were already fetched; every remaining un-fetched page gets its own `unknown_checks` entry naming the cap; `coverage.stages` in the output records the cutoff |
 | Fewer than 5 pages were successfully fetched, no page reaches 500 words, the sample's top-ranked page is itself 500+ words, or link equity is not concentrated in any one hub | CIT-08 produces an empty, clean report — not `unknown` |
 | At least one sampled page's URL or `<title>` looks comparison-shaped, or fewer than 5 pages were successfully fetched | CIT-09 produces an empty, clean report — not `unknown` |
 

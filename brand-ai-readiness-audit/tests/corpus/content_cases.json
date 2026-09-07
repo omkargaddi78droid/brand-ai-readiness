@@ -1,5 +1,5 @@
 {
-  "description": "Labelled ground-truth corpus for content-quality-audit's script-decided capabilities (CQ-03/05/07/08/11). Clean cases carry an empty expectation on purpose: they are the false-positive control. Every clean case here was chosen because it resembles a defect closely enough to have tripped an earlier version of the detector during development — see docs/phase-4-completion-2.md for CQ-03/05/07/08 and docs/phase-4-completion-8.md for CQ-11, including one case (defect_dense_jargon_short_sentences) that was drafted as an intended 'clean' fixture and reclassified to 'defect' after it turned out to genuinely cross CQ-11's threshold — a real finding from building this corpus, not a hypothetical.",
+  "description": "Labelled ground-truth corpus for content-quality-audit's script-decided, single-page capabilities (CQ-03/05/07/08/10/11). Clean cases carry an empty expectation on purpose: they are the false-positive control. Every clean case here was chosen because it resembles a defect closely enough to have tripped an earlier version of the detector during development — see docs/phase-4-completion-2.md for CQ-03/05/07/08 and docs/phase-4-completion-8.md for CQ-11, including one case (defect_dense_jargon_short_sentences) that was drafted as an intended 'clean' fixture and reclassified to 'defect' after it turned out to genuinely cross CQ-11's threshold — a real finding from building this corpus, not a hypothetical. CQ-10's freshness cases carry optional `headers`/`fetched_at` fields consumed by measure_content_quality.py's run_case — CQ-10's other half, cross-page fact collision, is `--sample-file` multi-page mode and not covered by this per-page harness.",
   "cases": [
     {
       "id": "clean-normal-page",
@@ -77,6 +77,24 @@
       "file": "defect_dense_jargon_short_sentences.txt",
       "note": "309 words of short, simple medical-clinic sentences (avg. 6.9 words/sentence) built from syllable-dense clinical vocabulary. Drafted as an intended CQ-11 false-positive control and reclassified after it genuinely crossed the threshold (score 9.9) — Flesch's syllable-per-word term dominates its sentence-length term heavily enough that short sentences alone do not protect against dense jargon. See content-anti-patterns.md's CQ-11 section.",
       "expected_findings": ["CQ-11-low-readability"]
+    },
+    {
+      "id": "defect-freshness-contradiction",
+      "label": "defect",
+      "file": "defect_freshness_contradiction.txt",
+      "note": "CQ-10's single-page freshness half (cycle 23 Phase 2, B7). Visible text claims 'Last updated: August 20, 2026' but the HTTP Last-Modified header reports January 10, 2024 — over two years earlier than the page's own claim, well past the trust window and the minimum gap.",
+      "headers": {"Last-Modified": "Wed, 10 Jan 2024 00:00:00 GMT"},
+      "fetched_at": "2026-09-07T12:00:00Z",
+      "expected_findings": ["CQ-10-freshness-contradiction-"]
+    },
+    {
+      "id": "clean-cdn-stamped-last-modified",
+      "label": "clean",
+      "file": "clean_cdn_stamped_last_modified.txt",
+      "note": "Dominant false positive for CQ-10's freshness half: the Last-Modified header is only 10 minutes before the fetch time, the CDN-stamps-serve-time signature — indistinguishable from a genuine fresh edit from a single fetch, so the check refuses to fire at all rather than guess.",
+      "headers": {"Last-Modified": "Mon, 07 Sep 2026 11:50:00 GMT"},
+      "fetched_at": "2026-09-07T12:00:00Z",
+      "expected_findings": []
     }
   ]
 }

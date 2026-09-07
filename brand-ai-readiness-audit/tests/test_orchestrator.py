@@ -288,5 +288,50 @@ class Inf08NotBuiltTests(unittest.TestCase):
         self.assertEqual(len(report["findings"]), len(entity_out["findings"]) + len(page_out["findings"]))
 
 
+class CoverageManifestMergeTests(unittest.TestCase):
+    """INF-10 (cycle 23 Phase 4 follow-up): each `--sample-file` skill's own
+    `coverage.stages` entry (from `shared/budget.StageBudget`) must survive
+    composition into the final report, so a budget-limited stage stays
+    visible in the report itself rather than only inferrable from a
+    shorter-than-expected findings list."""
+
+    def test_a_single_skills_coverage_stage_is_merged_into_the_report(self):
+        service_out = entity.audit_service_domains("example.com", [])
+        del service_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity-service.json", service_out))]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertEqual(validate_floor_shape(report), [])
+        self.assertEqual(len(report["coverage"]["stages"]), 1)
+        self.assertEqual(report["coverage"]["stages"][0]["stage"], "entity-audit-sample-fetch")
+
+    def test_coverage_stages_from_several_skills_are_all_present(self):
+        service_out = entity.audit_service_domains("example.com", [])
+        near_dup_out = content_quality.audit_near_duplicates("example.com", [])
+        del service_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [
+                ("entity-audit", _write(workdir, "entity-service.json", service_out)),
+                ("content-quality-audit", _write(workdir, "cq-dup.json", near_dup_out)),
+            ]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        stage_names = {stage["stage"] for stage in report["coverage"]["stages"]}
+        self.assertEqual(stage_names, {"entity-audit-sample-fetch", "content-quality-audit-sample-fetch"})
+
+    def test_no_coverage_anywhere_means_no_coverage_key_at_all(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertNotIn("coverage", report)
+
+
 if __name__ == "__main__":
     unittest.main()

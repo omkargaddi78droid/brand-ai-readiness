@@ -48,24 +48,29 @@ from finding_contract import (  # noqa: E402
 )
 
 
-def load_skill_output(skill_name: str, path: str) -> tuple[list[Finding], list[UnknownCheck]]:
+def load_skill_output(skill_name: str, path: str) -> tuple[list[Finding], list[UnknownCheck], list[dict]]:
     try:
         raw = Path(path).read_text(encoding="utf-8")
         data = json.loads(raw)
     except Exception as error:
-        return [], [
-            UnknownCheck(
-                capability_id="*",
-                owner_skill=skill_name,
-                reason=(
-                    f"{skill_name} produced no usable output "
-                    f"({type(error).__name__}: {error}); its checks were not evaluated"
-                ),
-            )
-        ]
+        return (
+            [],
+            [
+                UnknownCheck(
+                    capability_id="*",
+                    owner_skill=skill_name,
+                    reason=(
+                        f"{skill_name} produced no usable output "
+                        f"({type(error).__name__}: {error}); its checks were not evaluated"
+                    ),
+                )
+            ],
+            [],
+        )
 
     findings = [Finding.from_dict(item) for item in data.get("findings", [])]
     unknowns = [UnknownCheck.from_dict(item) for item in data.get("unknown_checks", [])]
+    stages = data.get("coverage", {}).get("stages", [])
 
     for pending in data.get("agent_judgement_required", []):
         capability_id = pending.get("capability_id", "*")
@@ -81,7 +86,7 @@ def load_skill_output(skill_name: str, path: str) -> tuple[list[Finding], list[U
             )
         )
 
-    return findings, unknowns
+    return findings, unknowns, stages
 
 
 def compose(
@@ -91,12 +96,15 @@ def compose(
 ) -> dict:
     findings: list[Finding] = []
     unknowns: list[UnknownCheck] = []
+    stages: list[dict] = []
     for skill_name, path in skill_outputs:
-        skill_findings, skill_unknowns = load_skill_output(skill_name, path)
+        skill_findings, skill_unknowns, skill_stages = load_skill_output(skill_name, path)
         findings.extend(skill_findings)
         unknowns.extend(skill_unknowns)
+        stages.extend(skill_stages)
 
-    return build_report(site, assign_sequential_ids(findings), unknowns, audited_at=audited_at)
+    coverage = {"stages": stages} if stages else None
+    return build_report(site, assign_sequential_ids(findings), unknowns, audited_at=audited_at, coverage=coverage)
 
 
 def main(argv: list[str] | None = None) -> int:

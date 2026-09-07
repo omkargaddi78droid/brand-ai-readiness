@@ -14,11 +14,13 @@ All four were caught by running the detectors against realistic fixtures
 before writing a single formal test — see docs/phase-4-completion-2.md.
 """
 
+import email.utils
 import importlib.util
 import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -694,6 +696,115 @@ class AuditNearDuplicatesTests(unittest.TestCase):
         self.assertEqual(len(out["agent_judgement_required"]), 1)
         self.assertEqual(out["agent_judgement_required"][0]["capability_id"], "CQ-10")
         self.assertEqual(out["agent_judgement_required"][0]["observations"]["candidates"], [])
+
+    def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
+        out = cq.audit_near_duplicates("acme.com", [])
+        self.assertEqual(len(out["coverage"]["stages"]), 1)
+        self.assertFalse(out["coverage"]["stages"][0]["expired"])
+
+    def test_pages_beyond_the_fetch_budget_get_an_unknown_check_not_a_hang(self):
+        # A fake clock that reports the cap already blown past on the very
+        # first check — this exercises the cutoff deterministically, with no
+        # dependency on real fetch timing or network flakiness.
+        calls = {"n": 0}
+
+        def fake_clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] == 1 else 1000.0
+
+        page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
+        out = cq.audit_near_duplicates("acme.com", page_urls, clock=fake_clock)
+        self.assertEqual(len(out["unknown_checks"]), 2)
+        for unknown in out["unknown_checks"]:
+            self.assertEqual(unknown["capability_id"], "CQ-13")
+            self.assertIn("budget", unknown["reason"])
+        self.assertTrue(out["coverage"]["stages"][0]["expired"])
+
+
+class FindFreshnessContradictionTests(unittest.TestCase):
+    FETCHED_AT = datetime(2026, 9, 7, 12, 0, 0, tzinfo=timezone.utc)
+
+    def _http_date(self, dt: datetime) -> str:
+        return email.utils.format_datetime(dt, usegmt=True)
+
+    def test_claimed_date_much_newer_than_last_modified_fires(self):
+        last_modified = self.FETCHED_AT - timedelta(days=250)
+        headers = {"Last-Modified": self._http_date(last_modified)}
+        text = "Last updated: August 20, 2026\nSome page content."
+        findings = cq.find_freshness_contradiction(text, "", headers, fetched_at=self.FETCHED_AT)
+        self.assertEqual(len(findings), 1)
+        finding = findings[0]
+        self.assertEqual(finding.capability_id, "CQ-10")
+        self.assertEqual(finding.severity, "medium")
+        self.assertEqual(finding.confidence, "medium")
+        self.assertEqual(finding.validate(), [])
+        self.assertGreaterEqual(finding.structured_evidence["gap_days"], 30)
+
+    def test_no_last_modified_header_produces_no_finding(self):
+        text = "Last updated: August 20, 2026"
+        self.assertEqual(cq.find_freshness_contradiction(text, "", {}, fetched_at=self.FETCHED_AT), [])
+
+    def test_last_modified_close_to_fetch_time_is_treated_as_untrustworthy(self):
+        # Dominant false positive: a CDN stamping Last-Modified with serve
+        # time, not real edit time, looks identical to a genuine fresh edit
+        # from a single fetch — so this window is never trusted either way.
+        last_modified = self.FETCHED_AT - timedelta(minutes=10)
+        headers = {"Last-Modified": self._http_date(last_modified)}
+        text = "Last updated: August 20, 2026"
+        self.assertEqual(cq.find_freshness_contradiction(text, "", headers, fetched_at=self.FETCHED_AT), [])
+
+    def test_gap_below_threshold_does_not_fire(self):
+        last_modified = self.FETCHED_AT - timedelta(days=100)
+        claimed = last_modified + timedelta(days=10)
+        headers = {"Last-Modified": self._http_date(last_modified)}
+        text = f"Last updated: {claimed.strftime('%B %d, %Y')}"
+        self.assertEqual(cq.find_freshness_contradiction(text, "", headers, fetched_at=self.FETCHED_AT), [])
+
+    def test_claimed_date_older_than_last_modified_does_not_fire(self):
+        last_modified = self.FETCHED_AT - timedelta(days=50)
+        claimed = self.FETCHED_AT - timedelta(days=300)
+        headers = {"Last-Modified": self._http_date(last_modified)}
+        text = f"Last updated: {claimed.strftime('%B %d, %Y')}"
+        self.assertEqual(cq.find_freshness_contradiction(text, "", headers, fetched_at=self.FETCHED_AT), [])
+
+    def test_falls_back_to_jsonld_datemodified_when_no_visible_text_matches(self):
+        last_modified = self.FETCHED_AT - timedelta(days=250)
+        headers = {"Last-Modified": self._http_date(last_modified)}
+        html = '<script type="application/ld+json">{"dateModified": "2026-08-20"}</script>'
+        findings = cq.find_freshness_contradiction("Some unrelated visible text.", html, headers, fetched_at=self.FETCHED_AT)
+        self.assertEqual(len(findings), 1)
+
+    def test_an_unparseable_claimed_date_produces_no_finding(self):
+        last_modified = self.FETCHED_AT - timedelta(days=250)
+        headers = {"Last-Modified": self._http_date(last_modified)}
+        # Matches the slash-date shape but is not a real calendar date.
+        text = "Last updated: 13/45/2026"
+        self.assertEqual(cq.find_freshness_contradiction(text, "", headers, fetched_at=self.FETCHED_AT), [])
+
+    def test_header_lookup_is_case_insensitive(self):
+        last_modified = self.FETCHED_AT - timedelta(days=250)
+        headers = {"last-modified": self._http_date(last_modified)}
+        text = "Last updated: August 20, 2026"
+        findings = cq.find_freshness_contradiction(text, "", headers, fetched_at=self.FETCHED_AT)
+        self.assertEqual(len(findings), 1)
+
+
+class AuditTextFreshnessIntegrationTests(unittest.TestCase):
+    def test_audit_text_includes_freshness_finding_when_headers_given(self):
+        now = datetime.now(timezone.utc)
+        last_modified = now - timedelta(days=250)
+        claimed = now - timedelta(days=1)
+        headers = {"Last-Modified": email.utils.format_datetime(last_modified, usegmt=True)}
+        text = f"Last updated: {claimed.strftime('%B %d, %Y')}\nWelcome to our site."
+        out = cq.audit_text("example.com", text, page_url="https://example.com/about", headers=headers)
+        ids = [f["id"] for f in out["findings"]]
+        self.assertTrue(any(i.startswith("CQ-10-freshness-contradiction-") for i in ids))
+
+    def test_audit_text_without_headers_never_runs_the_freshness_check(self):
+        text = "Last updated: August 20, 2026\nWelcome to our site."
+        out = cq.audit_text("example.com", text)
+        ids = [f["id"] for f in out["findings"]]
+        self.assertFalse(any(i.startswith("CQ-10-freshness-contradiction-") for i in ids))
 
 
 if __name__ == "__main__":
