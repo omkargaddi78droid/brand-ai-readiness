@@ -159,6 +159,7 @@ from page_fetch import (  # noqa: E402
     is_public_host,
     fetch_page_html,
     fetch_page,
+    fetch_pages_concurrently,
 )
 from budget import StageBudget, coverage_manifest  # noqa: E402
 from html_extract import extract_labeled_pairs, extract_main_content_text  # noqa: E402
@@ -1505,6 +1506,10 @@ def build_fact_collision_judgement_requests(candidates: list[dict]) -> list[dict
 
 
 _SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+# Pages per concurrent batch — the budget is rechecked between batches, not
+# between individual pages, so this bounds how far a batch can overrun the
+# cap before the next check (Defect 2 follow-up to INF-10).
+_SAMPLE_FETCH_CHUNK_SIZE = 10
 
 
 def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dict:
@@ -1516,22 +1521,29 @@ def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dic
 
     A separate, once-per-run mode from `audit_text`'s once-per-page mode.
 
-    The fetch loop is capped by `shared/budget.StageBudget` (INF-10,
-    `_SAMPLE_FETCH_BUDGET_SECONDS`): a sample of unresponsive pages each
-    burning their own fetch timeout could otherwise run well past what one
-    skill invocation should cost inside the audit's overall 5-minute
-    budget. On expiry the loop stops fetching further pages — already-
-    fetched pages still get findings computed over them, this is reduced
-    coverage, not a failed capability — and the remaining, un-fetched pages
-    each get their own `unknown_checks` entry naming the cap as the reason.
-    `coverage_manifest` is always attached so a reduced-coverage run is
-    visible in the report rather than looking identical to a full one that
-    simply found less."""
+    The fetch loop is concurrent (Defect 2 follow-up to INF-10: sequential
+    fetching made the 90s cap likely to fire on perfectly normal sites) —
+    `shared/page_fetch.fetch_pages_concurrently` fetches pages in bounded,
+    order-preserving batches of `_SAMPLE_FETCH_CHUNK_SIZE`, with
+    `shared/budget.StageBudget` (`_SAMPLE_FETCH_BUDGET_SECONDS`) checked
+    between batches — a sample of unresponsive pages each burning their own
+    fetch timeout could otherwise run well past what one skill invocation
+    should cost inside the audit's overall 5-minute budget. The check is
+    still cooperative at batch granularity (an in-flight batch is allowed to
+    finish rather than aborted mid-flight), a deliberately coarser version
+    of the same tradeoff the old per-page check already made. On expiry the
+    loop stops fetching further pages — already-fetched pages still get
+    findings computed over them, this is reduced coverage, not a failed
+    capability — and the remaining, un-fetched pages each get their own
+    `unknown_checks` entry naming the cap as the reason. `coverage_manifest`
+    is always attached so a reduced-coverage run is visible in the report
+    rather than looking identical to a full one that simply found less."""
     clock_kwargs = {"clock": clock} if clock is not None else {}
     budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
     page_texts: dict[str, str] = {}
-    for index, page_url in enumerate(page_urls):
+    index = 0
+    while index < len(page_urls):
         if budget.expired():
             for skipped_url in page_urls[index:]:
                 unknowns.append(
@@ -1543,11 +1555,15 @@ def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dic
                     )
                 )
             break
-        html_or_error, status = fetch_page_html(page_url)
-        if status != "present" or html_or_error is None:
-            unknowns.append(UnknownCheck("CQ-13", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
-            continue
-        page_texts[page_url] = extract_visible_text(html_or_error)
+        chunk = page_urls[index : index + _SAMPLE_FETCH_CHUNK_SIZE]
+        index += len(chunk)
+        for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
+            if status != "present" or html_or_error is None:
+                unknowns.append(
+                    UnknownCheck("CQ-13", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
+                )
+                continue
+            page_texts[page_url] = extract_visible_text(html_or_error)
 
     findings = find_near_duplicate_clusters(page_texts)
     judgement_requests = build_fact_collision_judgement_requests(find_fact_collision_candidates(page_texts))

@@ -1528,5 +1528,74 @@ class SsrfGuardTests(unittest.TestCase):
         self.assertFalse(ret.is_public_host("this-host-does-not-exist.invalid"))
 
 
+class AuditSampleTests(unittest.TestCase):
+    """Defect 2: retrieval-readiness-audit previously had only audit_html's
+    once-per-page mode. audit_sample adds the same --sample-file bulk-mode
+    shape the other four multi-page skills already have, merging both
+    findings and agent-judgement requests across pages — each request
+    already carries its own observations.page_url (audit_html stamps it),
+    so merging several pages' requests into one list loses no per-page
+    distinction the calling agent needs to resolve them."""
+
+    def test_an_unreachable_page_becomes_one_unknown_check(self):
+        out = ret.audit_sample("example.com", ["https://this-host-does-not-exist.invalid/page"])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(len(out["unknown_checks"]), 1)
+        self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
+
+    def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
+        out = ret.audit_sample("example.com", [])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["unknown_checks"], [])
+        self.assertEqual(out["agent_judgement_required"], [])
+
+    def test_output_always_carries_the_capability_ids(self):
+        out = ret.audit_sample("example.com", [])
+        self.assertEqual(out["capability_ids"], ret.CAPABILITY_IDS)
+
+    def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
+        out = ret.audit_sample("example.com", [])
+        self.assertEqual(len(out["coverage"]["stages"]), 1)
+        self.assertFalse(out["coverage"]["stages"][0]["expired"])
+
+    def test_pages_beyond_the_fetch_budget_get_an_unknown_check_not_a_hang(self):
+        calls = {"n": 0}
+
+        def fake_clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] == 1 else 1000.0
+
+        page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
+        out = ret.audit_sample("example.com", page_urls, clock=fake_clock)
+        self.assertEqual(len(out["unknown_checks"]), 2)
+        self.assertTrue(out["coverage"]["stages"][0]["expired"])
+
+    def test_judgement_requests_from_each_page_are_merged_and_carry_their_own_page_url(self):
+        import page_fetch as pf
+        from unittest.mock import patch
+
+        page_html = (
+            "<h1>Widgets</h1>"
+            "<p>" + " ".join(["This is a reasonably long paragraph of prose content."] * 6) + "</p>"
+        )
+        pages = {"https://example.com/a": page_html, "https://example.com/b": page_html}
+
+        def fake_fetch(url):
+            return pages[url], "present"
+
+        with patch.object(pf, "fetch_page_html", side_effect=fake_fetch), \
+                patch.object(pf, "is_public_host", return_value=True), \
+                patch.object(pf, "robots_allows_fetch", return_value=True):
+            out = ret.audit_sample("example.com", list(pages))
+
+        self.assertEqual(out["unknown_checks"], [])
+        page_urls_seen = {
+            request["observations"].get("page_url")
+            for request in out["agent_judgement_required"]
+            if "page_url" in request["observations"]
+        }
+        self.assertTrue(page_urls_seen.issubset({"https://example.com/a", "https://example.com/b"}))
+
+
 if __name__ == "__main__":
     unittest.main()

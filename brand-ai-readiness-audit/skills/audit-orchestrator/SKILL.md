@@ -86,7 +86,10 @@ or otherwise alters the audited site.
    (`content-quality-audit`'s CQ-13/CQ-10, `entity-audit`'s ENT-07/ENT-08,
    `engagement-audit`'s EN-04/EN-08/EN-11, `citability-audit`'s CIT-08/CIT-09)
    consume it directly via their own `--sample-file` flag, once per site,
-   alongside their normal per-page invocations.
+   alongside their normal per-page invocations. `retrieval-readiness-audit`
+   and `static-extraction-audit` also consume it via their own
+   `--sample-file` flag — for them it is the PREFERRED way to run, not an
+   addition alongside per-page invocations (see step 5 below).
 
 5. **Run the remaining audit skills** listed in the registry below, each
    writing its JSON to its own file. Skills are independent; a failure in one
@@ -257,19 +260,37 @@ or otherwise alters the audited site.
    finding, if present, carries `"track": "proactive"` — compose it as a
    suggestion, not a defect.
 
-   `retrieval-readiness-audit` runs the same way, per page, and also has its
-   own `agent_judgement_required` resolution step for its four agent-judged
-   capabilities (RET-02/03/05/06):
+   `retrieval-readiness-audit` and `static-extraction-audit` are unlike the
+   other four skills above: every one of their capabilities is inherently
+   per-page (there is no separate site-wide capability), so **prefer their
+   `--sample-file` bulk mode over one `--url` invocation per page** — it
+   fetches the whole page-sample file concurrently in one process instead of
+   spawning one sequential subprocess per page, closing the gap that made
+   this project's own 5-minute budget unrealistic on a full 25-page sample
+   across every skill (Defect 2 / INF-10 follow-up):
 
    ```bash
    python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \
-       --url https://example.com/guide > /tmp/audit/retrieval-guide.json
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/retrieval-sample.json
+
+   python3 ../static-extraction-audit/scripts/check_static_extraction.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/static-extraction-sample.json
    ```
 
-   `static-extraction-audit` runs the same way, per page — all nine of its
-   capabilities are script-decided, so there is no `agent_judgement_required`
-   step. Prefer a page likely to exercise its checks: a product page (JSON-LD
-   `Offer`), a page with images/video, or one built on a JS framework:
+   `static-extraction-audit`'s nine capabilities are all script-decided, so
+   there is no `agent_judgement_required` step for it either way.
+   `retrieval-readiness-audit` still has four agent-judged capabilities
+   (RET-02/03/05/06) — in bulk mode, every sampled page's judgement requests
+   arrive together in one `agent_judgement_required` array, each entry still
+   carrying its own `observations.page_url` (stamped by the skill itself),
+   so resolve them exactly as you would per-page findings: per entry, using
+   that entry's own `page_url` to know which page it's about, **before**
+   passing the file to `compose_report.py`.
+
+   Fall back to a single `--url` invocation only for a one-off page outside
+   the sample worth checking specifically (e.g. a product page for REN-04's
+   price-render gating that the template-stratified sample didn't happen to
+   include):
 
    ```bash
    python3 ../static-extraction-audit/scripts/check_static_extraction.py \
@@ -289,8 +310,8 @@ or otherwise alters the audited site.
        --skill entity-audit /tmp/audit/entity-offsite.json \
        --skill engagement-audit /tmp/audit/engagement-home.json \
        --skill citability-audit /tmp/audit/citability-guide.json \
-       --skill retrieval-readiness-audit /tmp/audit/retrieval-guide.json \
-       --skill static-extraction-audit /tmp/audit/static-extraction-widget.json
+       --skill retrieval-readiness-audit /tmp/audit/retrieval-sample.json \
+       --skill static-extraction-audit /tmp/audit/static-extraction-sample.json
    ```
 
    Repeat `--skill NAME PATH` once per invocation that ran, including once per
@@ -306,13 +327,14 @@ or otherwise alters the audited site.
 8. **If a skill produced nothing usable**, the composer records it as an
    `unknown_checks` entry naming that skill, and the report is still emitted
    from whatever did run. Reduced coverage is reported, never hidden. The
-   four `--sample-file` skills (`entity-audit`, `content-quality-audit`,
-   `citability-audit`, `engagement-audit`) each cap their own fetch loop at
-   90s via `shared/budget.StageBudget` (INF-10) — if that cap is hit mid-run,
-   `compose_report.py` merges each skill's own `coverage.stages` entry into
-   the final report's `coverage.stages`, so a partially-covered sample is
-   visible in the report itself, not just inferrable from a shorter-than-
-   expected findings list.
+   six `--sample-file` skills (`entity-audit`, `content-quality-audit`,
+   `citability-audit`, `engagement-audit`, `retrieval-readiness-audit`,
+   `static-extraction-audit`) each fetch their page sample concurrently and
+   cap the whole fetch loop at 90s via `shared/budget.StageBudget` (INF-10)
+   — if that cap is hit mid-run, `compose_report.py` merges each skill's own
+   `coverage.stages` entry into the final report's `coverage.stages`, so a
+   partially-covered sample is visible in the report itself, not just
+   inferrable from a shorter-than-expected findings list.
 
 ## Skill registry
 
@@ -327,8 +349,8 @@ composition bug.
 | `entity-audit` | ENT-01 schema.org/JSON-LD validity · ENT-02 knowledge-graph grounding · ENT-03 markup/text agreement · ENT-04 canonicalisation (single-page + sitemap-scoped fork detection) · ENT-07 cross-domain service attribution + ENT-08 address/NAP clustering (multi-page) · ENT-11 JSON-LD graph referential integrity (dangling/cross-page @id references, orphan identity nodes) · ENT-12 JSON-LD entity-graph fragmentation · ENT-09 taxonomy consistency (agent-judged) · ENT-05 brand-name collision + ENT-06 lookalike-domain impersonation (agent-judged, optional off-site mode) | 3 | Once per sampled page, plus once per site for ENT-04's sitemap-scoped half, ENT-07/08's `--sample-file` mode, and (optional) ENT-05/06's off-site mode |
 | `engagement-audit` | EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (agent-judged) · EN-05 mobile usability · EN-06 interstitial/consent-wall friction · EN-07 perceived-performance friction · EN-09 autonomous-agent usability · EN-04 dead-end/orphan pages (multi-page) · EN-11 content-to-action coherence (multi-page, agent-judged) · EN-08 findability link-scent slice (multi-page, agent-judged) | none — engagement, not gated | Once per sampled page, plus once per site for the `--sample-file` multi-page mode |
 | `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-08 hub/authority link-graph structure + CIT-09 comparison-content gap (multi-page, proactive) · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per sampled page, plus once per site for CIT-08/09's `--sample-file` mode |
-| `retrieval-readiness-audit` | RET-01/04/07/08/09/10 (script), RET-02/03/05/06 (agent-judged) | 3 | Once per sampled page |
-| `static-extraction-audit` | REN-02 hydration-state coverage · REN-04 price-render gating · REN-05 availability freshness · REN-06 semantic HTML5 boundary · REN-07 content ratio · REN-08 multimodal accessibility · REN-10 NAP render asymmetry (phone) · REN-11 PDF-only fact lock (proactive) · REN-12 concealed agent-directed instruction scanner — all script-decided, no headless browser | 2 | Once per sampled page |
+| `retrieval-readiness-audit` | RET-01/04/07/08/09/10 (script), RET-02/03/05/06 (agent-judged) | 3 | Once per site via `--sample-file` (preferred), or once per page via `--url` for a one-off page |
+| `static-extraction-audit` | REN-02 hydration-state coverage · REN-04 price-render gating · REN-05 availability freshness · REN-06 semantic HTML5 boundary · REN-07 content ratio · REN-08 multimodal accessibility · REN-10 NAP render asymmetry (phone) · REN-11 PDF-only fact lock (proactive) · REN-12 concealed agent-directed instruction scanner — all script-decided, no headless browser | 2 | Once per site via `--sample-file` (preferred), or once per page via `--url` for a one-off page |
 
 ## Output
 

@@ -46,11 +46,13 @@ _LONG_SLUG_MIN_CHARS = 24
 def parse_sitemap_urls(xml_text: str) -> list[str]:
     """Extract every `<loc>` URL from a `<urlset>` sitemap.
 
-    A `<sitemapindex>` (a sitemap of sitemaps) returns `[]` rather than
-    recursing into the sub-sitemaps it points to — the same "don't recurse"
-    posture PER-06 (perimeter-access-audit) and ENT-04 (entity-audit)
-    already document as a known limitation, kept consistent here rather
-    than silently worked around in a third place.
+    A `<sitemapindex>` (a sitemap of sitemaps) returns `[]` here — this
+    module is pure/no-network (see the module docstring) and can't fetch
+    the sub-sitemaps a `<sitemapindex>` points to itself. The caller that
+    can do that fetching, sample_pages.py, does recurse one level into a
+    `<sitemapindex>` using `sitemap_root_kind`/`parse_sitemap_index_locs`
+    below plus its own network access — this function's own contract for a
+    bare `<sitemapindex>` document is unchanged.
 
     Malformed XML also returns `[]` rather than raising.
     """
@@ -61,6 +63,41 @@ def parse_sitemap_urls(xml_text: str) -> list[str]:
 
     root_tag = root.tag.rsplit("}", 1)[-1]
     if root_tag == "sitemapindex":
+        return []
+
+    return [
+        element.text.strip()
+        for element in root.iter()
+        if element.tag.rsplit("}", 1)[-1] == "loc" and element.text and element.text.strip()
+    ]
+
+
+def sitemap_root_kind(xml_text: str) -> str:
+    """Root tag of a sitemap document: `"urlset"` (a leaf sitemap of pages),
+    `"sitemapindex"` (a sitemap of sitemaps), or `"unknown"` for malformed
+    XML or an unrecognised root. A caller that needs to fetch and recurse
+    into a `<sitemapindex>`'s sub-sitemaps (network I/O this module never
+    does itself) uses this to decide when to — see
+    skills/audit-orchestrator/scripts/sample_pages.py."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return "unknown"
+    return root.tag.rsplit("}", 1)[-1]
+
+
+def parse_sitemap_index_locs(xml_text: str) -> list[str]:
+    """Extract every `<loc>` URL from a `<sitemapindex>` — each one is a
+    sub-sitemap URL, not a page. Returns `[]` for anything that isn't a
+    `<sitemapindex>` (including a plain `<urlset>` — use `parse_sitemap_urls`
+    for that) or is malformed."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError:
+        return []
+
+    root_tag = root.tag.rsplit("}", 1)[-1]
+    if root_tag != "sitemapindex":
         return []
 
     return [

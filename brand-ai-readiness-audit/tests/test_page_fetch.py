@@ -11,9 +11,11 @@ import gzip
 import http.server
 import sys
 import threading
+import time as time_module
 import unittest
 import urllib.error
 import urllib.parse
+from email.message import Message
 from pathlib import Path
 from unittest.mock import patch
 
@@ -295,6 +297,234 @@ class RetryTests(unittest.TestCase):
 
         self.assertEqual(status, "unavailable")
         self.assertEqual(attempts["count"], 1)
+
+
+def _headers_with_content_type(content_type: str | None) -> Message:
+    msg = Message()
+    if content_type is not None:
+        msg["Content-Type"] = content_type
+    return msg
+
+
+class DecodeBodyTests(unittest.TestCase):
+    """shared/page_fetch.py's own charset-aware decode fallback (Defect 5):
+    a declared charset is honoured, an undeclared or garbage one falls back
+    safely, and a genuinely non-UTF-8 body with no declared charset lands on
+    windows-1252 instead of being silently mojibake'd."""
+
+    def test_a_declared_charset_is_honoured(self):
+        raw = "café".encode("iso-8859-1")
+        headers = _headers_with_content_type("text/html; charset=iso-8859-1")
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_no_content_type_header_falls_back_to_utf8(self):
+        raw = "café".encode("utf-8")
+        headers = _headers_with_content_type(None)
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_an_empty_charset_declaration_falls_back_to_utf8(self):
+        raw = "café".encode("utf-8")
+        headers = _headers_with_content_type('text/html; charset=""')
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_an_unknown_codec_name_falls_back_to_utf8(self):
+        raw = "café".encode("utf-8")
+        headers = _headers_with_content_type("text/html; charset=bogus-not-a-real-codec")
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_a_declared_charset_that_cannot_actually_decode_the_body_falls_through(self):
+        # Declares utf-8 but the body is actually windows-1252 — a real-world
+        # mislabeled-page case, not just a malformed header.
+        raw = "café".encode("windows-1252")
+        headers = _headers_with_content_type("text/html; charset=utf-8")
+        # utf-8 raises on this byte sequence, so it falls through to the
+        # final windows-1252 fallback and decodes correctly anyway.
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_non_utf8_body_with_no_declared_charset_falls_back_to_windows_1252(self):
+        raw = "café".encode("windows-1252")
+        headers = _headers_with_content_type("text/html")
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_duplicate_content_type_headers_use_the_first(self):
+        headers = Message()
+        headers.add_header("Content-Type", "text/html; charset=iso-8859-1")
+        headers.add_header("Content-Type", "text/html; charset=utf-8")
+        raw = "café".encode("iso-8859-1")
+        self.assertEqual(page_fetch._decode_body(raw, headers), "café")
+
+    def test_plain_ascii_with_no_charset_round_trips(self):
+        raw = b"Hello, world."
+        headers = _headers_with_content_type(None)
+        self.assertEqual(page_fetch._decode_body(raw, headers), "Hello, world.")
+
+
+class RequestHeadersTests(unittest.TestCase):
+    """Defect 5: standard Accept/Accept-Language headers are sent alongside
+    User-Agent; Sec-CH-UA (a browser-identifying Client Hint that would be
+    inconsistent with this project's own honest User-Agent string) is
+    deliberately not."""
+
+    def test_accept_and_accept_language_are_present(self):
+        self.assertIn("Accept", page_fetch._REQUEST_HEADERS)
+        self.assertIn("Accept-Language", page_fetch._REQUEST_HEADERS)
+        self.assertEqual(page_fetch._REQUEST_HEADERS["User-Agent"], page_fetch.USER_AGENT)
+
+    def test_no_browser_identifying_client_hints_are_sent(self):
+        self.assertNotIn("Sec-CH-UA", page_fetch._REQUEST_HEADERS)
+
+
+class _Windows1252Handler(http.server.BaseHTTPRequestHandler):
+    """Serves a body only valid as windows-1252, with the charset correctly
+    declared in Content-Type — a legacy-encoding page that should decode
+    correctly rather than mojibake into replacement characters."""
+
+    def do_GET(self):  # noqa: N802
+        body = "Café — déjà vu".encode("windows-1252")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=windows-1252")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class _UndeclaredLegacyEncodingHandler(http.server.BaseHTTPRequestHandler):
+    """Serves a windows-1252-only body with NO charset declared at all —
+    exercises the final fallback, not the declared-charset path."""
+
+    def do_GET(self):  # noqa: N802
+        body = "Café".encode("windows-1252")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class FetchPageHtmlEncodingEndToEndTests(unittest.TestCase):
+    def test_a_declared_windows_1252_page_decodes_correctly(self):
+        with _LocalServer(_Windows1252Handler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            html, status = page_fetch.fetch_page_html(server.url)
+        self.assertEqual(status, "present")
+        self.assertEqual(html, "Café — déjà vu")
+
+    def test_an_undeclared_legacy_encoding_falls_back_correctly_not_mojibake(self):
+        with _LocalServer(_UndeclaredLegacyEncodingHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            html, status = page_fetch.fetch_page_html(server.url)
+        self.assertEqual(status, "present")
+        self.assertEqual(html, "Café")
+        self.assertNotIn("�", html)
+
+
+class FetchPagesConcurrentlyTests(unittest.TestCase):
+    """shared/page_fetch.py's concurrent-fetch helper (Defect 2): the fix
+    for a 5-minute audit budget colliding with fully sequential HTTP
+    requests. Determinism (order-stable results despite concurrent
+    completion) and the global/per-host politeness caps are the two
+    properties the fix explicitly promises, so they're tested directly
+    rather than just trusted."""
+
+    def test_empty_list_returns_empty_without_calling_fetch(self):
+        with patch.object(page_fetch, "fetch_page_html") as fetch_mock:
+            result = page_fetch.fetch_pages_concurrently([])
+        self.assertEqual(result, [])
+        fetch_mock.assert_not_called()
+
+    def test_results_are_returned_in_input_order_regardless_of_completion_order(self):
+        urls = [f"https://example.com/page-{i}" for i in range(5)]
+        # Later URLs finish FIRST (decreasing sleep) to prove gather doesn't
+        # reorder by completion time.
+        delays = {url: 0.05 * (len(urls) - i) for i, url in enumerate(urls)}
+
+        def fake_fetch(url):
+            time_module.sleep(delays[url])
+            return (f"content-for-{url}", "present")
+
+        with patch.object(page_fetch, "fetch_page_html", side_effect=fake_fetch):
+            results = page_fetch.fetch_pages_concurrently(urls, max_concurrency=5)
+
+        self.assertEqual([r[0] for r in results], urls)
+        for url, content, status in results:
+            self.assertEqual(content, f"content-for-{url}")
+            self.assertEqual(status, "present")
+
+    def test_global_concurrency_bound_is_respected(self):
+        # Distinct hosts so only the global cap (not the per-host cap) binds.
+        urls = [f"https://host{i}.example.com/" for i in range(10)]
+        lock = threading.Lock()
+        state = {"current": 0, "max_seen": 0}
+
+        def fake_fetch(url):
+            with lock:
+                state["current"] += 1
+                state["max_seen"] = max(state["max_seen"], state["current"])
+            time_module.sleep(0.03)
+            with lock:
+                state["current"] -= 1
+            return ("x", "present")
+
+        with patch.object(page_fetch, "fetch_page_html", side_effect=fake_fetch):
+            page_fetch.fetch_pages_concurrently(urls, max_concurrency=3)
+
+        self.assertLessEqual(state["max_seen"], 3)
+        self.assertGreater(state["max_seen"], 1, "fetches ran fully serialized, not concurrently")
+
+    def test_per_host_concurrency_bound_is_respected_even_with_a_generous_global_cap(self):
+        # All URLs share one host; the global cap is generous enough that
+        # only the per-host cap should actually bind.
+        urls = [f"https://example.com/page-{i}" for i in range(8)]
+        lock = threading.Lock()
+        state = {"current": 0, "max_seen": 0}
+
+        def fake_fetch(url):
+            with lock:
+                state["current"] += 1
+                state["max_seen"] = max(state["max_seen"], state["current"])
+            time_module.sleep(0.03)
+            with lock:
+                state["current"] -= 1
+            return ("x", "present")
+
+        with patch.object(page_fetch, "fetch_page_html", side_effect=fake_fetch):
+            page_fetch.fetch_pages_concurrently(urls, max_concurrency=8)
+
+        self.assertLessEqual(state["max_seen"], page_fetch._MAX_CONCURRENT_FETCHES_PER_HOST)
+        self.assertGreater(state["max_seen"], 1, "fetches ran fully serialized, not concurrently")
+
+    def test_a_failure_for_one_url_does_not_affect_others(self):
+        urls = ["https://example.com/ok", "https://example.com/broken"]
+
+        def fake_fetch(url):
+            if "broken" in url:
+                return ("boom: something went wrong", "unavailable")
+            return ("fine", "present")
+
+        with patch.object(page_fetch, "fetch_page_html", side_effect=fake_fetch):
+            results = page_fetch.fetch_pages_concurrently(urls)
+
+        by_url = {r[0]: r for r in results}
+        self.assertEqual(by_url["https://example.com/ok"][2], "present")
+        self.assertEqual(by_url["https://example.com/broken"][2], "unavailable")
+
+    def test_the_real_fetch_page_html_is_used_end_to_end(self):
+        with _LocalServer(_HtmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            results = page_fetch.fetch_pages_concurrently([server.url, server.url])
+        self.assertEqual(len(results), 2)
+        for url, content, status in results:
+            self.assertEqual(status, "present")
+            self.assertIn("Example Corp", content)
 
 
 class DecodeContentEncodingTests(unittest.TestCase):

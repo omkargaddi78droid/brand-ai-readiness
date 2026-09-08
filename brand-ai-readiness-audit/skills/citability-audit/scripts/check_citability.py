@@ -149,6 +149,7 @@ from page_fetch import (  # noqa: E402
     decode_content_encoding,
     is_public_host,
     fetch_page_html,
+    fetch_pages_concurrently,
 )
 from links import extract_links, is_internal_link  # noqa: E402
 from graph_metrics import pagerank  # noqa: E402
@@ -978,6 +979,10 @@ def find_comparison_content_gap(page_titles: dict[str, str]) -> list[Finding]:
 
 
 _SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+# Pages per concurrent batch — the budget is rechecked between batches, not
+# between individual pages, so this bounds how far a batch can overrun the
+# cap before the next check (Defect 2 follow-up to INF-10).
+_SAMPLE_FETCH_CHUNK_SIZE = 10
 
 
 def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
@@ -991,15 +996,21 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
     same relationship ENT-07's `audit_service_domains` has to `audit_html`
     in entity-audit.
 
-    The fetch loop is capped by `shared/budget.StageBudget` (INF-10,
-    `_SAMPLE_FETCH_BUDGET_SECONDS`) — a sample of unresponsive pages each
-    burning their own fetch timeout could otherwise run well past what one
-    skill invocation should cost inside the audit's overall 5-minute
-    budget. On expiry, fetching stops; already-fetched pages still get
-    findings computed over them (reduced coverage, not a failed
-    capability), and every remaining un-fetched page gets its own
-    `unknown_checks` entry naming the cap as the reason.
-    `coverage_manifest` is always attached to the output."""
+    The fetch loop is concurrent (Defect 2 follow-up to INF-10: sequential
+    fetching made the 90s cap likely to fire on perfectly normal sites) —
+    `shared/page_fetch.fetch_pages_concurrently` fetches pages in bounded,
+    order-preserving batches of `_SAMPLE_FETCH_CHUNK_SIZE`, with
+    `shared/budget.StageBudget` (`_SAMPLE_FETCH_BUDGET_SECONDS`) checked
+    between batches — a sample of unresponsive pages each burning their own
+    fetch timeout could otherwise run well past what one skill invocation
+    should cost inside the audit's overall 5-minute budget. The check is
+    still cooperative at batch granularity (an in-flight batch is allowed to
+    finish rather than aborted mid-flight), a deliberately coarser version
+    of the same tradeoff the old per-page check already made. On expiry,
+    fetching stops; already-fetched pages still get findings computed over
+    them (reduced coverage, not a failed capability), and every remaining
+    un-fetched page gets its own `unknown_checks` entry naming the cap as
+    the reason. `coverage_manifest` is always attached to the output."""
     clock_kwargs = {"clock": clock} if clock is not None else {}
     budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
@@ -1008,7 +1019,8 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
     page_word_counts: dict[str, int] = {}
     page_titles: dict[str, str] = {}
 
-    for index, page_url in enumerate(page_urls):
+    index = 0
+    while index < len(page_urls):
         if budget.expired():
             for skipped_url in page_urls[index:]:
                 unknowns.append(
@@ -1020,17 +1032,21 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
                     )
                 )
             break
-        html_or_error, status = fetch_page_html(page_url)
-        if status != "present" or html_or_error is None:
-            unknowns.append(UnknownCheck("CIT-08", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
-            continue
-        node_ids.append(page_url)
-        _, _, visible_text = parse_page(html_or_error)
-        page_word_counts[page_url] = len(visible_text.split())
-        page_titles[page_url] = _extract_title(html_or_error)
-        for link in extract_links(html_or_error, page_url):
-            if is_internal_link(link.url, site):
-                edges.append((page_url, link.url))
+        chunk = page_urls[index : index + _SAMPLE_FETCH_CHUNK_SIZE]
+        index += len(chunk)
+        for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
+            if status != "present" or html_or_error is None:
+                unknowns.append(
+                    UnknownCheck("CIT-08", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
+                )
+                continue
+            node_ids.append(page_url)
+            _, _, visible_text = parse_page(html_or_error)
+            page_word_counts[page_url] = len(visible_text.split())
+            page_titles[page_url] = _extract_title(html_or_error)
+            for link in extract_links(html_or_error, page_url):
+                if is_internal_link(link.url, site):
+                    edges.append((page_url, link.url))
 
     findings = find_link_authority_starved_pages(node_ids, edges, page_word_counts)
     findings += find_comparison_content_gap(page_titles)

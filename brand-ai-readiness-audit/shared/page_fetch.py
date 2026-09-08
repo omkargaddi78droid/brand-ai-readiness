@@ -48,6 +48,7 @@ connection) is never retried.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import ipaddress
 import socket
@@ -59,6 +60,20 @@ import urllib.robotparser
 import zlib
 
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
+# Standard, benign headers beyond User-Agent — some WAFs/CDNs reject a
+# request missing them outright, independent of the User-Agent string
+# itself. Deliberately NOT included: Sec-CH-UA or any other header that
+# names a specific browser — sending one of those alongside this project's
+# own honest, self-identifying User-Agent would be an internally
+# inconsistent fingerprint (claims to be a browser via one header, a named
+# bot via another), which is a MORE suspicious signal to a WAF than sending
+# neither; and no static header addition reliably bypasses real bot
+# management anyway (that keys on TLS fingerprinting and JS challenges).
+_REQUEST_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 FETCH_TIMEOUT_SECONDS = 10
 MAX_PAGE_BYTES = 5_000_000
 _MAX_DECOMPRESSED_BYTES = 20_000_000
@@ -90,7 +105,7 @@ def _raw_get(url: str, *, timeout: int) -> bytes | None:
     """Single, unretried, un-robots-gated GET — used only to fetch a host's
     own /robots.txt, which must never be gated by itself. Returns None on
     any failure; never raises."""
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read(MAX_PAGE_BYTES)
@@ -184,6 +199,42 @@ def decode_content_encoding(raw: bytes, content_encoding: str) -> bytes:
     return raw
 
 
+def _decode_body(raw: bytes, headers) -> str:
+    """Decode a fetched response body to text, honouring a declared charset
+    when present and falling back sanely when not — instead of the old
+    hardcoded `raw.decode("utf-8", errors="replace")`, which never raised
+    but silently mojibake'd (U+FFFD replacement characters) any genuinely
+    non-UTF-8 page, corrupting every extracted-text field with no signal it
+    happened.
+
+    `email.message.Message` (what `response.headers` is, via
+    `http.client.HTTPMessage`) already parses `charset=` out of Content-Type
+    through `get_content_charset()` — no regex needed, and it already
+    handles the garbage-input cases safely: an absent charset or an empty
+    `charset=""` both come back falsy (`None`/`""`), a charset name that
+    isn't a real Python codec surfaces as `LookupError` on `.decode()`
+    (caught below), and duplicate Content-Type headers resolve to the first
+    one, deterministically.
+
+    windows-1252 (a superset of latin-1 for single-byte decoding) is the
+    final fallback — the same default browsers use for a legacy page that
+    declares no charset at all (WHATWG's default for `text/html`). It is
+    used with `errors="replace"` only because a handful of windows-1252's
+    control-range byte values are technically unassigned, not to hide
+    anything utf-8 itself would have failed to decode.
+    """
+    charset = headers.get_content_charset()
+    if charset:
+        try:
+            return raw.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            pass
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return raw.decode("windows-1252", errors="replace")
+
+
 def fetch_text(url: str) -> tuple[str | None, str]:
     """Fetch `url` and return (text_or_error_message, status), with no
     Content-Type restriction — unlike `fetch_page_html`, which rejects
@@ -203,13 +254,14 @@ def fetch_text(url: str) -> tuple[str | None, str]:
     if not robots_allows_fetch(url):
         return f"{url} disallowed by robots.txt", "unavailable"
 
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
     try:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             raw = response.read(MAX_PAGE_BYTES)
             content_encoding = response.headers.get("Content-Encoding", "")
+            headers = response.headers
         raw = decode_content_encoding(raw, content_encoding)
-        return raw.decode("utf-8", errors="replace"), "present"
+        return _decode_body(raw, headers), "present"
     except urllib.error.HTTPError as error:
         code = error.code
         error.close()
@@ -233,7 +285,7 @@ def fetch_page_html(url: str) -> tuple[str | None, str]:
     if not robots_allows_fetch(url):
         return f"{url} disallowed by robots.txt", "unavailable"
 
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
     try:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             content_type = response.headers.get("Content-Type", "")
@@ -241,8 +293,9 @@ def fetch_page_html(url: str) -> tuple[str | None, str]:
                 return f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
             raw = response.read(MAX_PAGE_BYTES)
             content_encoding = response.headers.get("Content-Encoding", "")
+            headers = response.headers
         raw = decode_content_encoding(raw, content_encoding)
-        return raw.decode("utf-8", errors="replace"), "present"
+        return _decode_body(raw, headers), "present"
     except urllib.error.HTTPError as error:
         code = error.code
         error.close()
@@ -303,12 +356,13 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
             headers={},
         )
 
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
     try:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
-            headers = dict(response.headers.items())
+            response_headers = response.headers
+            headers = dict(response_headers.items())
             final_url = response.geturl()
-            content_type = response.headers.get("Content-Type", "")
+            content_type = response_headers.get("Content-Type", "")
             if content_type and "html" not in content_type.lower() and "text" not in content_type.lower():
                 return PageBundle(
                     url=url,
@@ -319,12 +373,12 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
                     headers=headers,
                 )
             raw = response.read(MAX_PAGE_BYTES)
-            content_encoding = response.headers.get("Content-Encoding", "")
+            content_encoding = response_headers.get("Content-Encoding", "")
         raw = decode_content_encoding(raw, content_encoding)
         bundle = PageBundle(
             url=url,
             status="present",
-            html=raw.decode("utf-8", errors="replace"),
+            html=_decode_body(raw, response_headers),
             error=None,
             final_url=final_url,
             headers=headers,
@@ -346,6 +400,80 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
     if use_cache:
         _page_cache[url] = bundle
     return bundle
+
+
+# ---------------------------------------------------------------------------
+# Concurrent fetching (Defect 2 / INF-10 follow-up)
+# ---------------------------------------------------------------------------
+#
+# The rest of this module is deliberately synchronous urllib — this project's
+# repeated "pure stdlib, no third-party HTTP client" decision (see the module
+# docstring) rules out httpx/aiohttp, both of which would need vendoring a
+# multi-package dependency tree under third_party/'s no-compiled-binaries
+# policy (aiohttp ships C extensions; httpx drags in httpcore/h11/sniffio/
+# certifi/idna). `asyncio.to_thread` gets the real-world effect that matters
+# — N requests' network-WAIT time overlapping instead of summing — by running
+# the existing, already-correct `fetch_page_html` (robots.txt check, retry,
+# SSRF guard, decode, all untouched) in a bounded thread pool. It is not
+# "real" non-blocking I/O; it does not need to be, since the bottleneck this
+# fixes is wall-clock time spent waiting on sockets, not thread overhead.
+#
+# Determinism: `asyncio.gather` returns results in the same order as the
+# input list of awaitables regardless of which completes first (documented
+# Python behaviour, not a race) — combined with tagging every result with
+# its source URL, downstream per-page processing loops need no change to
+# stay result-order-stable; only wall-clock time changes, never output order.
+
+_MAX_CONCURRENT_FETCHES = 5
+# A politeness cap distinct from the global concurrency cap above: without
+# it, a sample where every URL shares one host (the common case — one
+# skill's page sample is almost always all-on-site) would let the global
+# cap alone drive up to 5 simultaneous requests at a single slow host,
+# which is a mini-DoS against exactly the site this project is auditing,
+# not a third party. Entity-audit's off-site service-domain pass is the one
+# case that legitimately spans several distinct hosts; this cap still
+# applies per host there too.
+_MAX_CONCURRENT_FETCHES_PER_HOST = 3
+
+
+async def _fetch_one_concurrent(
+    url: str, global_semaphore: asyncio.Semaphore, host_semaphores: dict[str, asyncio.Semaphore]
+) -> tuple[str, str | None, str]:
+    hostname = (urllib.parse.urlparse(url).hostname or "").lower()
+    host_semaphore = host_semaphores[hostname]
+    async with global_semaphore, host_semaphore:
+        content, status = await asyncio.to_thread(fetch_page_html, url)
+    return url, content, status
+
+
+async def _fetch_all_concurrent(urls: list[str], max_concurrency: int) -> list[tuple[str, str | None, str]]:
+    global_semaphore = asyncio.Semaphore(max_concurrency)
+    hostnames = {(urllib.parse.urlparse(u).hostname or "").lower() for u in urls}
+    host_semaphores = {host: asyncio.Semaphore(_MAX_CONCURRENT_FETCHES_PER_HOST) for host in hostnames}
+    tasks = [asyncio.create_task(_fetch_one_concurrent(u, global_semaphore, host_semaphores)) for u in urls]
+    return await asyncio.gather(*tasks)
+
+
+def fetch_pages_concurrently(
+    urls: list[str], *, max_concurrency: int = _MAX_CONCURRENT_FETCHES
+) -> list[tuple[str, str | None, str]]:
+    """Fetch every URL in `urls` concurrently (bounded by `max_concurrency`
+    globally and `_MAX_CONCURRENT_FETCHES_PER_HOST` per host), returning
+    `(url, content_or_error, status)` tuples in the SAME ORDER as `urls` —
+    `asyncio.gather` preserves input order regardless of completion order,
+    so a caller's existing sequential `for url, content, status in ...:
+    ...process...` loop stays correct and result-order-deterministic
+    unchanged; only wall-clock time improves.
+
+    Each fetch is the existing, unmodified `fetch_page_html` — robots.txt
+    gating, retry, SSRF guard, and charset-aware decode all apply exactly
+    as they do to a single synchronous call. `urls` may repeat or span
+    multiple hosts; the per-host cap bounds concurrent load against any one
+    of them independent of the global cap.
+    """
+    if not urls:
+        return []
+    return asyncio.run(_fetch_all_concurrent(urls, max_concurrency))
 
 
 def clear_cache() -> None:

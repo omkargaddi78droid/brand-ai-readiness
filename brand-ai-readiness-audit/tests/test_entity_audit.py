@@ -992,5 +992,49 @@ class AuditServiceDomainsTests(unittest.TestCase):
         self.assertTrue(out["coverage"]["stages"][0]["expired"])
 
 
+class FindCrossDomainServiceAttributionBudgetTests(unittest.TestCase):
+    """Defect 2 follow-up: this off-site fetch pass used to run entirely
+    unbudgeted after audit_service_domains's own StageBudget-guarded on-site
+    loop finished — an unbounded, uncounted second fetch pass. It now takes
+    the caller's budget directly and respects it the same way the on-site
+    loop always has."""
+
+    def test_a_pre_expired_budget_skips_every_candidate_with_an_unknown_check(self):
+        candidates = [
+            {
+                "domain": "help.acmewidgets-support.com",
+                "source_pages": ["https://acmewidgets.com/"],
+                "example_url": "https://help.acmewidgets-support.com/",
+            }
+        ]
+        budget = ent.StageBudget("test-stage", 0.0)  # cap 0s: expired immediately
+        findings, unknowns = ent.find_cross_domain_service_attribution("acmewidgets.com", candidates, budget)
+        self.assertEqual(findings, [])
+        self.assertEqual(len(unknowns), 1)
+        self.assertEqual(unknowns[0].capability_id, "ENT-07")
+        self.assertIn("budget", unknowns[0].reason)
+        self.assertIn("help.acmewidgets-support.com", unknowns[0].reason)
+
+    def test_an_unreachable_domain_produces_one_unknown_check_not_a_crash(self):
+        candidates = [
+            {
+                "domain": "this-host-does-not-exist.invalid",
+                "source_pages": ["https://acmewidgets.com/"],
+                "example_url": "https://this-host-does-not-exist.invalid/",
+            }
+        ]
+        budget = ent.StageBudget("test-stage", 90.0)
+        findings, unknowns = ent.find_cross_domain_service_attribution("acmewidgets.com", candidates, budget)
+        self.assertEqual(findings, [])
+        self.assertEqual(len(unknowns), 1)
+        self.assertIn("this-host-does-not-exist.invalid", unknowns[0].reason)
+
+    def test_no_candidates_produces_no_findings_or_unknowns(self):
+        budget = ent.StageBudget("test-stage", 90.0)
+        findings, unknowns = ent.find_cross_domain_service_attribution("acmewidgets.com", [], budget)
+        self.assertEqual(findings, [])
+        self.assertEqual(unknowns, [])
+
+
 if __name__ == "__main__":
     unittest.main()

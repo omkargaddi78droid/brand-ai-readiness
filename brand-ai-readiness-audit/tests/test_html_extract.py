@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent / "shared"))
 
-from html_extract import extract_labeled_pairs, extract_main_content_text
+from html_extract import extract_labeled_pairs, extract_main_content_text, extract_nav_footer_links
 
 
 class ExtractLabeledPairsTableTests(unittest.TestCase):
@@ -122,6 +122,76 @@ class ExtractMainContentTextTests(unittest.TestCase):
 
     def test_empty_html_returns_none(self):
         self.assertIsNone(extract_main_content_text(""))
+
+
+class ExtractNavFooterLinksTests(unittest.TestCase):
+    """The zero-sitemap fallback page-discovery path used by
+    skills/audit-orchestrator/scripts/sample_pages.py."""
+
+    def test_links_inside_nav_are_resolved_to_absolute_urls(self):
+        html = '<nav><a href="/about">About</a><a href="/pricing">Pricing</a></nav>'
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"),
+            ["https://example.com/about", "https://example.com/pricing"],
+        )
+
+    def test_links_inside_footer_are_also_collected(self):
+        html = '<footer><a href="/contact">Contact</a></footer>'
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"), ["https://example.com/contact"]
+        )
+
+    def test_links_outside_nav_and_footer_are_ignored(self):
+        html = '<main><a href="/should-not-appear">Body link</a></main><nav><a href="/about">About</a></nav>'
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"), ["https://example.com/about"]
+        )
+
+    def test_cross_host_links_are_dropped(self):
+        html = (
+            "<footer>"
+            '<a href="https://facebook.com/example">Facebook</a>'
+            '<a href="/about">About</a>'
+            "</footer>"
+        )
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"), ["https://example.com/about"]
+        )
+
+    def test_www_and_bare_domain_are_treated_as_the_same_host(self):
+        """A www./bare-domain host match is a KEEP-vs-drop decision, not a
+        normalization — the link's own URL form is preserved as-is."""
+        html = '<nav><a href="https://www.example.com/about">About</a></nav>'
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"), ["https://www.example.com/about"]
+        )
+
+    def test_fragment_mailto_tel_and_javascript_hrefs_are_skipped(self):
+        html = (
+            "<nav>"
+            '<a href="#section">Jump</a>'
+            '<a href="mailto:hi@example.com">Email</a>'
+            '<a href="tel:+15551234567">Call</a>'
+            '<a href="javascript:void(0)">Nothing</a>'
+            '<a href="/about">About</a>'
+            "</nav>"
+        )
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"), ["https://example.com/about"]
+        )
+
+    def test_duplicate_links_are_deduplicated(self):
+        html = '<nav><a href="/about">About</a></nav><footer><a href="/about">About</a></footer>'
+        self.assertEqual(
+            extract_nav_footer_links(html, "https://example.com"), ["https://example.com/about"]
+        )
+
+    def test_no_nav_or_footer_returns_empty(self):
+        html = "<main><a href='/about'>About</a></main>"
+        self.assertEqual(extract_nav_footer_links(html, "https://example.com"), [])
+
+    def test_empty_html_returns_empty(self):
+        self.assertEqual(extract_nav_footer_links("", "https://example.com"), [])
 
 
 if __name__ == "__main__":

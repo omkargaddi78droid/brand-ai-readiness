@@ -180,7 +180,7 @@ class SafetyTests(unittest.TestCase):
         (see shared/html_extract.py, shared/phone_numbers.py), so they always
         resolve to the vendored copy, never an ambient pip install."""
         allowed_roots = {
-            "argparse", "collections", "dataclasses", "datetime", "difflib", "email", "hashlib", "html",
+            "argparse", "asyncio", "collections", "dataclasses", "datetime", "difflib", "email", "hashlib", "html",
             "importlib", "ipaddress", "json", "pathlib", "re", "socket", "sys", "tempfile",
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
             "jsonld_graph", "page_fetch", "graph_metrics", "page_sample", "xml", "budget",

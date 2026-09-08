@@ -19,13 +19,16 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time as time_module
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared"))
 
+import page_fetch  # noqa: E402
 from finding_contract import validate_floor_shape  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
@@ -768,6 +771,46 @@ class AuditNearDuplicatesTests(unittest.TestCase):
             self.assertEqual(unknown["capability_id"], "CQ-13")
             self.assertIn("budget", unknown["reason"])
         self.assertTrue(out["coverage"]["stages"][0]["expired"])
+
+    def test_a_duplicate_pair_split_across_two_concurrent_fetch_chunks_is_still_caught(self):
+        """Defect 2: the sample loop now fetches concurrently, in chunks of
+        cq._SAMPLE_FETCH_CHUNK_SIZE, with LATER urls finishing FIRST
+        (reversed delay) so completion order is the opposite of input order.
+        Proves two things at once: chunking doesn't drop or mismatch a page
+        at the chunk boundary, and out-of-order completion can't scramble
+        which content ends up attributed to which URL — a real near-
+        duplicate pair (post-0 in chunk 1, post-N in chunk 2) must still be
+        correctly paired and flagged."""
+        chunk_size = cq._SAMPLE_FETCH_CHUNK_SIZE
+        duplicate_body = (
+            "Our premium widget line offers industry leading durability backed by a "
+            "comprehensive five year warranty and free worldwide shipping on every order "
+            "placed through our online store this month only while supplies last"
+        )
+        page_count = chunk_size + 3
+        urls = [f"https://acme.com/blog/post-{i}" for i in range(page_count)]
+        # post-0 (chunk 1) and the last url (chunk 2) are near-duplicates;
+        # everything else is distinct filler under the same template.
+        duplicate_urls = {urls[0], urls[-1]}
+        bodies = {
+            url: (duplicate_body if url in duplicate_urls else f"Distinct filler content unique to {url} only.")
+            for url in urls
+        }
+        delays = {url: 0.01 * (page_count - i) for i, url in enumerate(urls)}
+
+        def fake_fetch(url):
+            time_module.sleep(delays[url])
+            return f"<p>{bodies[url]}</p>", "present"
+
+        with patch.object(page_fetch, "fetch_page_html", side_effect=fake_fetch), \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            out = cq.audit_near_duplicates("acme.com", urls)
+
+        self.assertEqual(out["unknown_checks"], [])
+        cq13_findings = [f for f in out["findings"] if f["capability_id"] == "CQ-13"]
+        self.assertEqual(len(cq13_findings), 1)
+        self.assertEqual(set(cq13_findings[0]["structured_evidence"]["urls"]), duplicate_urls)
 
 
 class FindFreshnessContradictionTests(unittest.TestCase):

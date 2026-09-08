@@ -258,6 +258,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
+from budget import StageBudget, coverage_manifest  # noqa: E402
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from text_spans import (  # noqa: E402
     Block,
@@ -276,6 +277,7 @@ from page_fetch import (  # noqa: E402
     decode_content_encoding,
     is_public_host,
     fetch_page_html,
+    fetch_pages_concurrently,
 )
 
 OWNER_SKILL = "retrieval-readiness-audit"
@@ -1768,6 +1770,74 @@ def _unknown_output(site: str, reason: str, page_url: str | None = None) -> dict
     }
 
 
+_SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+# Pages per concurrent batch — the budget is rechecked between batches, not
+# between individual pages, so this bounds how far a batch can overrun the
+# cap before the next check (Defect 2 follow-up to INF-10).
+_SAMPLE_FETCH_CHUNK_SIZE = 10
+
+
+def audit_sample(site: str, page_urls: list[str], *, clock=None) -> dict:
+    """Runs every RET capability across a whole page sample in one process,
+    the same `--sample-file` shape content-quality-audit/citability-audit/
+    engagement-audit/entity-audit already offer — this skill previously had
+    only `audit_html`'s once-per-page mode, meaning the orchestrator's own
+    up-to-25-page sample meant 25 separate sequential subprocess spawns of
+    this script with no concurrency possible between them (Defect 2).
+
+    Fetches `page_urls` concurrently in bounded, order-preserving batches of
+    `_SAMPLE_FETCH_CHUNK_SIZE` (`shared/page_fetch.fetch_pages_concurrently`),
+    with `shared/budget.StageBudget` (`_SAMPLE_FETCH_BUDGET_SECONDS`) checked
+    between batches — the same cooperative-at-batch-granularity cap the
+    other four skills' bulk mode uses. Each successfully fetched page runs
+    through the existing, unmodified `audit_html`; its findings AND agent-
+    judgement requests are merged into one combined report — each judgement
+    request already carries its own `observations.page_url` (`audit_html`
+    stamps it), so batching several pages' requests into one list loses no
+    per-page distinction the calling agent needs to resolve them. On
+    expiry, fetching stops and every remaining un-fetched page gets its own
+    `unknown_checks` entry naming the cap as the reason — reduced coverage,
+    not a failed capability. `coverage_manifest` is always attached."""
+    clock_kwargs = {"clock": clock} if clock is not None else {}
+    budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
+    unknowns: list[UnknownCheck] = []
+    findings: list[dict] = []
+    judgement_requests: list[dict] = []
+
+    index = 0
+    while index < len(page_urls):
+        if budget.expired():
+            for skipped_url in page_urls[index:]:
+                unknowns.append(
+                    UnknownCheck(
+                        "*",
+                        OWNER_SKILL,
+                        f"{skipped_url} was not fetched: {budget.stage} budget of "
+                        f"{budget.cap_seconds}s was exceeded",
+                    )
+                )
+            break
+        chunk = page_urls[index : index + _SAMPLE_FETCH_CHUNK_SIZE]
+        index += len(chunk)
+        for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
+            if status != "present" or html_or_error is None:
+                unknowns.append(UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
+                continue
+            page_report = audit_html(site, html_or_error, page_url=page_url)
+            findings.extend(page_report["findings"])
+            judgement_requests.extend(page_report["agent_judgement_required"])
+
+    return {
+        "owner_skill": OWNER_SKILL,
+        "capability_ids": CAPABILITY_IDS,
+        "site": site,
+        "findings": findings,
+        "agent_judgement_required": judgement_requests,
+        "unknown_checks": [u.to_dict() for u in unknowns],
+        "coverage": coverage_manifest([budget]),
+    }
+
+
 def site_label(url_or_domain: str) -> str:
     value = url_or_domain.strip()
     for scheme in ("https://", "http://"):
@@ -1783,10 +1853,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--site", help="Site label for the report, e.g. example.com")
     parser.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
     parser.add_argument("--page-url", help="Label findings with this page URL (default: --url)")
+    parser.add_argument(
+        "--sample-file",
+        help="Run every RET capability across a whole page sample: a file of one page URL per "
+        "line (e.g. audit-orchestrator's page-sample.json sample_urls), fetched concurrently "
+        "and merged into one report instead of one process per page.",
+    )
     args = parser.parse_args(argv)
 
+    if args.sample_file:
+        if not args.site:
+            parser.error("--sample-file requires --site")
+        page_urls = [
+            line.strip()
+            for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+        json.dump(audit_sample(site_label(args.site), page_urls), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
     if not any((args.url, args.site)):
-        parser.error("one of --url or --site is required")
+        parser.error("one of --url, --site, or --sample-file is required")
     site = site_label(args.site or args.url)
     page_url = args.page_url or args.url
 

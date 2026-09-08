@@ -17,7 +17,12 @@ Owns nine capabilities:
   REN-01  Fetch foundation (infrastructure only, no finding)
   REN-02  Hydration-state coverage diff — a text fragment present in an
           embedded hydration-state JSON blob but absent from the page's own
-          extracted visible text
+          extracted visible text. Covers legacy `__NEXT_DATA__`/
+          `__NUXT_DATA__`, plus `window.__NUXT__`/`window.__remixContext`
+          where the assigned value is JSON-parseable; Next.js App Router's
+          `self.__next_f.push(...)` RSC stream is detected but not decoded
+          (a framed, non-JSON protocol), surfaced as its own presence-only
+          finding rather than silently skipped
   REN-04  Price-render gating — a JSON-LD `Offer.price` not restated
           anywhere in visible text (numeric-format-tolerant)
   REN-05  Real-time availability exposure — a JSON-LD availability/stock
@@ -91,6 +96,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
+from budget import StageBudget, coverage_manifest  # noqa: E402
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
@@ -99,6 +105,7 @@ from page_fetch import (  # noqa: E402
     decode_content_encoding,
     is_public_host,
     fetch_page_html,
+    fetch_pages_concurrently,
 )
 from phone_numbers import find_phone_numbers  # noqa: E402
 from text_spans import VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
@@ -276,6 +283,7 @@ def parse_page(html: str) -> dict:
         "media_results": parser.media_results,
         "pdf_links": parser.pdf_links,
         "script_text": "\n".join(parser.script_text_chunks),
+        "script_chunks": parser.script_text_chunks,
     }
 
 
@@ -346,6 +354,126 @@ def _walk_json_strings(value, out: list[str]) -> None:
     elif isinstance(value, list):
         for item in value:
             _walk_json_strings(item, out)
+
+
+# Modern hydration markers beyond legacy __NEXT_DATA__/__NUXT_DATA__ (both
+# `type="application/json"` or an `id` the parser already classifies as
+# "hydration" — see _HYDRATION_IDS above). These three are plain, untyped
+# inline <script> STATEMENTS a framework emits, not a distinctly-typed
+# script tag, so they show up in `script_text_chunks` regardless of the
+# parser's type/id-based classification — no parser change needed, just a
+# second pass over the same raw script text every script already yields.
+_MODERN_HYDRATION_ASSIGNMENT_MARKERS = {
+    "__NUXT__": "window.__NUXT__",  # Nuxt 2, and Nuxt 3 configured for a plain-JSON payload
+    "__remixContext": "window.__remixContext",  # Remix
+}
+# Next.js App Router's RSC streaming payload — a framed, line-oriented
+# protocol, NOT JSON (each pushed chunk can itself be a further-encoded
+# string). Presence-only: this project does not attempt to decode it.
+_NEXT_APP_ROUTER_MARKER = "self.__next_f.push("
+
+
+def _find_object_literal_start(text: str, after_index: int) -> int | None:
+    """Index of the first `{` or `[` after `after_index`, skipping only
+    whitespace and a single `=` — None if an assignment operator followed by
+    an object/array literal isn't there (the marker string appearing
+    incidentally elsewhere — inside a comment, a different value — is not a
+    real hydration assignment)."""
+    i = after_index
+    n = len(text)
+    while i < n and text[i] in " \t\r\n":
+        i += 1
+    if i < n and text[i] == "=":
+        i += 1
+        while i < n and text[i] in " \t\r\n":
+            i += 1
+    if i < n and text[i] in "{[":
+        return i
+    return None
+
+
+def _scan_balanced_literal(text: str, start: int) -> str | None:
+    """From `start` (a `{` or `[`), return the substring up to and including
+    its matching closing bracket, tracking string/escape state so a `}`/`]`
+    inside a quoted value (a code sample, a JSON-describing-JSON field,
+    an escaped `\\"`, a `</script>` decoy inside a string) never closes the
+    literal early — a plain depth-counting scan over raw text gets this
+    wrong on real-world payloads that legitimately contain brackets inside
+    string content. `{`/`[`/`}`/`]` share one depth counter rather than
+    being matched pairwise: a syntactically valid source always balances its
+    own bracket types correctly, and any output this misjudges simply fails
+    the caller's later `json.loads` and degrades to presence-only detection
+    — never a wrong extraction. Returns None if the text ends before the
+    literal closes (truncated/malformed input)."""
+    depth = 0
+    in_string: str | None = None  # the quote character currently open, or None
+    i = start
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_string is not None:
+            if ch == "\\":
+                i += 2  # an escaped character never toggles or ends the string
+                continue
+            if ch == in_string:
+                in_string = None
+        else:
+            if ch in "\"'`":
+                in_string = ch
+            elif ch in "{[":
+                depth += 1
+            elif ch in "}]":
+                depth -= 1
+                if depth == 0:
+                    return text[start : i + 1]
+        i += 1
+    return None
+
+
+def _extract_assignment_literal(text: str, marker: str) -> str | None:
+    """The object/array literal assigned to `marker` (e.g.
+    `"window.__NUXT__"`) inside `text`, or None if `marker` isn't present or
+    isn't followed by an extractable literal."""
+    idx = text.find(marker)
+    if idx == -1:
+        return None
+    literal_start = _find_object_literal_start(text, idx + len(marker))
+    if literal_start is None:
+        return None
+    return _scan_balanced_literal(text, literal_start)
+
+
+def extract_modern_hydration_signals(script_chunks: list[str]) -> tuple[list[tuple[str, str]], bool]:
+    """Widen hydration detection beyond legacy `__NEXT_DATA__`/`__NUXT_DATA__`
+    to the markers modern frameworks actually emit as plain, untyped inline
+    `<script>` statements: `window.__NUXT__`, `window.__remixContext`, and
+    Next.js App Router's `self.__next_f.push(...)` RSC stream.
+
+    Returns `(extra_hydration_blocks, next_app_router_detected)`:
+    - `extra_hydration_blocks` is in the same `(source_id, raw_json)` shape
+      `extract_hydration_text_fragments` already consumes, for the two
+      assignment forms whose value is JSON-parseable — extraction is
+      attempted, not guaranteed; a payload that doesn't parse as JSON after
+      isolation is simply not added, the same as any other unparseable
+      block already handled there.
+    - `next_app_router_detected` is presence-only: the RSC stream isn't JSON
+      (a framed, line-oriented protocol; a pushed chunk can itself be a
+      further-encoded string), so this project does not attempt to decode
+      it — a caller surfaces this as its own "modern hydration pattern
+      detected, extraction unsupported" signal instead of staying silent.
+    """
+    extra_blocks: list[tuple[str, str]] = []
+    next_app_router_detected = False
+
+    for chunk in script_chunks:
+        if _NEXT_APP_ROUTER_MARKER in chunk:
+            next_app_router_detected = True
+        for source_id, marker in _MODERN_HYDRATION_ASSIGNMENT_MARKERS.items():
+            literal = _extract_assignment_literal(chunk, marker)
+            if literal is not None:
+                extra_blocks.append((source_id, literal))
+
+    return extra_blocks, next_app_router_detected
 
 
 def extract_hydration_text_fragments(hydration_blocks: list[tuple[str, str]]) -> list[dict]:
@@ -422,6 +550,48 @@ def find_hydration_coverage_gaps(fragments: list[dict], visible_text: str) -> li
             gate=2,
             confidence="medium",
             structured_evidence={"missing_fragments": missing, "count": len(missing)},
+        )
+    ]
+
+
+def find_next_app_router_hydration_detected(detected: bool) -> list[Finding]:
+    """Presence-only counterpart to `find_hydration_coverage_gaps` for
+    Next.js App Router's `self.__next_f.push(...)` RSC stream: this project
+    can detect the pattern but does not decode it (see
+    `extract_modern_hydration_signals`), so rather than staying silent about
+    a hydration mechanism it knows it can't fully analyze, it says so."""
+    if not detected:
+        return []
+
+    return [
+        Finding(
+            id="REN-02-modern-hydration-detected",
+            title="Next.js App Router hydration stream detected; content coverage cannot be verified",
+            severity="low",
+            evidence=(
+                "This page embeds a Next.js App Router RSC hydration stream "
+                "(`self.__next_f.push(...)`). Unlike the legacy `__NEXT_DATA__`/`__NUXT_DATA__` "
+                "JSON blobs this capability compares against extracted visible text, the RSC stream "
+                "is a framed, non-JSON protocol this project does not decode, so it cannot confirm "
+                "whether content inside it is also present in the page's static text."
+            ),
+            suggested_action=SuggestedAction(
+                summary="Manually verify that content rendered via streamed Server Components is also present in the initial static HTML response.",
+                priority="low",
+            ),
+            category="discoverability",
+            capability_id="REN-02",
+            owner_skill=OWNER_SKILL,
+            mechanism=(
+                "A non-JS fetcher reads the static response body, never a framework's client-side "
+                "hydration payload. This project can recognize the App Router's RSC streaming "
+                "signature but cannot parse its framed payload the way it parses plain JSON "
+                "hydration blobs, so a gap here is flagged as unverifiable rather than silently "
+                "reported as clean."
+            ),
+            gate=2,
+            confidence="low",
+            structured_evidence={},
         )
     ]
 
@@ -1457,11 +1627,17 @@ def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
 def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
     parsed = parse_page(html)
     json_ld_nodes = extract_json_ld_nodes(parsed["json_ld_blocks"])
-    hydration_fragments = extract_hydration_text_fragments(parsed["hydration_blocks"])
+    modern_hydration_blocks, next_app_router_detected = extract_modern_hydration_signals(
+        parsed["script_chunks"]
+    )
+    hydration_fragments = extract_hydration_text_fragments(
+        parsed["hydration_blocks"] + modern_hydration_blocks
+    )
     offer_prices = extract_offer_prices(json_ld_nodes)
 
     findings = _stamp_page(
         find_hydration_coverage_gaps(hydration_fragments, parsed["visible_text"])
+        + find_next_app_router_hydration_detected(next_app_router_detected)
         + find_price_render_gaps(offer_prices, parsed["visible_text"])
         + find_missing_freshness_signal(json_ld_nodes, parsed["visible_text"])
         + find_missing_semantic_boundary(parsed["has_main_or_article"], parsed["visible_text"])
@@ -1497,6 +1673,69 @@ def _unknown_output(site: str, reason: str, page_url: str | None = None) -> dict
     }
 
 
+_SAMPLE_FETCH_BUDGET_SECONDS = 90.0
+# Pages per concurrent batch — the budget is rechecked between batches, not
+# between individual pages, so this bounds how far a batch can overrun the
+# cap before the next check (Defect 2 follow-up to INF-10).
+_SAMPLE_FETCH_CHUNK_SIZE = 10
+
+
+def audit_sample(site: str, page_urls: list[str], *, clock=None) -> dict:
+    """Runs every REN capability across a whole page sample in one process,
+    the same `--sample-file` shape content-quality-audit/citability-audit/
+    engagement-audit/entity-audit already offer — this skill previously had
+    only `audit_html`'s once-per-page mode, meaning the orchestrator's own
+    up-to-25-page sample meant 25 separate sequential subprocess spawns of
+    this script with no concurrency possible between them (Defect 2).
+
+    Fetches `page_urls` concurrently in bounded, order-preserving batches of
+    `_SAMPLE_FETCH_CHUNK_SIZE` (`shared/page_fetch.fetch_pages_concurrently`),
+    with `shared/budget.StageBudget` (`_SAMPLE_FETCH_BUDGET_SECONDS`) checked
+    between batches — the same cooperative-at-batch-granularity cap the
+    other four skills' bulk mode uses. Each successfully fetched page runs
+    through the existing, unmodified `audit_html`; its findings are merged
+    into one combined report (this skill has no agent-judged capabilities,
+    so `agent_judgement_required` is always empty). On expiry, fetching
+    stops and every remaining un-fetched page gets its own `unknown_checks`
+    entry naming the cap as the reason — reduced coverage, not a failed
+    capability. `coverage_manifest` is always attached."""
+    clock_kwargs = {"clock": clock} if clock is not None else {}
+    budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
+    unknowns: list[UnknownCheck] = []
+    findings: list[dict] = []
+
+    index = 0
+    while index < len(page_urls):
+        if budget.expired():
+            for skipped_url in page_urls[index:]:
+                unknowns.append(
+                    UnknownCheck(
+                        "*",
+                        OWNER_SKILL,
+                        f"{skipped_url} was not fetched: {budget.stage} budget of "
+                        f"{budget.cap_seconds}s was exceeded",
+                    )
+                )
+            break
+        chunk = page_urls[index : index + _SAMPLE_FETCH_CHUNK_SIZE]
+        index += len(chunk)
+        for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
+            if status != "present" or html_or_error is None:
+                unknowns.append(UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}"))
+                continue
+            findings.extend(audit_html(site, html_or_error, page_url=page_url)["findings"])
+
+    return {
+        "owner_skill": OWNER_SKILL,
+        "capability_ids": CAPABILITY_IDS,
+        "site": site,
+        "findings": findings,
+        "agent_judgement_required": [],
+        "unknown_checks": [u.to_dict() for u in unknowns],
+        "coverage": coverage_manifest([budget]),
+    }
+
+
 def site_label(url_or_domain: str) -> str:
     value = url_or_domain.strip()
     for scheme in ("https://", "http://"):
@@ -1512,10 +1751,28 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--site", help="Site label for the report, e.g. example.com")
     parser.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
     parser.add_argument("--page-url", help="Label findings with this page URL (default: --url)")
+    parser.add_argument(
+        "--sample-file",
+        help="Run every REN capability across a whole page sample: a file of one page URL per "
+        "line (e.g. audit-orchestrator's page-sample.json sample_urls), fetched concurrently "
+        "and merged into one report instead of one process per page.",
+    )
     args = parser.parse_args(argv)
 
+    if args.sample_file:
+        if not args.site:
+            parser.error("--sample-file requires --site")
+        page_urls = [
+            line.strip()
+            for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
+            if line.strip()
+        ]
+        json.dump(audit_sample(site_label(args.site), page_urls), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return 0
+
     if not any((args.url, args.site)):
-        parser.error("one of --url or --site is required")
+        parser.error("one of --url, --site, or --sample-file is required")
     site = site_label(args.site or args.url)
     page_url = args.page_url or args.url
 

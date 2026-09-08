@@ -49,10 +49,32 @@ and `entity-audit`'s ENT-09.
 - Offline/fixture mode: `--html-file PATH` (raw HTML).
 - `--site` for the report label; derived from `--url` if omitted.
 - `--page-url` to label findings explicitly when using `--html-file`.
+- `--sample-file PATH` + `--site` — runs every capability across a whole
+  page sample instead of one page. See "Multi-page mode" below; **this is
+  the preferred way to run this skill**, since every capability here is
+  per-page anyway (there is no separate site-wide check) and bulk mode
+  fetches the sample concurrently instead of one sequential subprocess per
+  page (Defect 2 / INF-10).
 
 ## Procedure
 
-1. Run the checker against one page:
+1. Run the checker against a whole page sample (preferred):
+
+   ```bash
+   python3 scripts/check_retrieval_readiness.py --site example.com \
+       --sample-file /tmp/audit/page-sample.txt
+   ```
+
+   `--sample-file` is one on-site URL per line — pass the `sample_urls`
+   from `audit-orchestrator`'s `sample_pages.py` (INF-01). The script
+   fetches every page concurrently (bounded, order-preserving batches;
+   capped at 90s total via `shared/budget.StageBudget`) and merges every
+   page's findings AND `agent_judgement_required` entries into one report —
+   each judgement entry still carries its own `observations.page_url`, so
+   resolving them per-entry (step 3 below) works exactly the same as in
+   single-page mode.
+
+   For a single one-off page outside the sample:
 
    ```bash
    python3 scripts/check_retrieval_readiness.py --url https://example.com/guide

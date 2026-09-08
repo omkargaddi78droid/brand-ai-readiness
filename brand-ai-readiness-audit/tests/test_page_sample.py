@@ -15,8 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared"))
 
 from page_sample import (  # noqa: E402
+    parse_sitemap_index_locs,
     parse_sitemap_urls,
     sample_pages,
+    sitemap_root_kind,
     template_key,
 )
 
@@ -54,6 +56,44 @@ class ParseSitemapUrlsTests(unittest.TestCase):
             "<url><loc></loc></url><url><loc>https://example.com/real</loc></url></urlset>"
         )
         self.assertEqual(parse_sitemap_urls(xml), ["https://example.com/real"])
+
+
+class SitemapRootKindTests(unittest.TestCase):
+    def test_urlset_root(self):
+        self.assertEqual(sitemap_root_kind(_urlset("https://example.com/")), "urlset")
+
+    def test_sitemapindex_root(self):
+        xml = (
+            '<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<sitemap><loc>https://example.com/sitemap-1.xml</loc></sitemap></sitemapindex>"
+        )
+        self.assertEqual(sitemap_root_kind(xml), "sitemapindex")
+
+    def test_malformed_xml_is_unknown(self):
+        self.assertEqual(sitemap_root_kind("not xml at all <<<"), "unknown")
+
+    def test_empty_string_is_unknown(self):
+        self.assertEqual(sitemap_root_kind(""), "unknown")
+
+
+class ParseSitemapIndexLocsTests(unittest.TestCase):
+    def test_extracts_every_sub_sitemap_loc(self):
+        xml = (
+            '<?xml version="1.0"?><sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<sitemap><loc>https://example.com/sitemap-products.xml</loc></sitemap>"
+            "<sitemap><loc>https://example.com/sitemap-articles.xml</loc></sitemap>"
+            "</sitemapindex>"
+        )
+        self.assertEqual(
+            parse_sitemap_index_locs(xml),
+            ["https://example.com/sitemap-products.xml", "https://example.com/sitemap-articles.xml"],
+        )
+
+    def test_a_plain_urlset_returns_empty(self):
+        self.assertEqual(parse_sitemap_index_locs(_urlset("https://example.com/")), [])
+
+    def test_malformed_xml_returns_empty_not_raises(self):
+        self.assertEqual(parse_sitemap_index_locs("not xml at all <<<"), [])
 
 
 class TemplateKeyTests(unittest.TestCase):

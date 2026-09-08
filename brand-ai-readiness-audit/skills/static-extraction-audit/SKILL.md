@@ -60,10 +60,29 @@ never approved and does not know is on their own site.
 - Offline/fixture mode: `--html-file PATH` (raw HTML).
 - `--site` for the report label; derived from `--url` if omitted.
 - `--page-url` to label findings explicitly when using `--html-file`.
+- `--sample-file PATH` + `--site` — runs every capability across a whole
+  page sample instead of one page. See "Multi-page mode" below; **this is
+  the preferred way to run this skill**, since every capability here is
+  per-page anyway (there is no separate site-wide check) and bulk mode
+  fetches the sample concurrently instead of one sequential subprocess per
+  page (Defect 2 / INF-10).
 
 ## Procedure
 
-1. Run the checker against one page:
+1. Run the checker against a whole page sample (preferred):
+
+   ```bash
+   python3 scripts/check_static_extraction.py --site example.com \
+       --sample-file /tmp/audit/page-sample.txt
+   ```
+
+   `--sample-file` is one on-site URL per line — pass the `sample_urls`
+   from `audit-orchestrator`'s `sample_pages.py` (INF-01). The script
+   fetches every page concurrently (bounded, order-preserving batches;
+   capped at 90s total via `shared/budget.StageBudget`) and merges every
+   page's findings into one report.
+
+   For a single one-off page outside the sample:
 
    ```bash
    python3 scripts/check_static_extraction.py --url https://example.com/product/widget
@@ -81,7 +100,7 @@ never approved and does not know is on their own site.
 
 | ID | Check | Fires when |
 |---|---|---|
-| REN-02 | Hydration-state coverage diff | A text-like string (≥20 chars, ≥3 words) inside an embedded hydration-state JSON blob (`__NEXT_DATA__`/`__NUXT_DATA__`, or any `<script type="application/json">`) never appears in the page's extracted visible text |
+| REN-02 | Hydration-state coverage diff | A text-like string (≥20 chars, ≥3 words) inside an embedded hydration-state JSON blob (`__NEXT_DATA__`/`__NUXT_DATA__`, any `<script type="application/json">`, or `window.__NUXT__`/`window.__remixContext` when their assigned value is JSON-parseable) never appears in the page's extracted visible text. Next.js App Router's `self.__next_f.push(...)` RSC stream is detected but not decoded (non-JSON framed protocol) — flagged as its own presence-only, low-severity finding instead of silently missed |
 | REN-04 | Price-render gating | A JSON-LD `Offer.price`/`priceSpecification.price` value never appears in visible text (currency-symbol- and comma-tolerant numeric match) |
 | REN-05 | Real-time availability exposure | A JSON-LD offer declares `availability`, and neither a `dateModified` field nor a freshness phrase ("as of", "last updated", "checked on") appears anywhere on the page |
 | REN-06 | Semantic HTML5 extraction compatibility | A page with ≥150 words of visible text has no `<main>` or `<article>` element anywhere |

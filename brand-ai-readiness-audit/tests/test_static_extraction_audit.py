@@ -128,6 +128,169 @@ class HydrationCoverageGapTests(unittest.TestCase):
         self.assertEqual(fragments, [])
 
 
+class ScanBalancedLiteralTests(unittest.TestCase):
+    """Adversarial cases for the manual brace-counting scanner behind the
+    modern-hydration extraction (Defect 4) — the highest-risk piece of the
+    fix, since a naive regex over balanced JS object literals is unsafe in
+    general. These prove the string/escape-aware scan handles what a plain
+    depth-counting regex would get wrong."""
+
+    def test_simple_flat_object(self):
+        self.assertEqual(sea._scan_balanced_literal('{"a":1}', 0), '{"a":1}')
+
+    def test_nested_braces(self):
+        text = '{"a":{"b":{"c":1}}} trailing'
+        self.assertEqual(sea._scan_balanced_literal(text, 0), '{"a":{"b":{"c":1}}}')
+
+    def test_a_closing_brace_inside_a_string_value_does_not_close_early(self):
+        literal = '{"code": "if (x) { return 1; }"}'
+        text = literal + " trailing"
+        self.assertEqual(sea._scan_balanced_literal(text, 0), literal)
+
+    def test_an_escaped_quote_inside_a_string_does_not_end_the_string(self):
+        text = r'{"quote": "she said \"hi\""}' + " trailing"
+        expected = r'{"quote": "she said \"hi\""}'
+        self.assertEqual(sea._scan_balanced_literal(text, 0), expected)
+
+    def test_a_script_close_decoy_inside_a_string_is_not_special(self):
+        text = '{"payload": "</script><script>evil()</script>"} trailing'
+        expected = '{"payload": "</script><script>evil()</script>"}'
+        self.assertEqual(sea._scan_balanced_literal(text, 0), expected)
+
+    def test_an_array_literal_is_also_bounded_correctly(self):
+        text = '[1, 2, {"a": [3, 4]}] trailing'
+        self.assertEqual(sea._scan_balanced_literal(text, 0), '[1, 2, {"a": [3, 4]}]')
+
+    def test_unterminated_literal_returns_none(self):
+        self.assertIsNone(sea._scan_balanced_literal('{"a": {"b": 1}', 0))
+
+    def test_single_and_double_quotes_inside_the_same_literal(self):
+        text = """{"a": 'it\\'s here', "b": "and \\"this\\""} trailing"""
+        result = sea._scan_balanced_literal(text, 0)
+        self.assertTrue(result.endswith("}"))
+        self.assertNotIn("trailing", result)
+
+
+class ExtractAssignmentLiteralTests(unittest.TestCase):
+    def test_marker_not_present_returns_none(self):
+        self.assertIsNone(sea._extract_assignment_literal("var x = 1;", "window.__NUXT__"))
+
+    def test_marker_present_but_not_followed_by_a_literal_returns_none(self):
+        self.assertIsNone(sea._extract_assignment_literal("window.__NUXT__ = undefined;", "window.__NUXT__"))
+
+    def test_marker_followed_by_object_literal_extracts_it(self):
+        text = 'window.__NUXT__={"state":{"title":"A long enough page title here"}};'
+        result = sea._extract_assignment_literal(text, "window.__NUXT__")
+        self.assertEqual(result, '{"state":{"title":"A long enough page title here"}}')
+
+    def test_whitespace_around_the_equals_sign_is_tolerated(self):
+        text = 'window.__remixContext  =  {"a": 1};'
+        result = sea._extract_assignment_literal(text, "window.__remixContext")
+        self.assertEqual(result, '{"a": 1}')
+
+
+class ExtractModernHydrationSignalsTests(unittest.TestCase):
+    def test_window_nuxt_assignment_is_extracted_as_a_hydration_block(self):
+        chunks = ['window.__NUXT__={"state":{"description":"A description long enough to matter."}};']
+        blocks, app_router = sea.extract_modern_hydration_signals(chunks)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0][0], "__NUXT__")
+        self.assertFalse(app_router)
+
+    def test_window_remix_context_assignment_is_extracted(self):
+        chunks = ['window.__remixContext = {"state": {"loaderData": {"root": {"title": "hi"}}}};']
+        blocks, app_router = sea.extract_modern_hydration_signals(chunks)
+        self.assertEqual(len(blocks), 1)
+        self.assertEqual(blocks[0][0], "__remixContext")
+        self.assertFalse(app_router)
+
+    def test_next_f_push_is_presence_only_not_extracted_as_a_block(self):
+        chunks = ['self.__next_f.push([1,"some RSC-framed payload chunk"])']
+        blocks, app_router = sea.extract_modern_hydration_signals(chunks)
+        self.assertEqual(blocks, [])
+        self.assertTrue(app_router)
+
+    def test_an_ordinary_script_triggers_neither_signal(self):
+        chunks = ['var x = {"a": "b"};']
+        blocks, app_router = sea.extract_modern_hydration_signals(chunks)
+        self.assertEqual(blocks, [])
+        self.assertFalse(app_router)
+
+    def test_all_three_markers_together_across_multiple_chunks(self):
+        chunks = [
+            'window.__NUXT__={"a":1};',
+            'window.__remixContext={"b":2};',
+            'self.__next_f.push([1,"chunk"])',
+        ]
+        blocks, app_router = sea.extract_modern_hydration_signals(chunks)
+        self.assertEqual({b[0] for b in blocks}, {"__NUXT__", "__remixContext"})
+        self.assertTrue(app_router)
+
+    def test_a_non_json_parseable_assignment_is_still_returned_here_but_dropped_downstream(self):
+        """extract_modern_hydration_signals only isolates the literal text;
+        json-parseability is checked later by extract_hydration_text_fragments,
+        exactly like every other hydration_blocks entry."""
+        chunks = ["window.__NUXT__=someFunctionCall({a: 1});"]
+        blocks, _ = sea.extract_modern_hydration_signals(chunks)
+        self.assertEqual(blocks, [])  # not followed directly by a { or [ literal
+
+
+class NextAppRouterHydrationFindingTests(unittest.TestCase):
+    def test_detected_true_produces_one_low_severity_finding(self):
+        findings = sea.find_next_app_router_hydration_detected(True)
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "REN-02-modern-hydration-detected")
+        self.assertEqual(findings[0].severity, "low")
+        self.assertEqual(findings[0].capability_id, "REN-02")
+
+    def test_detected_false_produces_nothing(self):
+        self.assertEqual(sea.find_next_app_router_hydration_detected(False), [])
+
+
+class ModernHydrationEndToEndTests(unittest.TestCase):
+    """Through parse_page + audit_html, matching this project's positive/
+    negative pair convention for the REN-02 widening."""
+
+    def test_nuxt_hydration_gap_is_caught_end_to_end(self):
+        html = (
+            "<html><body><p>Welcome to our site.</p>"
+            '<script>window.__NUXT__={"state":{"description":'
+            '"A hydrated description not present in the static markup at all."}}};</script>'
+            "</body></html>"
+        )
+        result = sea.audit_html("example.com", html)
+        ids = {f["id"] for f in result["findings"]}
+        self.assertIn("REN-02-hydration-content-not-in-text", ids)
+
+    def test_remix_context_hydration_gap_is_caught_end_to_end(self):
+        html = (
+            "<html><body><p>Welcome.</p>"
+            '<script>window.__remixContext = {"state": {"loaderData": {"root": '
+            '{"summary": "A remix-hydrated summary absent from the visible page text."}}}};</script>'
+            "</body></html>"
+        )
+        result = sea.audit_html("example.com", html)
+        ids = {f["id"] for f in result["findings"]}
+        self.assertIn("REN-02-hydration-content-not-in-text", ids)
+
+    def test_next_app_router_stream_is_flagged_presence_only(self):
+        html = (
+            "<html><body><p>Welcome.</p>"
+            '<script>self.__next_f.push([1,"some RSC-framed payload chunk"])</script>'
+            "</body></html>"
+        )
+        result = sea.audit_html("example.com", html)
+        ids = {f["id"] for f in result["findings"]}
+        self.assertIn("REN-02-modern-hydration-detected", ids)
+        self.assertNotIn("REN-02-hydration-content-not-in-text", ids)
+
+    def test_a_page_with_none_of_the_three_markers_produces_no_ren02_findings(self):
+        html = "<html><body><p>Ordinary page, nothing hydrated.</p></body></html>"
+        result = sea.audit_html("example.com", html)
+        ren02_ids = {f["id"] for f in result["findings"] if f["capability_id"] == "REN-02"}
+        self.assertEqual(ren02_ids, set())
+
+
 class PriceRenderGapTests(unittest.TestCase):
     def test_a_missing_offer_price_fires(self):
         nodes = [{"@type": "Product", "offers": {"@type": "Offer", "price": "29.99"}}]
@@ -748,6 +911,67 @@ class SsrfGuardTests(unittest.TestCase):
 
     def test_an_unresolvable_host_is_refused(self):
         self.assertFalse(sea.is_public_host("this-host-does-not-exist.invalid"))
+
+
+class AuditSampleTests(unittest.TestCase):
+    """Defect 2: static-extraction-audit previously had only audit_html's
+    once-per-page mode, meaning the orchestrator's page sample required one
+    sequential subprocess spawn per page with no concurrency possible
+    between them. audit_sample fixes that with the same --sample-file
+    bulk-mode shape the other four multi-page skills already have."""
+
+    def test_an_unreachable_page_becomes_one_unknown_check(self):
+        out = sea.audit_sample("example.com", ["https://this-host-does-not-exist.invalid/page"])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(len(out["unknown_checks"]), 1)
+        self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
+
+    def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
+        out = sea.audit_sample("example.com", [])
+        self.assertEqual(out["findings"], [])
+        self.assertEqual(out["unknown_checks"], [])
+
+    def test_output_always_carries_the_capability_ids(self):
+        out = sea.audit_sample("example.com", [])
+        self.assertEqual(out["capability_ids"], sea.CAPABILITY_IDS)
+
+    def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
+        out = sea.audit_sample("example.com", [])
+        self.assertEqual(len(out["coverage"]["stages"]), 1)
+        self.assertFalse(out["coverage"]["stages"][0]["expired"])
+
+    def test_pages_beyond_the_fetch_budget_get_an_unknown_check_not_a_hang(self):
+        calls = {"n": 0}
+
+        def fake_clock():
+            calls["n"] += 1
+            return 0.0 if calls["n"] == 1 else 1000.0
+
+        page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
+        out = sea.audit_sample("example.com", page_urls, clock=fake_clock)
+        self.assertEqual(len(out["unknown_checks"]), 2)
+        self.assertTrue(out["coverage"]["stages"][0]["expired"])
+
+    def test_findings_from_each_page_are_merged_into_one_report(self):
+        import page_fetch as pf
+        from unittest.mock import patch
+
+        pages = {
+            "https://example.com/a": '<script>self.__next_f.push([1,"chunk"])</script>',
+            "https://example.com/b": "<p>Ordinary page.</p>",
+        }
+
+        def fake_fetch(url):
+            return pages[url], "present"
+
+        with patch.object(pf, "fetch_page_html", side_effect=fake_fetch), \
+                patch.object(pf, "is_public_host", return_value=True), \
+                patch.object(pf, "robots_allows_fetch", return_value=True):
+            out = sea.audit_sample("example.com", list(pages))
+
+        self.assertEqual(out["unknown_checks"], [])
+        ids = {f["id"] for f in out["findings"]}
+        self.assertIn("REN-02-modern-hydration-detected", ids)
 
 
 if __name__ == "__main__":
