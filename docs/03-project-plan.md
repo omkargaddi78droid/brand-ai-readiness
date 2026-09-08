@@ -413,3 +413,94 @@ re-propose them without first reading why:
    `test_resolve_bot_tiers_never_puts_the_same_bot_in_two_tiers`.
 4. `git status`/`git diff` reviewed — only the files this cycle touched, no
    stray `__pycache__` staged. Committed as one commit.
+
+## Post-cycle-24 regression found and fixed (2026-09-08)
+
+Cycle 24's "final validation pass" (above) ran `python3 -m unittest discover
+-s tests` but not the eight `tests/measure_*.py` corpus precision/recall
+harnesses README.md already documents as part of the standard test-running
+checklist — a real process gap, not a one-off. Running them afterward
+surfaced one genuine regression: REN-10's corpus fixture
+`tests/corpus/static_extraction/defect_phone_only_in_script.html` used
+`555-867-5309` (an invalid NANP exchange), which cycle 24's real
+`phonenumbers`-backed validator correctly rejects — silently turning
+`defect-phone-only-in-script` into a false negative (recall 0.929) since
+`unittest discover` never exercises the corpus harnesses. Fixed by swapping
+in `202-555-0173` (the NANP fictional-use range already used in
+`tests/test_static_extraction_audit.py`'s own fixtures), commit `a5fa9b5`.
+All eight `measure_*.py` harnesses are back to precision/recall 1.000.
+**Process note for future cycles:** treat both `unittest discover` and the
+full `measure_*.py` set as the final validation pass, not just the former.
+
+## Remaining work (surveyed 2026-09-08, after cycle 24)
+
+Ground-truthed against the actual repo state — `git log`, `docs/capability-
+matrix.md`, `marketplace.json`, memory files — rather than assumed. Two
+prior-session memory files claimed open work that turned out to already be
+resolved on `master`: `nextgen-capabilities-progress`'s worktree merge
+(`worktree-nextgen-capabilities` — confirmed merged: RET-09/RET-10/REN-12 and
+marketplace `0.23.0` are on `master`, no worktree branch remains) and the
+pre-existing PER-06/08 false positives (confirmed fixed, commit `3705602`,
+`measure_perimeter_extras.py` at precision/recall 1.000). Both memory files
+have been corrected to stop flagging resolved items as open.
+
+### 1. Live end-to-end validation against real, previously-unseen sites — still open
+
+Called for by the cycle-23 post-Phase-4 plan (item 3, `[[cycle-23-post-
+phase-4-progress]]` memory) after B7 (CQ-10 freshness) and the INF-10 budget
+governor shipped. No evidence this ever ran — no driver script, report, or
+doc references it, and the file it would have touched
+(`docs/capability-matrix.md`) shows no update tied to it. What's needed: pick
+2-4 real sites of different shapes (a docs site, an e-commerce site, a
+marketing/SPA site, optionally a small local-business site), run
+`sample_pages.py` against each, run all four `--sample-file`-capable skills
+(`entity-audit`, `content-quality-audit`, `citability-audit`,
+`engagement-audit`) against the sample, compose via `compose_report.py`,
+confirm `validate_floor_shape` passes, wall-clock stays well under 5 minutes,
+and `coverage.stages` looks correct in a normal (non-expired) run. This has
+never blocked shipping so far (unit + corpus coverage carries the actual
+correctness burden), but it is the one item this project's own process
+called for and never delivered.
+
+### 2. Cycle 24 deferred candidates — not rejected, not started
+
+From `docs/cycle-24.md`'s scoring; still open questions for a future cycle,
+not closed decisions like the doc's "Rejected" list:
+
+- **textblob** (lexicon-mode subjectivity/polarity signal) — dropped from
+  cycle 24 specifically for its `regex` C-extension transitive dependency
+  (see `docs/03-project-plan.md`'s dependency-policy section above), not
+  re-scored as low-value. Worth revisiting only if a pure-Python `regex`
+  alternative or vendored source build becomes available.
+- **spaCy `Matcher`** (rule-based, no statistical pipeline) — technically
+  vendorable under the revised policy; no demonstrated current defect
+  justifies the footprint yet.
+- **extruct`/`rdflib** (Schema.org vocabulary coverage) — no demonstrated
+  gap against the existing centralized `_ENTITY_VALUED_PROPERTIES` list.
+- **Agent-supplied page-purpose hints** (replacing `_FORCE_INCLUDE_PATHS`'s
+  five hardcoded English paths) — needs its own short design pass before
+  it's implementable at all: route through the existing agent-judged
+  pattern (à la ENT-05/06's agent-supplied off-site candidates) rather than
+  expanding the hardcoded path list into a multilingual heuristic, which
+  would not solve the underlying semantic problem.
+
+### 3. Documentation bookkeeping — stale numbers, not defects
+
+- `README.md`'s test-running section says `# 857 tests`; actual is 1228 as
+  of this cycle. Cosmetic, but visible to anyone following the README.
+- `marketplace.json`'s `version` is still `0.23.0`, unbumped since the
+  nextgen-capabilities cycle despite cycle 23 (Phase 4 + post-Phase-4) and
+  cycle 24 both landing since. Whether to bump, and to what, is a call for
+  whoever ships next — noted here rather than bumped unilaterally.
+
+### Not remaining work — intentionally closed, for context
+
+`docs/capability-matrix.md` carries a long tail of `NOT_STARTED`/
+`PARTIALLY_COVERED` rows (REN-03, REN-09, CIT-03, CIT-12, CQ-06, EN-02,
+EN-10, INF-08, INF-02/04/06/07/10/11, ...). Each was evaluated at least once
+(several twice, per their own row notes) and deliberately left as-is —
+missing crawl infrastructure, no OCR/vision capability, no scriptable
+low-false-positive slice identified, or (INF-08) checked against four real
+composed reports and found not to reproduce. These are the project's settled
+scope boundary, not a backlog; re-opening any of them needs new evidence,
+not just re-reading the matrix.
