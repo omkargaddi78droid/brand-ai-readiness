@@ -100,6 +100,8 @@ from page_fetch import (  # noqa: E402
     is_public_host,
     fetch_page_html,
 )
+from phone_numbers import find_phone_numbers  # noqa: E402
+from text_spans import VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 
 OWNER_SKILL = "static-extraction-audit"
 CAPABILITY_IDS = [
@@ -111,12 +113,9 @@ CAPABILITY_IDS = [
 # HTML parsing: one pass, every static signal this skill needs
 # ---------------------------------------------------------------------------
 
-_SKIP_TEXT_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
-_BLOCK_TAGS = {
-    "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
-    "section", "article", "header", "footer", "blockquote", "ul", "ol",
-    "table", "td", "th",
-}
+# Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
+_SKIP_TEXT_TAGS = VISIBLE_TEXT_SKIP_TAGS
+_BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
 _MAIN_ARTICLE_TAGS = {"main", "article"}
 _HYDRATION_IDS = {"__NEXT_DATA__", "__NUXT_DATA__"}
 
@@ -755,18 +754,21 @@ def find_missing_media_tracks(media_results: list[dict]) -> list[Finding]:
 # REN-10 — NAP render asymmetry (phone numbers only — see module docstring)
 # ---------------------------------------------------------------------------
 
-_PHONE_PATTERN = re.compile(r"(?:\+?\d{1,2}[-.\s]?)?\(?\d{3}\)?[-.\s]\d{3}[-.\s]\d{4}\b")
-
-
-def _normalize_phone(value: str) -> str:
-    return re.sub(r"\D", "", value)
+# "US" rather than the more conservative None/"ZZ": the detector this
+# replaced was itself NANP-only (a bare 3-3-4 regex with no "+" required), so
+# a bare "202-555-0173" with no country code must keep matching to avoid
+# regressing already-shipped, already-tested behavior. phonenumbers still
+# recognizes any explicitly "+"-prefixed international number regardless of
+# this default — "US" only supplies the assumed country for a number with no
+# "+", which is exactly what the old regex always assumed implicitly.
+_REN10_DEFAULT_REGION = "US"
 
 
 def find_nap_script_only_phone(script_text: str, visible_text: str) -> list[Finding]:
-    script_phones = {_normalize_phone(m.group()) for m in _PHONE_PATTERN.finditer(script_text)}
+    script_phones = set(find_phone_numbers(script_text, default_region=_REN10_DEFAULT_REGION))
     if not script_phones:
         return []
-    visible_phones = {_normalize_phone(m.group()) for m in _PHONE_PATTERN.finditer(visible_text)}
+    visible_phones = set(find_phone_numbers(visible_text, default_region=_REN10_DEFAULT_REGION))
     missing = sorted(script_phones - visible_phones)
     if not missing:
         return []

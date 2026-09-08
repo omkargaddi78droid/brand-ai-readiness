@@ -112,7 +112,10 @@ evidence of a missing answer, it is the extraction's known blind spot.
       examples to calibrate severity and confidence.
 
    d. Append every finding you authored to `findings`, then **remove
-      `agent_judgement_required` from the file entirely**.
+      `agent_judgement_required` from the file entirely**. Hand-editing the
+      JSON works; `shared/judgement_merge.py` (optional CLI,
+      `--report`/`--judgements`/`--out`) does the same schema validation and
+      merge mechanically if you'd rather not hand-edit.
 
 4. Hand the resulting `findings` (now including any you authored) and
    `unknown_checks` to the entrypoint. This skill does not build reports.

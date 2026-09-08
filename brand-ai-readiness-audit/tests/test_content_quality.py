@@ -140,6 +140,22 @@ class RelativeDateAnchorTests(unittest.TestCase):
         self.assertEqual(len(findings), 1)
         self.assertEqual(len(findings[0].structured_evidence["matches"]), 2)
 
+    def test_an_unrelated_absolute_date_far_from_the_relative_phrase_still_fires(self):
+        """Cycle 24 fix: an absolute date far from the relative claim in the
+        same sentence must not suppress it — the two are unrelated. Previously
+        any absolute date anywhere in the sentence suppressed the finding."""
+        text = (
+            "Founded in 2010 by two college roommates who met on the very first "
+            "day of orientation, prices increased recently based on market demand."
+        )
+        findings = cq.find_relative_date_anchors(text)
+        self.assertEqual(len(findings), 1)
+
+    def test_an_absolute_date_just_inside_the_proximity_window_still_suppresses(self):
+        text = "Support hours changed recently, on March 2026 notice."
+        findings = cq.find_relative_date_anchors(text)
+        self.assertEqual(findings, [])
+
 
 class ScopeAmbiguousNumberTests(unittest.TestCase):
     def test_two_different_values_same_label_no_qualifier_fires(self):
@@ -354,6 +370,39 @@ class AnswerExtractabilitySignalTests(unittest.TestCase):
         text = "Skip to content\nMain menu\nShipping Policy\nOrders ship within 2 business days."
         signal = cq.find_answer_extractability_signal(text, "Shipping Policy")
         self.assertTrue(signal["opening_block"].startswith("Skip to content"))
+
+
+class SyllableCounterTests(unittest.TestCase):
+    """Cycle 24: silent -ed/-es were being counted as real syllables,
+    overcounting and skewing the Flesch score. `changes`/`boxes`/`wanted`
+    prove the fix keeps the suffix's syllable exactly where it's real."""
+
+    def test_silent_ed_is_not_counted(self):
+        self.assertEqual(cq._count_syllables("walked"), 1)
+        self.assertEqual(cq._count_syllables("closed"), 1)
+
+    def test_ed_after_t_or_d_is_its_own_syllable(self):
+        self.assertEqual(cq._count_syllables("wanted"), 2)
+        self.assertEqual(cq._count_syllables("needed"), 2)
+
+    def test_silent_es_is_not_counted(self):
+        self.assertEqual(cq._count_syllables("makes"), 1)
+        self.assertEqual(cq._count_syllables("likes"), 1)
+
+    def test_es_after_a_sibilant_is_its_own_syllable(self):
+        self.assertEqual(cq._count_syllables("boxes"), 2)
+        self.assertEqual(cq._count_syllables("watches"), 2)
+
+    def test_es_after_a_soft_g_or_c_is_its_own_syllable(self):
+        self.assertEqual(cq._count_syllables("changes"), 2)
+        self.assertEqual(cq._count_syllables("places"), 2)
+
+    def test_silent_trailing_e_is_still_handled(self):
+        self.assertEqual(cq._count_syllables("the"), 1)
+        self.assertEqual(cq._count_syllables("make"), 1)
+
+    def test_never_returns_zero_for_a_real_word(self):
+        self.assertEqual(cq._count_syllables("a"), 1)
 
 
 class ReadabilityTests(unittest.TestCase):
@@ -805,6 +854,91 @@ class AuditTextFreshnessIntegrationTests(unittest.TestCase):
         out = cq.audit_text("example.com", text)
         ids = [f["id"] for f in out["findings"]]
         self.assertFalse(any(i.startswith("CQ-10-freshness-contradiction-") for i in ids))
+
+
+class LabeledPairsWiringTests(unittest.TestCase):
+    """Cycle 24 items 2.1/9: `_text_with_labeled_pairs` wiring into
+    `audit_text` — a table-shaped page must now produce a CQ-07
+    scope-ambiguous-number finding that could never have fired before this
+    cycle, since `extract_visible_text()` always puts a `<th>` and its
+    `<td>` on separate lines, and the `Label: value` regex only matches
+    within a single line."""
+
+    def test_a_table_with_conflicting_values_fires_only_via_html_wiring(self):
+        html = (
+            "<table><tr><th>Storage capacity</th><td>500 GB</td></tr></table>"
+            "<table><tr><th>Storage capacity</th><td>1000 GB</td></tr></table>"
+        )
+        text = "Storage capacity\n500 GB\nStorage capacity\n1000 GB\n"
+
+        without_html = cq.audit_text("example.com", text)
+        ids_without_html = [f["id"] for f in without_html["findings"]]
+        self.assertFalse(
+            any(i.startswith("CQ-07-scope-ambiguous-") for i in ids_without_html),
+            "line-separated table text alone must not satisfy the same-line Label: value regex",
+        )
+
+        with_html = cq.audit_text("example.com", text, html=html)
+        ids_with_html = [f["id"] for f in with_html["findings"]]
+        self.assertTrue(
+            any(i.startswith("CQ-07-scope-ambiguous-storage-capacity") for i in ids_with_html),
+            "the labeled-pairs line synthesized from real <th>/<td> markup must now trigger CQ-07",
+        )
+
+    def test_a_table_with_one_consistent_value_does_not_fire(self):
+        html = "<table><tr><th>Storage capacity</th><td>500 GB</td></tr></table>"
+        out = cq.audit_text("example.com", "Welcome to our product page.", html=html)
+        ids = [f["id"] for f in out["findings"]]
+        self.assertFalse(any(i.startswith("CQ-07-scope-ambiguous-") for i in ids))
+
+    def test_every_other_check_still_sees_the_unmodified_text(self):
+        """The labeled-pairs text must be additive only for CQ-07/CQ-08 —
+        every other check (here, template-leakage) must see `text` exactly
+        as passed, unaffected by whatever `html` happens to contain."""
+        html = "<table><tr><th>Storage capacity</th><td>500 GB</td></tr></table>"
+        text = "Welcome, {{first_name}}!"
+        out = cq.audit_text("example.com", text, html=html)
+        ids = [f["id"] for f in out["findings"]]
+        self.assertTrue(any(i.startswith("CQ-03-template-leakage") for i in ids))
+
+
+class MainContentTextWiringTests(unittest.TestCase):
+    """Cycle 24 items 2.2/9: `extract_main_content_text` wiring into
+    `build_agent_judgement_requests` — nav/header text ahead of a `<main>`
+    region must no longer poison CQ-01's `opening_block` candidate."""
+
+    def test_nav_text_ahead_of_main_no_longer_poisons_the_opening_block(self):
+        html = (
+            "<nav>Skip to content Main menu Home About</nav>"
+            "<main>Orders ship within 2 business days of purchase.</main>"
+        )
+        text = "Skip to content Main menu Home About\nOrders ship within 2 business days of purchase."
+        requests = cq.build_agent_judgement_requests(text, None, html)
+        cq01 = next(r for r in requests if r["capability_id"] == "CQ-01")
+        self.assertTrue(cq01["observations"]["opening_block"].startswith("Orders ship within"))
+        self.assertEqual(cq01["observations"]["opening_block_source"], "main_content")
+
+    def test_no_main_or_article_tag_falls_back_to_document_start_unchanged(self):
+        html = "<div>Skip to content Main menu</div>"
+        text = "Skip to content Main menu\nOrders ship within 2 business days."
+        requests = cq.build_agent_judgement_requests(text, None, html)
+        cq01 = next(r for r in requests if r["capability_id"] == "CQ-01")
+        self.assertTrue(cq01["observations"]["opening_block"].startswith("Skip to content"))
+        self.assertEqual(cq01["observations"]["opening_block_source"], "document_start")
+
+    def test_no_html_at_all_falls_back_to_document_start_unchanged(self):
+        text = "Skip to content Main menu\nOrders ship within 2 business days."
+        requests = cq.build_agent_judgement_requests(text, None, None)
+        cq01 = next(r for r in requests if r["capability_id"] == "CQ-01")
+        self.assertTrue(cq01["observations"]["opening_block"].startswith("Skip to content"))
+        self.assertEqual(cq01["observations"]["opening_block_source"], "document_start")
+
+    def test_audit_text_end_to_end_threads_html_into_the_cq01_request(self):
+        html = "<main>Orders ship within 2 business days of purchase.</main>"
+        text = "Orders ship within 2 business days of purchase."
+        out = cq.audit_text("example.com", text, html=html)
+        cq01 = next(r for r in out["agent_judgement_required"] if r["capability_id"] == "CQ-01")
+        self.assertEqual(cq01["observations"]["opening_block_source"], "main_content")
 
 
 if __name__ == "__main__":

@@ -77,6 +77,9 @@ and `entity-audit`'s ENT-09.
 
    d. Append any findings you authored to `findings`, then **remove
       `agent_judgement_required` entirely** before this file is composed.
+      Hand-editing the JSON works; `shared/judgement_merge.py` (optional
+      CLI, `--report`/`--judgements`/`--out`) does the same schema
+      validation and merge mechanically if you'd rather not hand-edit.
 
 4. Hand the resulting `findings` and `unknown_checks` to the entrypoint.
 

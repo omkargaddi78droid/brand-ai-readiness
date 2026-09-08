@@ -259,7 +259,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
-from text_spans import Block, extract_blocks, normalized_position, proper_noun_tokens, split_sentences  # noqa: E402
+from text_spans import (  # noqa: E402
+    Block,
+    extract_blocks,
+    MONTH_NAMES,
+    normalized_position,
+    proper_noun_tokens,
+    split_sentences,
+    VISIBLE_TEXT_BLOCK_TAGS,
+    VISIBLE_TEXT_SKIP_TAGS,
+)
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -342,7 +351,8 @@ def extract_headings(html: str) -> list[dict]:
 # HTML parsing: JSON-LD blocks + visible text (RET-01)
 # ---------------------------------------------------------------------------
 
-_SKIP_TEXT_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
+# Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
+_SKIP_TEXT_TAGS = VISIBLE_TEXT_SKIP_TAGS
 
 # A block-level tag boundary must insert a separator into the text stream,
 # or two adjacent elements' text runs together into one corrupted word — the
@@ -355,11 +365,8 @@ _SKIP_TEXT_TAGS = {"script", "style", "code", "pre", "noscript", "template", "sv
 # regression specific to this cycle's new capabilities, but caught here
 # because RET-02/05's word- and phrase-level statistics are the first
 # checks in this skill sensitive enough to make the corruption visible.
-_BLOCK_TAGS = {
-    "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
-    "section", "article", "header", "footer", "blockquote", "ul", "ol",
-    "table", "td", "th",
-}
+# Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
+_BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
 
 
 class _JsonLdTextParser(HTMLParser):
@@ -1223,9 +1230,9 @@ _RET09_MIDDLE_BAND_HIGH = 0.75
 _RET09_CHRONOLOGY_YEAR_RATIO = 0.70
 _RET09_SUMMARY_HEADING_RE = re.compile(r"summary|tl;?dr|key takeaways|at a glance|overview", re.IGNORECASE)
 
-_RET09_MONTHS = (
-    "January|February|March|April|May|June|July|August|September|October|November|December"
-)
+# Cycle 24 item 3.8: canonical month list, shared/text_spans.py — see that
+# module.
+_RET09_MONTHS = "|".join(MONTH_NAMES)
 
 # Patterns run in this priority order and claim non-overlapping spans in the
 # prose stream, so e.g. "January 15, 2024" is captured once as a date, never

@@ -249,18 +249,45 @@ class MultimodalAccessibilityTests(unittest.TestCase):
 
 
 class NapScriptOnlyPhoneTests(unittest.TestCase):
+    """Uses 202-555-0173 — the NANP 555-01XX range reserved for fictional
+    use (RFC-style "not a real subscriber"), which `phonenumbers` still
+    accepts as a structurally valid US number, unlike an arbitrary
+    "555-123-4567" (invalid exchange, real detector correctly rejects it
+    since the switch off the old permissive regex — see item 3.7)."""
+
     def test_a_phone_only_in_script_fires(self):
-        script_text = "var p = '555-123-4567';"
+        script_text = "var p = '202-555-0173';"
         findings = sea.find_nap_script_only_phone(script_text, "No phone here.")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0].id, "REN-10-phone-only-in-script")
 
     def test_a_phone_present_in_both_does_not_fire(self):
-        script_text = "var p = '555-123-4567';"
-        self.assertEqual(sea.find_nap_script_only_phone(script_text, "Call 555-123-4567 now."), [])
+        script_text = "var p = '202-555-0173';"
+        self.assertEqual(sea.find_nap_script_only_phone(script_text, "Call 202-555-0173 now."), [])
 
     def test_no_phone_in_script_stays_silent(self):
         self.assertEqual(sea.find_nap_script_only_phone("var x = 1;", "No phone here."), [])
+
+    def test_an_invalid_looking_nanp_number_is_not_a_false_positive(self):
+        """'555-123-4567' has an invalid NANP exchange (123) — the old bare
+        regex matched it anyway; the real validator correctly does not."""
+        script_text = "var p = '555-123-4567';"
+        self.assertEqual(sea.find_nap_script_only_phone(script_text, "No phone here."), [])
+
+    def test_an_international_number_only_in_script_fires(self):
+        """The real capability gain over the old NANP-only regex: a
+        non-US, "+"-prefixed number assembled only client-side is now
+        detected too."""
+        script_text = "var p = '+44 20 7946 0958';"
+        findings = sea.find_nap_script_only_phone(script_text, "No phone here.")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "REN-10-phone-only-in-script")
+
+    def test_an_international_number_present_in_both_does_not_fire(self):
+        script_text = "var p = '+44 20 7946 0958';"
+        self.assertEqual(
+            sea.find_nap_script_only_phone(script_text, "Call +44 20 7946 0958 now."), []
+        )
 
 
 class PdfRestatementSuggestionTests(unittest.TestCase):

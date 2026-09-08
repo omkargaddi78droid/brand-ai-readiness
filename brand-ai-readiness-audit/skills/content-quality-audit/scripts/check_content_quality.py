@@ -148,7 +148,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
-from text_spans import split_sentences  # noqa: E402
+from text_spans import KEYWORD_FOLDING_STOPWORDS, split_sentences, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 from page_sample import template_key  # noqa: E402
 from shingles import near_duplicate_groups  # noqa: E402
 from page_fetch import (  # noqa: E402
@@ -161,6 +161,7 @@ from page_fetch import (  # noqa: E402
     fetch_page,
 )
 from budget import StageBudget, coverage_manifest  # noqa: E402
+from html_extract import extract_labeled_pairs, extract_main_content_text  # noqa: E402
 
 OWNER_SKILL = "content-quality-audit"
 CAPABILITY_IDS = [
@@ -172,7 +173,12 @@ CAPABILITY_IDS = [
 # Text extraction
 # ---------------------------------------------------------------------------
 
-SKIP_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
+# Cycle 24 item 2.5: canonical skip set, shared/text_spans.py — see that
+# module. BLOCK_TAGS stays local: this skill's own superset adds dt/dd/
+# figcaption (definition-list and figure-caption text CQ's checks scope
+# into), a genuine, deliberate difference from the other five skills' set,
+# not accidental drift.
+SKIP_TAGS = VISIBLE_TEXT_SKIP_TAGS
 BLOCK_TAGS = {
     "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
     "section", "article", "header", "footer", "blockquote", "ul", "ol",
@@ -384,6 +390,27 @@ _ABSOLUTE_DATE = re.compile(
     re.IGNORECASE,
 )
 
+# Cycle 24: how close an absolute date must sit to the relative-time phrase
+# it's meant to qualify before it suppresses the finding. Previously any
+# absolute date anywhere in the sentence suppressed it — which meant
+# "Founded in 2010, prices increased recently" (an unrelated year nowhere
+# near the relative claim) went unflagged. A tight character window keeps
+# the legitimate case ("updated 3 days ago, on March 2, 2026") suppressed
+# while catching the unrelated-date case.
+_DATE_PROXIMITY_CHARS = 30
+
+
+def _span_gap(a: tuple[int, int], b: tuple[int, int]) -> int:
+    """Character distance between two spans in the same string: 0 if they
+    touch or overlap, otherwise the gap between the nearer ends."""
+    a_start, a_end = a
+    b_start, b_end = b
+    if a_end <= b_start:
+        return b_start - a_end
+    if b_end <= a_start:
+        return a_start - b_end
+    return 0
+
 
 def find_relative_date_anchors(text: str) -> list[Finding]:
     matches: list[tuple[str, str]] = []
@@ -398,7 +425,11 @@ def find_relative_date_anchors(text: str) -> list[Finding]:
         phrase = phrase_match.group(0)
         if not any(re.search(rf"\b{re.escape(v)}\b", lowered) for v in _CLAIM_VERBS):
             continue
-        if _ABSOLUTE_DATE.search(s):
+        nearby_absolute_date = any(
+            _span_gap(phrase_match.span(), date_match.span()) <= _DATE_PROXIMITY_CHARS
+            for date_match in _ABSOLUTE_DATE.finditer(s)
+        )
+        if nearby_absolute_date:
             continue
         matches.append((phrase, s))
 
@@ -557,7 +588,8 @@ _SUPPRESSION_PATTERN = re.compile(
     r"\b(?:" + "|".join(re.escape(word) for word in _SUPPRESSION_WORDS) + r")\b", re.IGNORECASE
 )
 
-_STOPWORDS = {"the", "a", "an", "of", "for", "and", "or", "is", "are", "on", "in", "to", "by", "this", "that"}
+# Cycle 24 item 3.4: canonical set, shared/text_spans.py — see that module.
+_STOPWORDS = KEYWORD_FOLDING_STOPWORDS
 
 
 def _keywords(label: str) -> set[str]:
@@ -683,12 +715,37 @@ _FLESCH_DIFFICULT_THRESHOLD = 30.0
 
 def _count_syllables(word: str) -> int:
     """Vowel-group heuristic, not a dictionary lookup — cheap and stdlib-only,
-    sufficient for a page-level average rather than a per-word claim."""
-    letters = re.sub(r"[^a-zA-Z]", "", word)
+    sufficient for a page-level average rather than a per-word claim.
+
+    Cycle 24: a trailing "-ed"/"-es" is silent far more often than not
+    ("walked" is one syllable, not two; "makes" is one, not two) — the vowel
+    group it forms was being counted as a real syllable, overcounting. The
+    suffix is stripped before counting unless the stem it would leave ends in
+    a sound that genuinely needs it pronounced as its own syllable ("wanted",
+    "needed" for -ed; "boxes", "watches" for -es). "-ly" was evaluated too:
+    the vowel-group regex already counts its "y" as a syllable correctly in
+    the common case ("quickly" -> 2, matching real usage), so it is left
+    alone rather than adding an adjustment with no evidence it is needed."""
+    letters = re.sub(r"[^a-zA-Z]", "", word).lower()
     if not letters:
         return 0
-    count = len(_VOWEL_GROUPS.findall(letters))
-    if letters.lower().endswith("e") and count > 1:
+
+    stem = letters
+    for suffix, keep_if_stem_ends_in in (
+        ("ed", ("t", "d")),
+        # "g"/"c" here catch the soft-g/soft-c words the raw suffix already
+        # ate the "e" off of ("changes" -> stem "chang", "places" -> "plac")
+        # — both need "-es" kept as its own syllable exactly like "boxes".
+        ("es", ("s", "x", "z", "ch", "sh", "g", "c")),
+    ):
+        if letters.endswith(suffix) and len(letters) > len(suffix) + 1:
+            candidate = letters[: -len(suffix)]
+            if not candidate.endswith(keep_if_stem_ends_in):
+                stem = candidate
+            break
+
+    count = len(_VOWEL_GROUPS.findall(stem)) or len(_VOWEL_GROUPS.findall(letters))
+    if stem.endswith("e") and count > 1:
         count -= 1
     return max(count, 1)
 
@@ -850,7 +907,9 @@ def find_procedure_marketing_candidates(text: str) -> list[dict]:
 _ANSWER_OPENING_WORD_LIMIT = 150
 
 
-def find_answer_extractability_signal(text: str, h1_text: str | None) -> dict:
+def find_answer_extractability_signal(
+    text: str, h1_text: str | None, main_content_text: str | None = None
+) -> dict:
     """CQ-01. A page-level signal, not a verdict, same design as CQ-12: the
     page's H1 (if any) and the first ~150 words of its visible text, plus a
     count of how many of CQ-09's own marketing phrases appear in that
@@ -880,8 +939,19 @@ def find_answer_extractability_signal(text: str, h1_text: str | None) -> dict:
     agent explicitly (references/content-judgement-rubric.md §CQ-01) to
     disregard a nav-dominated opening_block rather than judge it as a
     missing answer — the same "say nothing when you cannot tell" discipline
-    already used throughout this project's agent-judged capabilities."""
-    words = text.split()
+    already used throughout this project's agent-judged capabilities.
+
+    Cycle 24: `main_content_text`, when the caller has it (see
+    shared/html_extract.extract_main_content_text — a <main>/<article>
+    region with any nested <nav>/<header>/<footer>/<aside> stripped), is
+    windowed instead of `text`. This is a different technique from the
+    H1-anchoring tried and reverted above — it strips known-chrome elements
+    structurally rather than guessing a text offset — so it does not
+    reproduce that failure. A page with neither tag falls back to `text`
+    unchanged: no regression versus before this parameter existed. Still
+    just a better *candidate*; the agent still judges it, exactly as before."""
+    source = main_content_text if main_content_text else text
+    words = source.split()
     opening_words = words[:_ANSWER_OPENING_WORD_LIMIT]
     opening_block = " ".join(opening_words)
     marketing_hits = [m.group(0) for m in _MARKETING_PATTERN.finditer(opening_block)]
@@ -889,6 +959,7 @@ def find_answer_extractability_signal(text: str, h1_text: str | None) -> dict:
     return {
         "h1_text": h1_text,
         "opening_block": opening_block,
+        "opening_block_source": "main_content" if main_content_text else "document_start",
         "opening_sentence_count": len(opening_sentences),
         "marketing_phrase_hits_in_opening": marketing_hits,
         "total_word_count": len(words),
@@ -921,7 +992,10 @@ def measure_filler_density(text: str) -> dict:
     }
 
 
-def build_agent_judgement_requests(text: str, h1_text: str | None = None) -> list[dict]:
+def build_agent_judgement_requests(
+    text: str, h1_text: str | None = None, html: str | None = None
+) -> list[dict]:
+    main_content_text = extract_main_content_text(html) if html else None
     return [
         {
             "capability_id": "CQ-01",
@@ -935,7 +1009,7 @@ def build_agent_judgement_requests(text: str, h1_text: str | None = None) -> lis
                 "nothing for pages with no single implied question (a navigation hub, a "
                 "listing page)."
             ),
-            "observations": find_answer_extractability_signal(text, h1_text),
+            "observations": find_answer_extractability_signal(text, h1_text, main_content_text),
         },
         {
             "capability_id": "CQ-02",
@@ -1140,6 +1214,22 @@ def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
     return stamped
 
 
+def _text_with_labeled_pairs(text: str, html: str | None) -> str:
+    """Append synthetic "label: value" lines extracted structurally from
+    <th>/<td> and <dt>/<dd> pairs (shared/html_extract.py) to `text`, for
+    CQ-07/CQ-08 only. `extract_visible_text()` always puts each table/dl cell
+    on its own line by design — the other checks depend on that exact,
+    separately-tested behaviour — so real tabular/definition-list markup can
+    never satisfy a same-line `Label: value` regex without this. Additive
+    only: callers that pass no `html` see no change from before this existed."""
+    if not html:
+        return text
+    pairs = extract_labeled_pairs(html)
+    if not pairs:
+        return text
+    return text + "\n" + "\n".join(pairs)
+
+
 def audit_text(
     site: str,
     text: str,
@@ -1153,16 +1243,17 @@ def audit_text(
     freshness_findings = (
         find_freshness_contradiction(text, html or "", headers, fetched_at=fetched_at) if headers else []
     )
+    labeled_text = _text_with_labeled_pairs(text, html)
     findings = _stamp_page(
         find_template_leakage(text)
         + find_relative_date_anchors(text)
-        + find_scope_ambiguous_numbers(text)
-        + find_computed_stat_mismatches(text)
+        + find_scope_ambiguous_numbers(labeled_text)
+        + find_computed_stat_mismatches(labeled_text)
         + freshness_findings
         + ([readability_finding] if readability_finding else []),
         page_url,
     )
-    judgement_requests = build_agent_judgement_requests(text, h1_text)
+    judgement_requests = build_agent_judgement_requests(text, h1_text, html)
     if page_url:
         for request in judgement_requests:
             request["observations"]["page_url"] = page_url

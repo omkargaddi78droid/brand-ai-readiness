@@ -16,6 +16,34 @@ on URL alone.
 Pure stdlib: `urllib.request` only, no third-party HTTP client. No write
 methods are ever used (GET only) — this module fetches from audited sites,
 it never mutates them.
+
+robots.txt (cycle 24)
+----------------------
+Every fetch here — `fetch_text`, `fetch_page_html`, `fetch_page` — now
+consults the target host's own robots.txt before requesting the path, using
+the same convention `entity-audit`'s `robots_allows_offsite_fetch` already
+established for off-site fetches: a robots.txt that could not be fetched at
+all is treated as allow-all (RFC 9309's de-facto convention), one that WAS
+fetched and disallows the path is always honoured, and the decision is
+cached per host for the life of the process so repeated fetches to the same
+site don't refetch robots.txt each time (mirrors `_page_cache`'s scope
+exactly). This does not change the orchestrator's PER-02 policy of
+continuing to run downstream skills after a blanket block is *reported* —
+this only stops *this process* from making individual disallowed requests;
+skills.audit-orchestrator/SKILL.md's "keep running, but flag the
+precondition" behaviour for the report is unaffected.
+
+Retry (cycle 24)
+-----------------
+A transient failure (timeout, connection reset, HTTP 5xx) is retried up to
+`_RETRY_ATTEMPTS` times with a fixed, non-random delay before being reported
+as unavailable — no third-party retry library, since a fixed-count,
+fixed-interval loop is the entire feature. This does not threaten
+determinism in the sense the project's checklist means by it: a retry
+converts a transient failure into the same two-way outcome a single attempt
+already had (content fetched, or not), it does not introduce a third,
+timing-dependent outcome. A permanent failure (4xx, DNS failure, refused
+connection) is never retried.
 """
 
 from __future__ import annotations
@@ -23,15 +51,19 @@ from __future__ import annotations
 import dataclasses
 import ipaddress
 import socket
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import urllib.robotparser
 import zlib
 
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 FETCH_TIMEOUT_SECONDS = 10
 MAX_PAGE_BYTES = 5_000_000
 _MAX_DECOMPRESSED_BYTES = 20_000_000
+_RETRY_ATTEMPTS = 3
+_RETRY_DELAY_SECONDS = 1.0
 
 
 def is_public_host(hostname: str) -> bool:
@@ -49,6 +81,74 @@ def is_public_host(hostname: str) -> bool:
         if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
             return False
     return True
+
+
+_robots_cache: dict[str, bool | None] = {}
+
+
+def _raw_get(url: str, *, timeout: int) -> bytes | None:
+    """Single, unretried, un-robots-gated GET — used only to fetch a host's
+    own /robots.txt, which must never be gated by itself. Returns None on
+    any failure; never raises."""
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.read(MAX_PAGE_BYTES)
+    except Exception:
+        return None
+
+
+def robots_allows_fetch(url: str) -> bool:
+    """Per-host robots.txt check for the site being fetched. A robots.txt
+    that could not be fetched at all (missing, unreachable, non-200) is
+    treated as allow-all — RFC 9309's de-facto convention — but one that WAS
+    fetched and disallows the path is always honoured. Cached per host for
+    the life of the process: this is the same "one decision per host per
+    run" scope as `_page_cache`, not a persistent cross-run cache."""
+    parsed = urllib.parse.urlparse(url)
+    hostname = parsed.hostname
+    if not hostname:
+        return False
+    # Same scheme + netloc (including a non-default port) as the target URL
+    # itself — robots.txt lives per-origin, not just per-hostname.
+    cache_key = parsed.netloc or hostname
+    scheme = parsed.scheme or "https"
+
+    if cache_key not in _robots_cache:
+        raw = _raw_get(f"{scheme}://{parsed.netloc}/robots.txt", timeout=FETCH_TIMEOUT_SECONDS)
+        if raw is None:
+            _robots_cache[cache_key] = None  # unreachable: allow-all, nothing to cache but "tried"
+        else:
+            parser = urllib.robotparser.RobotFileParser()
+            parser.parse(raw.decode("utf-8", errors="replace").splitlines())
+            _robots_cache[cache_key] = parser
+
+    cached = _robots_cache[cache_key]
+    if cached is None:
+        return True
+    return cached.can_fetch(USER_AGENT, url)
+
+
+def _urlopen_with_retry(request: urllib.request.Request, *, timeout: int):
+    """`urllib.request.urlopen`, retried up to `_RETRY_ATTEMPTS` times with a
+    fixed delay for a transient failure only: a timeout, a connection-level
+    URLError, or an HTTP 5xx. A 4xx or any other permanent failure is raised
+    on the first attempt, unretried — retrying a 404 wastes the budget on an
+    outcome that cannot change."""
+    last_error: Exception | None = None
+    for attempt in range(_RETRY_ATTEMPTS):
+        try:
+            return urllib.request.urlopen(request, timeout=timeout)
+        except urllib.error.HTTPError as error:
+            if error.code < 500:
+                raise
+            last_error = error
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as error:
+            last_error = error
+        if attempt < _RETRY_ATTEMPTS - 1:
+            time.sleep(_RETRY_DELAY_SECONDS)
+    assert last_error is not None
+    raise last_error
 
 
 def _bounded_decompress(decompressor, raw: bytes) -> bytes:
@@ -100,10 +200,12 @@ def fetch_text(url: str) -> tuple[str | None, str]:
     hostname = urllib.parse.urlparse(url).hostname
     if not hostname or not is_public_host(hostname):
         return f"{url} does not resolve to a public address", "unavailable"
+    if not robots_allows_fetch(url):
+        return f"{url} disallowed by robots.txt", "unavailable"
 
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+        with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             raw = response.read(MAX_PAGE_BYTES)
             content_encoding = response.headers.get("Content-Encoding", "")
         raw = decode_content_encoding(raw, content_encoding)
@@ -128,10 +230,12 @@ def fetch_page_html(url: str) -> tuple[str | None, str]:
     hostname = urllib.parse.urlparse(url).hostname
     if not hostname or not is_public_host(hostname):
         return f"{url} does not resolve to a public address", "unavailable"
+    if not robots_allows_fetch(url):
+        return f"{url} disallowed by robots.txt", "unavailable"
 
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+        with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             content_type = response.headers.get("Content-Type", "")
             if content_type and "html" not in content_type.lower() and "text" not in content_type.lower():
                 return f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
@@ -189,10 +293,19 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
             final_url=url,
             headers={},
         )
+    if not robots_allows_fetch(url):
+        return PageBundle(
+            url=url,
+            status="unavailable",
+            html=None,
+            error=f"{url} disallowed by robots.txt",
+            final_url=url,
+            headers={},
+        )
 
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     try:
-        with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
+        with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             headers = dict(response.headers.items())
             final_url = response.geturl()
             content_type = response.headers.get("Content-Type", "")
@@ -236,6 +349,8 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
 
 
 def clear_cache() -> None:
-    """Reset the in-process page cache. Tests call this between cases so one
-    test's fetch can't leak into another's assertions."""
+    """Reset the in-process page and robots.txt caches. Tests call this
+    between cases so one test's fetch or robots.txt decision can't leak into
+    another's assertions."""
     _page_cache.clear()
+    _robots_cache.clear()

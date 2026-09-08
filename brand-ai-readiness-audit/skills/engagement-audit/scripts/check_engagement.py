@@ -103,6 +103,7 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from jsonld_graph import flatten  # noqa: E402
+from text_spans import VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -123,12 +124,9 @@ CAPABILITY_IDS = ["EN-01", "EN-03", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09",
 # HTML parsing: forms + labels, headline/CTA signals, raw text for windowed checks
 # ---------------------------------------------------------------------------
 
-_SKIP_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
-_BLOCK_TAGS = {
-    "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
-    "section", "article", "header", "footer", "blockquote", "ul", "ol",
-    "table", "td", "th",
-}
+# Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
+_SKIP_TAGS = VISIBLE_TEXT_SKIP_TAGS
+_BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
 _LABELABLE_INPUT_TYPES_EXCLUDED = {"hidden", "submit", "button", "reset", "image"}
 _CTA_TAGS = {"button", "a"}
 _WEBMCP_FORM_ATTRS = ("toolname", "data-toolname")

@@ -85,6 +85,9 @@ search or crawling). Pass each candidate off-site page via
 
    d. Append any findings you authored to `findings`, then **remove
       `agent_judgement_required` entirely** before this file is composed.
+      Hand-editing the JSON works; `shared/judgement_merge.py` (optional
+      CLI, `--report`/`--judgements`/`--out`) does the same schema
+      validation and merge mechanically if you'd rather not hand-edit.
 
 4. **If you passed `--offsite-url`, also resolve `agent_judgement_required`'s
    CIT-13 entry**, against `references/citability-judgement-rubric.md`

@@ -95,6 +95,9 @@ before this file's output is handed to the entrypoint.** An unresolved
    d. Append every finding you authored to the `findings` array, then
       **remove `agent_judgement_required` from the file entirely** — it is
       intermediate and must never reach the entrypoint unresolved.
+      Hand-editing the JSON works; `shared/judgement_merge.py` (optional
+      CLI, `--report`/`--judgements`/`--out`) does the same schema
+      validation and merge mechanically if you'd rather not hand-edit.
 
 4. Hand the resulting `findings` (now including any you authored) and
    `unknown_checks` to the entrypoint.

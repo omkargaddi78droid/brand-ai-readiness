@@ -145,6 +145,7 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
 from jsonld_graph import Reference, build_id_index, classify_target, flatten, iter_references  # noqa: E402
 from graph_metrics import connected_components  # noqa: E402
+from text_spans import KEYWORD_FOLDING_STOPWORDS, VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -174,16 +175,18 @@ class _PageParser(HTMLParser):
     raw <script type="application/ld+json"> bodies, every rel=canonical
     href, and a lightly-extracted visible-text string (for ENT-03's
     markup/text comparison) with script/style/code/pre excluded — the same
-    scoped extraction content-quality-audit uses, reimplemented here rather
-    than imported, so each skill stays independently runnable per project
-    convention (see skill-engineering-principles.md §5.3)."""
+    scoped extraction content-quality-audit uses. The tag-set constants are
+    now shared (`shared/text_spans.py`, cycle 24 item 2.5 — genuinely
+    cross-cutting infrastructure, not skill-specific logic); the parsing
+    algorithm itself stays reimplemented here rather than importing another
+    skill's script, per this project's independently-runnable-skill
+    convention (`skill-engineering-principles.md` §5.3, and see
+    `shared/page_fetch.py`'s docstring on which side of that line shared/
+    infrastructure now falls)."""
 
-    _SKIP_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
-    _BLOCK_TAGS = {
-        "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
-        "section", "article", "header", "footer", "blockquote", "ul", "ol",
-        "table", "td", "th",
-    }
+    # Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
+    _SKIP_TAGS = VISIBLE_TEXT_SKIP_TAGS
+    _BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
@@ -1167,7 +1170,8 @@ def build_offsite_judgement_requests(site: str, brand_name: str, offsite_pages: 
 # ENT-09 — Taxonomy consistency; extraction only, the agent judges this
 # ---------------------------------------------------------------------------
 
-_STOPWORDS = {"the", "a", "an", "of", "for", "and", "or", "is", "are", "on", "in", "to", "by", "this", "that"}
+# Cycle 24 item 3.4: canonical set, shared/text_spans.py — see that module.
+_STOPWORDS = KEYWORD_FOLDING_STOPWORDS
 
 
 def _keywords(label: str) -> set[str]:

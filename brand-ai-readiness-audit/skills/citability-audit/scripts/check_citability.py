@@ -141,7 +141,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
-from text_spans import split_sentences  # noqa: E402
+from text_spans import split_sentences, VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -163,12 +163,9 @@ MIN_SUBSTANTIAL_WORD_COUNT = 500
 # HTML parsing: links + visible text, one pass
 # ---------------------------------------------------------------------------
 
-_SKIP_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
-_BLOCK_TAGS = {
-    "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
-    "section", "article", "header", "footer", "blockquote", "ul", "ol",
-    "table", "td", "th",
-}
+# Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
+_SKIP_TAGS = VISIBLE_TEXT_SKIP_TAGS
+_BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
 
 _ABOUT_PATH_SEGMENTS = {
     "about", "about-us", "our-story", "company", "our-team",

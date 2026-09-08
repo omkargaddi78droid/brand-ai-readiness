@@ -20,14 +20,27 @@ UA string into the target's own bot-traffic logs under a name it explicitly
 excluded. This is why PER-03 needs the same parsed robots.txt groups PER-01
 computes: the two checks share the compliance boundary, not just the taxonomy.
 
-Optional accelerator
---------------------
-`_baseline_bot_taxonomy()` is the seam where the pinned geo-optimizer-skill
-package can widen the built-in bot list. It is not wired yet: the package's API
-surface is unverified, and a check must never depend on an unverified surface.
-It returns None today, every call site falls back to BOT_TIERS below, and the
-audit result is identical either way. That is the point of the seam — the
-accelerator can only ever add coverage, never remove it or break a run.
+Bot-taxonomy accelerator
+------------------------
+`_baseline_bot_taxonomy()` loads the vendored snapshot at
+`vendor/bot_taxonomy.json` (175 bots, MIT, see vendor/VENDORED.md) and
+`resolve_bot_tiers()` widens BOT_TIERS with it, case-insensitively
+deduplicated so the same bot can never end up double-counted across two
+tiers. It degrades to None — falling back to BOT_TIERS alone — if the file is
+missing or unparseable, so a corrupted or absent snapshot never breaks an
+audit run. The 15 original bot->tier assignments always win over the
+snapshot's own classification for the same bot name: the snapshot can only
+add bots BOT_TIERS doesn't already name, never override one.
+
+`resolve_bot_tiers()` is deliberately NOT called by PER-01/PER-02/C1 (see
+`evaluate_robots`, `_is_blanket_blocked`, `_c1_sitemap_url_ai_disallowed`,
+which all use BOT_TIERS directly): widening those checks' bot list to all 175
+makes "blocks every AI agent" require blocking every obscure one, so a
+robots.txt that blocks the ~15 well-known bots — the realistic real-world
+"block all AI" pattern — would silently stop tripping the critical PER-02
+finding at all. Explicit user decision, cycle 24: keep PER-01/PER-02/C1's
+threshold on the 15 curated bots; `resolve_bot_tiers()` stays available as a
+tested, correct seam for a future capability that wants the wider list.
 
 Determinism
 -----------
@@ -161,23 +174,50 @@ TIER_MECHANISM = {
 }
 
 
-def _baseline_bot_taxonomy() -> dict[str, tuple[str, ...]] | None:
-    """Optional accelerator hook. Returns None until the package API is verified.
+_DEFAULT_BOT_TAXONOMY_PATH = _REPO_ROOT / "vendor" / "bot_taxonomy.json"
 
-    Kept as an explicit function rather than an inline import so the fallback
-    path is the one that is actually exercised and tested today.
+
+def _baseline_bot_taxonomy(*, path: Path | None = None) -> dict[str, tuple[str, ...]] | None:
+    """Load the vendored bot-taxonomy snapshot, or None if unavailable.
+
+    Degrades, never raises: a missing file, unreadable file, or malformed/
+    unexpected JSON shape all fall through to None so `resolve_bot_tiers`
+    falls back to BOT_TIERS alone — matching `shared/public_suffix.py`'s
+    degrade-never-raise pattern for the other vendored data asset.
     """
-    return None
+    try:
+        text = (path or _DEFAULT_BOT_TAXONOMY_PATH).read_text(encoding="utf-8")
+        data = json.loads(text)
+        tiers = data["tiers"]
+        return {tier: tuple(bots) for tier, bots in tiers.items()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return None
 
 
 def resolve_bot_tiers() -> dict[str, tuple[str, ...]]:
+    """BOT_TIERS widened with the vendored snapshot. Case-insensitive
+    dedup, global across all tiers, not just within one: the raw snapshot
+    lists the same bot in two different tiers under different casing
+    (e.g. "meta-externalagent" in training, "Meta-ExternalAgent" in
+    on_demand) — a real classification conflict in the upstream data, not a
+    project bug, but robots.txt product tokens are matched case-insensitively
+    (RFC 9309), so treating those as two different bots would double-count
+    one crawler under two tiers. First tier claiming a name (builtin tiers
+    always claim first) keeps it; every later duplicate is dropped."""
     accelerated = _baseline_bot_taxonomy()
     if not accelerated:
         return BOT_TIERS
+    claimed = {bot.lower() for bots in BOT_TIERS.values() for bot in bots}
     merged: dict[str, tuple[str, ...]] = {}
     for tier, builtin in BOT_TIERS.items():
-        extra = tuple(bot for bot in accelerated.get(tier, ()) if bot not in builtin)
-        merged[tier] = builtin + tuple(sorted(extra))
+        extra: list[str] = []
+        for bot in sorted(accelerated.get(tier, ())):
+            key = bot.lower()
+            if key in claimed:
+                continue
+            claimed.add(key)
+            extra.append(bot)
+        merged[tier] = builtin + tuple(extra)
     return merged
 
 
@@ -338,7 +378,7 @@ def evaluate_robots(robots_text: str | None, status: str) -> tuple[list[Finding]
 
     groups = parse_groups(robots_text or "")
 
-    tiers = resolve_bot_tiers()
+    tiers = BOT_TIERS
     blocked: dict[str, list[str]] = {}
     allowed: dict[str, list[str]] = {}
     for tier, bots in tiers.items():
@@ -1695,8 +1735,11 @@ def _tdmrep_reserves(tdmrep_data: dict | None) -> bool:
 def _is_blanket_blocked(groups: list[tuple[set[str], list[str]]]) -> bool:
     """True when every AI agent this project tracks is blocked at the root —
     PER-02's condition, restated here so C1 can defer to it rather than
-    restate the same root cause as a new contradiction."""
-    tiers = resolve_bot_tiers()
+    restate the same root cause as a new contradiction. Uses BOT_TIERS, not
+    the widened `resolve_bot_tiers()` snapshot — must stay the exact same
+    bot list PER-02 itself uses, or this stops actually restating PER-02's
+    condition."""
+    tiers = BOT_TIERS
     for tier_bots in tiers.values():
         for bot in tier_bots:
             if can_fetch_root(groups, bot):
@@ -1726,9 +1769,11 @@ def _c1_sitemap_url_ai_disallowed(
     fetch the site root but CANNOT fetch this specific path — i.e. the block
     is path-specific. A bot already blocked at the root is PER-01/PER-02's
     finding, not a new PER-09 contradiction, and is excluded here even
-    though it would trivially also fail the path check.
+    though it would trivially also fail the path check. Uses BOT_TIERS, not
+    the widened `resolve_bot_tiers()` snapshot, to stay consistent with the
+    exact bot list PER-01/PER-02 use for "already blocked at the root".
     """
-    tiers = resolve_bot_tiers()
+    tiers = BOT_TIERS
     affected: list[tuple[str, str, list[str]]] = []  # (url, tier, blocked_bots)
     for url in sitemap_urls[:_MAX_SITEMAP_URLS_CHECKED_FOR_C1]:
         path = urllib.parse.urlsplit(url).path or "/"

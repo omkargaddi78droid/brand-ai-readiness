@@ -68,7 +68,42 @@ _VOID_TAGS = {
     "wbr",
 }
 
-_MONTHS = {
+# Canonical tag sets for the "scoped visible text" extraction pattern used
+# independently by content-quality-audit, citability-audit, engagement-audit,
+# entity-audit, retrieval-readiness-audit, and static-extraction-audit — a
+# broader, div/section/table-aware walk than this module's own _BLOCK_TAGS/
+# _SKIP_TAGS above (which serve extract_blocks()'s narrower, offset-preserving
+# paragraph/list-item block model and are not for reuse here). Consolidated
+# per docs/cycle-24.md item 2.5: the six skills' own definitions were
+# byte-for-byte identical (bar content-quality-audit's own, deliberately
+# wider superset — see that skill's script for why), so this removes six
+# places the same set could silently drift, without changing any skill's
+# extraction algorithm or control flow — each skill still owns its own
+# HTMLParser subclass and imports only the constant.
+VISIBLE_TEXT_SKIP_TAGS = {"script", "style", "code", "pre", "noscript", "template", "svg"}
+VISIBLE_TEXT_BLOCK_TAGS = {
+    "p", "div", "li", "tr", "br", "h1", "h2", "h3", "h4", "h5", "h6",
+    "section", "article", "header", "footer", "blockquote", "ul", "ol",
+    "table", "td", "th",
+}
+
+# Cycle 24 item 3.4: entity-audit's and content-quality-audit's own
+# `_STOPWORDS` were byte-for-byte identical (both used for the same
+# "significant words in a label" keyword-folding pattern, CQ-08 / ENT-09).
+# retrieval-readiness-audit's own, larger 37-word stopword set is a genuinely
+# different, separately-tuned list for a different precision/recall
+# tradeoff and stays local there rather than merging into this one.
+KEYWORD_FOLDING_STOPWORDS = {
+    "the", "a", "an", "of", "for", "and", "or", "is", "are", "on", "in", "to", "by", "this", "that",
+}
+
+# Cycle 24 item 3.8: canonical, calendar-ordered tuple, also consolidating
+# retrieval-readiness-audit's own separate `_RET09_MONTHS` (a "|"-joined
+# regex-alternation string built from this same list of names, order
+# irrelevant to a regex alternation but kept calendar-ordered here for
+# determinism — set iteration order is not guaranteed stable across
+# processes, a tuple's insertion order always is).
+MONTH_NAMES = (
     "January",
     "February",
     "March",
@@ -81,7 +116,9 @@ _MONTHS = {
     "October",
     "November",
     "December",
-}
+)
+
+_MONTHS = frozenset(MONTH_NAMES)
 _WEEKDAYS = {
     "Monday",
     "Tuesday",

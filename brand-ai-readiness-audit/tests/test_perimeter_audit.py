@@ -348,5 +348,88 @@ class FetchPageWithHeadersTests(unittest.TestCase):
         self.assertEqual(headers, {})
 
 
+class BotTaxonomyAccelerationTests(unittest.TestCase):
+    """`_baseline_bot_taxonomy()` / `resolve_bot_tiers()`: the vendored
+    snapshot only adds coverage, it never overrides the 15 hand-curated
+    BOT_TIERS assignments, and a missing/malformed snapshot degrades to
+    BOT_TIERS alone rather than raising."""
+
+    def test_the_real_vendored_snapshot_loads(self):
+        loaded = perimeter._baseline_bot_taxonomy()
+        self.assertIsNotNone(loaded)
+        self.assertIn("training", loaded)
+        self.assertIn("ai_search", loaded)
+        self.assertIn("on_demand", loaded)
+
+    def test_a_missing_file_degrades_to_none(self):
+        missing = FIXTURES / "does_not_exist.json"
+        self.assertIsNone(perimeter._baseline_bot_taxonomy(path=missing))
+
+    def test_a_malformed_file_degrades_to_none(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            fh.write("{not valid json")
+            bad_path = Path(fh.name)
+        try:
+            self.assertIsNone(perimeter._baseline_bot_taxonomy(path=bad_path))
+        finally:
+            bad_path.unlink()
+
+    def test_a_file_missing_the_tiers_key_degrades_to_none(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as fh:
+            json.dump({"_meta": {}}, fh)
+            bad_path = Path(fh.name)
+        try:
+            self.assertIsNone(perimeter._baseline_bot_taxonomy(path=bad_path))
+        finally:
+            bad_path.unlink()
+
+    def test_resolve_bot_tiers_falls_back_to_builtin_when_snapshot_missing(self):
+        original = perimeter._baseline_bot_taxonomy
+        perimeter._baseline_bot_taxonomy = lambda: None
+        try:
+            self.assertEqual(perimeter.resolve_bot_tiers(), perimeter.BOT_TIERS)
+        finally:
+            perimeter._baseline_bot_taxonomy = original
+
+    def test_resolve_bot_tiers_preserves_original_15_curated_assignments(self):
+        """Cross-check the original 15 hand-curated BOT_TIERS entries keep
+        their exact tier after merging with the real vendored snapshot —
+        the snapshot is additive-only, never an override, including for the
+        one known divergence (DuckAssistBot: snapshot says on_demand, the
+        curated baseline says ai_search, and the curated baseline must win)."""
+        resolved = perimeter.resolve_bot_tiers()
+        for tier, bots in perimeter.BOT_TIERS.items():
+            for bot in bots:
+                self.assertIn(bot, resolved[tier], f"{bot} must remain in {tier}")
+        self.assertIn("DuckAssistBot", perimeter.BOT_TIERS["ai_search"])
+        self.assertIn("DuckAssistBot", resolved["ai_search"])
+        self.assertNotIn("DuckAssistBot", resolved["on_demand"])
+
+    def test_resolve_bot_tiers_never_puts_the_same_bot_in_two_tiers(self):
+        """Regression test for a real cross-tier duplicate found in the raw
+        snapshot: "meta-externalagent" (training) and "Meta-ExternalAgent"
+        (on_demand) are the same robots.txt product token under RFC 9309's
+        case-insensitive matching, so they must never both survive the merge
+        under two different tiers."""
+        resolved = perimeter.resolve_bot_tiers()
+        seen: dict[str, str] = {}
+        for tier, bots in resolved.items():
+            for bot in bots:
+                key = bot.lower()
+                self.assertNotIn(
+                    key, seen, f"{bot!r} appears in both {seen.get(key)!r} and {tier!r}"
+                )
+                seen[key] = tier
+
+    def test_resolve_bot_tiers_adds_new_coverage_from_the_snapshot(self):
+        """The snapshot has bots the curated baseline doesn't (e.g.
+        PerplexityBot is curated in ai_search already, but the snapshot adds
+        many more names to each tier) — confirm the merge actually widens
+        coverage rather than being a no-op."""
+        resolved = perimeter.resolve_bot_tiers()
+        for tier in perimeter.BOT_TIERS:
+            self.assertGreater(len(resolved[tier]), len(perimeter.BOT_TIERS[tier]))
+
+
 if __name__ == "__main__":
     unittest.main()

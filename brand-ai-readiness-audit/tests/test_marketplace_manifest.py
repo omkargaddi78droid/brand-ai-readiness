@@ -136,13 +136,58 @@ class SafetyTests(unittest.TestCase):
         ]
         self.assertEqual(offenders, [], f"vendor/ must contain no code, found: {offenders}")
 
+    def test_third_party_contains_only_declared_packages_no_compiled_binaries(self):
+        """Cycle 24: pure-Python, no-model-weights third-party packages are
+        vendored (not pip-installed, not fetched at runtime) under
+        third_party/. No compiled extension may sneak in, and no package
+        outside the ones this project actually vendors and documents in
+        third_party/VENDORED.md may appear here."""
+        third_party_dir = REPO_ROOT / "third_party"
+        self.assertTrue(third_party_dir.is_dir(), "third_party/ must exist")
+        forbidden_suffixes = (".so", ".pyd", ".dylib")
+        offenders = [
+            str(path.relative_to(REPO_ROOT))
+            for path in third_party_dir.rglob("*")
+            if path.is_file() and path.suffix in forbidden_suffixes
+        ]
+        self.assertEqual(offenders, [], f"third_party/ must contain no compiled binaries, found: {offenders}")
+
+        declared_top_level = {"bs4", "soupsieve", "typing_extensions.py", "phonenumbers", "licenses", "VENDORED.md"}
+        actual_top_level = {
+            path.name
+            for path in third_party_dir.iterdir()
+            if not path.name.startswith(".") and path.name != "__pycache__"
+        }
+        self.assertEqual(actual_top_level, declared_top_level)
+
+    def test_vendored_payload_stays_under_the_50mb_budget(self):
+        """Cycle 24: vendoring is allowed (packages under third_party/, data
+        under vendor/) provided the total payload stays well inside the
+        submission's 50MB zip cap (M6) alongside everything else in the zip."""
+        total_bytes = sum(
+            path.stat().st_size
+            for directory in (REPO_ROOT / "vendor", REPO_ROOT / "third_party")
+            for path in directory.rglob("*")
+            if path.is_file()
+        )
+        self.assertLess(total_bytes, 50 * 1024 * 1024, f"vendor/+third_party/ payload is {total_bytes} bytes")
+
     def test_scripts_import_no_third_party_packages(self):
+        """'No third-party packages' now means 'no package that isn't
+        vendored under third_party/ and declared here' — bs4/soupsieve/
+        typing_extensions/phonenumbers are allowed specifically because every
+        module that imports them first inserts third_party/ onto sys.path
+        (see shared/html_extract.py, shared/phone_numbers.py), so they always
+        resolve to the vendored copy, never an ambient pip install."""
         allowed_roots = {
             "argparse", "collections", "dataclasses", "datetime", "difflib", "email", "hashlib", "html",
             "importlib", "ipaddress", "json", "pathlib", "re", "socket", "sys", "tempfile",
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
             "jsonld_graph", "page_fetch", "graph_metrics", "page_sample", "xml", "budget",
-            "public_suffix", "fuzzy_match", "shingles", "links", "__future__",
+            "public_suffix", "fuzzy_match", "shingles", "links", "__future__", "judgement_merge",
+            "html_extract", "phone_numbers",
+            # Vendored under third_party/, never pip-installed — see third_party/VENDORED.md.
+            "bs4", "soupsieve", "typing_extensions", "phonenumbers",
         }
         for script in list(REPO_ROOT.glob("skills/*/scripts/*.py")) + list(REPO_ROOT.glob("shared/*.py")):
             with self.subTest(script=script.name):
@@ -150,6 +195,24 @@ class SafetyTests(unittest.TestCase):
                     match = re.match(r"^\s*(?:from|import)\s+([A-Za-z_][\w.]*)", line)
                     if match:
                         self.assertIn(match.group(1).split(".")[0], allowed_roots, line.strip())
+
+    def test_html_extract_and_phone_numbers_put_third_party_on_sys_path_before_importing_vendored_packages(self):
+        """Guards against silently falling back to an ambient pip install of
+        bs4/phonenumbers if one happens to exist in the grading environment —
+        the whole point of vendoring is that the audit works identically with
+        nothing installed."""
+        for module_name, vendored_import in (("html_extract", "bs4"), ("phone_numbers", "phonenumbers")):
+            source = (REPO_ROOT / "shared" / f"{module_name}.py").read_text(encoding="utf-8")
+            path_insert_line = next(
+                (i for i, line in enumerate(source.splitlines()) if '"third_party"' in line), None
+            )
+            import_line = next(
+                (i for i, line in enumerate(source.splitlines()) if re.match(rf"^\s*(?:from|import)\s+{vendored_import}\b", line)),
+                None,
+            )
+            self.assertIsNotNone(path_insert_line, f"{module_name}.py must insert third_party/ onto sys.path")
+            self.assertIsNotNone(import_line, f"{module_name}.py must import {vendored_import}")
+            self.assertLess(path_insert_line, import_line, f"{module_name}.py imports {vendored_import} before sys.path is set up")
 
 
 if __name__ == "__main__":
