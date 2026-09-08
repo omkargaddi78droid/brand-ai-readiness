@@ -384,12 +384,20 @@ class BotTaxonomyAccelerationTests(unittest.TestCase):
             bad_path.unlink()
 
     def test_resolve_bot_tiers_falls_back_to_builtin_when_snapshot_missing(self):
-        original = perimeter._baseline_bot_taxonomy
-        perimeter._baseline_bot_taxonomy = lambda: None
+        # resolve_bot_tiers() lives in the sibling _perimeter_access_rules
+        # module (perimeter-access-audit's own split-out module, not
+        # check_perimeter.py itself) and calls its own module-local
+        # _baseline_bot_taxonomy — patching perimeter._baseline_bot_taxonomy
+        # (check_perimeter.py's re-export of the same name) would not affect
+        # that internal call, so the module actually defining it is patched
+        # instead.
+        access_rules = sys.modules["_perimeter_access_rules"]
+        original = access_rules._baseline_bot_taxonomy
+        access_rules._baseline_bot_taxonomy = lambda: None
         try:
             self.assertEqual(perimeter.resolve_bot_tiers(), perimeter.BOT_TIERS)
         finally:
-            perimeter._baseline_bot_taxonomy = original
+            access_rules._baseline_bot_taxonomy = original
 
     def test_resolve_bot_tiers_preserves_original_15_curated_assignments(self):
         """Cross-check the original 15 hand-curated BOT_TIERS entries keep

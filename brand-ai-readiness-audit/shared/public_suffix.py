@@ -1,7 +1,7 @@
 """Public Suffix List lookups (shared infrastructure, cycle 23 Part 1/2).
 
-Replaces the `tldextract` package rejected in docs/02-project-plan.md Part 1:
-tldextract's own dependency chain pulls in `requests` (which drags in a
+Replaces the `tldextract` package, rejected because its own dependency chain
+pulls in `requests` (which drags in a
 compiled `charset-normalizer` transitively) and fetches a live copy of the
 PSL on first use, which fails outright in a sandboxed grading environment.
 The actual capability need — registrable-domain grouping for ENT-07's

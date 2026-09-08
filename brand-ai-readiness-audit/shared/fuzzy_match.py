@@ -1,7 +1,7 @@
 """Fuzzy string similarity (shared infrastructure, cycle 23 Part 1/2).
 
-Replaces the `rapidfuzz` package rejected in docs/02-project-plan.md Part 1:
-the wheel is platform/interpreter-locked (manylinux + a specific CPython ABI
+Replaces the `rapidfuzz` package, rejected because the wheel is
+platform/interpreter-locked (manylinux + a specific CPython ABI
 tag), and its documented pure-Python fallback is not what `pip` actually
 resolves — not a safe shipping mode for a submission graded on an unknown
 machine. `difflib.SequenceMatcher` is already stdlib, already imported

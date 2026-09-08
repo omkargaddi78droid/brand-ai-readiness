@@ -1,9 +1,9 @@
 """Small-graph metrics over string-keyed nodes (shared infrastructure).
 
-Replaces `networkx` for this project's purposes (see docs/02-project-plan.md
-Part 1: networkx was rejected — a hard `Requires-Python` floor and a 505ms
-cost to import it, to buy roughly 45 lines of union-find plus power-iteration
-PageRank on graphs of at most a few dozen nodes). Every graph here is a
+Replaces `networkx` for this project's purposes — networkx was rejected over
+a hard `Requires-Python` floor and a 505ms cost to import it, to buy roughly
+45 lines of union-find plus power-iteration PageRank on graphs of at most a
+few dozen nodes. Every graph here is a
 single page's JSON-LD entity graph or a bounded page-sample's link graph —
 never more than a few dozen nodes — so an O(n) union-find and a fixed
 20-iteration power-iteration PageRank are not approximations of the real

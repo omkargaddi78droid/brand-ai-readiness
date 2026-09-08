@@ -59,20 +59,20 @@ single fetch cannot tell the two apart. `--html-file`/`--text-file` modes
 have no live HTTP headers to compare against, so this half never fires
 there — not a defect, just nothing to compare.
 
-**CQ-13 is a cycle-23 addition, `--sample-file` mode.** Cluster A's own
-"Deferred, 4" note (docs/capability-matrix.md) previously held near-duplicate/
-template-dilution detection as "methodologically broken against this
-project's own agent-chosen, variety-biased page sample, which systematically
-hides exactly the clusters this would look for" — true before cycle 23's
-Phase 1 shipped a template-stratified sampler (`shared/page_sample.py`),
-which exists specifically so near-identical pages land in the same stratum
-instead of never being sampled together. Given a file of on-site page URLs,
-this mode fetches each one, strips lines that repeat verbatim across at
-least half the sample (the shared site chrome — nav, footer, boilerplate —
-that would otherwise make every page look like a near-duplicate of every
-other), groups the remainder by `shared/page_sample.template_key`, and runs
+**CQ-13 is a cycle-23 addition, `--sample-file` mode.** Near-duplicate/
+template-dilution detection was previously "methodologically broken against
+this project's own agent-chosen, variety-biased page sample, which
+systematically hides exactly the clusters this would look for" — true
+before cycle 23's Phase 1 shipped a template-stratified sampler
+(`shared/page_sample.py`), which exists specifically so near-identical
+pages land in the same stratum instead of never being sampled together.
+Given a file of on-site page URLs, this mode fetches each one, strips lines
+that repeat verbatim across at least half the sample (the shared site
+chrome — nav, footer, boilerplate — that would otherwise make every page
+look like a near-duplicate of every other), groups the remainder by
+`shared/page_sample.template_key`, and runs
 `shared/shingles.near_duplicate_groups` (k-shingle Jaccard, replacing the
-`datasketch` package rejected in `docs/02-project-plan.md` Part 1) *within*
+rejected `datasketch` package) *within*
 each template stratum only — comparing across templates would be
 meaningless, since a pricing page and a blog post are expected to differ.
 Entirely script-decided; no agent judgement needed for a shingle-overlap
@@ -163,6 +163,8 @@ from page_fetch import (  # noqa: E402
 )
 from budget import StageBudget, coverage_manifest  # noqa: E402
 from html_extract import extract_labeled_pairs, extract_main_content_text  # noqa: E402
+from report_shape import site_label, stamp_page as _stamp_page, unknown_output  # noqa: E402
+from skill_cli import add_page_arguments  # noqa: E402
 
 OWNER_SKILL = "content-quality-audit"
 CAPABILITY_IDS = [
@@ -1196,25 +1198,6 @@ def find_freshness_contradiction(
     ]
 
 
-def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
-    """This skill runs once per page (see SKILL.md), so a report with several
-    pages audited will carry several findings sharing the exact same
-    `check_id` (the same defect class, found on different pages). Without a
-    page reference, a reader has no way to tell which page each finding is
-    about short of parsing the evidence string. Stamping the URL onto both
-    the evidence text and the structured evidence keeps the report actionable
-    per the output-design rubric ("a non-expert could act on it") once the
-    entrypoint composes findings from more than one page."""
-    if not page_url:
-        return findings
-    stamped = []
-    for finding in findings:
-        finding.evidence = f"On {page_url}: {finding.evidence}"
-        finding.structured_evidence = {**(finding.structured_evidence or {}), "page_url": page_url}
-        stamped.append(finding)
-    return stamped
-
-
 def _text_with_labeled_pairs(text: str, html: str | None) -> str:
     """Append synthetic "label: value" lines extracted structurally from
     <th>/<td> and <dt>/<dd> pairs (shared/html_extract.py) to `text`, for
@@ -1270,14 +1253,7 @@ def audit_text(
 
 
 def _unknown_output(site: str, reason: str) -> dict:
-    return {
-        "owner_skill": OWNER_SKILL,
-        "capability_ids": CAPABILITY_IDS,
-        "site": site,
-        "findings": [],
-        "agent_judgement_required": [],
-        "unknown_checks": [UnknownCheck("*", OWNER_SKILL, reason).to_dict()],
-    }
+    return unknown_output(OWNER_SKILL, CAPABILITY_IDS, site, reason, include_page_url=False)
 
 
 # ---------------------------------------------------------------------------
@@ -1583,27 +1559,16 @@ def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dic
 # ---------------------------------------------------------------------------
 
 
-def site_label(url_or_domain: str) -> str:
-    value = url_or_domain.strip()
-    for scheme in ("https://", "http://"):
-        if value.lower().startswith(scheme):
-            value = value[len(scheme):]
-            break
-    return value.split("/")[0].strip().lower()
-
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url", help="A single page URL to fetch and audit")
-    parser.add_argument("--site", help="Site label for the report, e.g. example.com")
-    parser.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
-    parser.add_argument("--text-file", help="Read already-extracted plain text from a local file")
-    parser.add_argument(
-        "--page-url",
-        help="Label findings with this page URL (default: --url). Set explicitly in "
+    add_page_arguments(
+        parser,
+        page_url_help="Label findings with this page URL (default: --url). Set explicitly in "
         "--html-file/--text-file mode so a report composed from several pages stays "
         "attributable to the right one.",
     )
+    parser.add_argument("--text-file", help="Read already-extracted plain text from a local file")
     parser.add_argument(
         "--sample-file",
         help=(

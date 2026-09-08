@@ -22,15 +22,14 @@ entity mix-ups unless something clearly distinguishes them):
 
 **ENT-05/ENT-06 are off-site, cycle-19 additions.** Cycle 9 through 18 kept
 these `DEFERRED`, reasoning that an off-site lookup conflicts with this
-project's "self-contained, no external service" design rule (M5,
-`docs/competition-requirements.md`). Hard constraint 2, confirmed with the
-judges cycle 19, narrows that rule rather than removing it: direct, bounded
-HTTP queries to named public sites (Reddit, Quora, forums, review sites),
-robots.txt-respecting, computing the verdict ourselves, are permitted — a
-third-party *scoring* API is still rejected. This script does not pick
-which off-site pages to look at (that stays the calling agent's own
-search step, per the same reasoning `docs/phase-4-completion-19.md`
-records); it only fetches agent-supplied `--offsite-url` candidates
+project's "self-contained, no external service" design rule (hard
+constraint M5). Confirmed with the judges in cycle 19, that rule was
+narrowed rather than removed: direct, bounded HTTP queries to named public
+sites (Reddit, Quora, forums, review sites), robots.txt-respecting,
+computing the verdict ourselves, are permitted — a third-party *scoring*
+API is still rejected. This script does not pick which off-site pages to
+look at (that stays the calling agent's own search step); it only fetches
+agent-supplied `--offsite-url` candidates
 within the same SSRF/timeout/size bounds as every other fetch in this
 file, plus a new per-host robots.txt check before fetching a third-party
 host, and hands extracted snippets to
@@ -159,6 +158,8 @@ from public_suffix import registrable_domain, same_entity  # noqa: E402
 from links import extract_outbound_links  # noqa: E402
 from fuzzy_match import single_linkage_clusters  # noqa: E402
 from budget import StageBudget, coverage_manifest  # noqa: E402
+from report_shape import site_label, stamp_page as _stamp_page, unknown_output  # noqa: E402
+from skill_cli import add_page_arguments, resolve_page_html  # noqa: E402
 
 OWNER_SKILL = "entity-audit"
 CAPABILITY_IDS = [
@@ -1355,36 +1356,8 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
     }
 
 
-def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
-    """Same rationale as content-quality-audit: this skill runs per page, so
-    a multi-page report needs each finding attributable to its source page."""
-    if not page_url:
-        return findings
-    for finding in findings:
-        finding.evidence = f"On {page_url}: {finding.evidence}"
-        finding.structured_evidence = {**(finding.structured_evidence or {}), "page_url": page_url}
-    return findings
-
-
 def _unknown_output(site: str, reason: str, page_url: str | None = None) -> dict:
-    return {
-        "owner_skill": OWNER_SKILL,
-        "capability_ids": CAPABILITY_IDS,
-        "site": site,
-        "page_url": page_url,
-        "findings": [],
-        "agent_judgement_required": [],
-        "unknown_checks": [UnknownCheck("*", OWNER_SKILL, reason).to_dict()],
-    }
-
-
-def site_label(url_or_domain: str) -> str:
-    value = url_or_domain.strip()
-    for scheme in ("https://", "http://"):
-        if value.lower().startswith(scheme):
-            value = value[len(scheme):]
-            break
-    return value.split("/")[0].strip().lower()
+    return unknown_output(OWNER_SKILL, CAPABILITY_IDS, site, reason, page_url=page_url)
 
 
 def audit_sitemap(site: str, sitemap_urls: list[str]) -> dict:
@@ -1844,10 +1817,7 @@ def audit_offsite(site: str, brand_name: str, offsite_urls: list[str]) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url", help="A single page URL to fetch and audit")
-    parser.add_argument("--site", help="Site label for the report, e.g. example.com")
-    parser.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
-    parser.add_argument("--page-url", help="Label findings with this page URL (default: --url)")
+    add_page_arguments(parser)
     parser.add_argument(
         "--sitemap-file",
         help=(
@@ -1921,19 +1891,9 @@ def main(argv: list[str] | None = None) -> int:
     site = site_label(args.site or args.url)
     page_url = args.page_url or args.url
 
-    if args.html_file:
-        html = Path(args.html_file).read_text(encoding="utf-8", errors="replace")
-    elif args.url:
-        html_or_error, status = fetch_page_html(args.url)
-        if status != "present":
-            json.dump(_unknown_output(site, html_or_error or "fetch failed", page_url), sys.stdout, indent=2)
-            sys.stdout.write("\n")
-            return 0
-        html = html_or_error
-    else:
-        json.dump(_unknown_output(site, "no --url or --html-file given", page_url), sys.stdout, indent=2)
-        sys.stdout.write("\n")
-        return 0
+    html, exit_code = resolve_page_html(args, site, page_url, _unknown_output)
+    if html is None:
+        return exit_code
 
     json.dump(audit_html(site, html, page_url=page_url), sys.stdout, indent=2)
     sys.stdout.write("\n")

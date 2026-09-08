@@ -1,8 +1,8 @@
 """K-shingle near-duplicate detection (shared infrastructure, cycle 23 Part
 1/2).
 
-Replaces the `datasketch` package rejected in docs/02-project-plan.md Part 1:
-MinHash/LSH's sub-linear advantage over exact Jaccard only matters at a
+Replaces the `datasketch` package, rejected because MinHash/LSH's sub-linear
+advantage over exact Jaccard only matters at a
 document count datasketch is built for (thousands+); this project's largest
 comparison set is a bounded page sample of ~30 pages (~450 pairs), where
 exact shingle-set Jaccard is fast enough outright and needs no compiled

@@ -6,7 +6,7 @@ test_third_party_contains_only_declared_packages_no_compiled_binaries`
 enforces this directory's exact top-level contents and that it contains zero
 `.so`/`.pyd`/`.dylib` files; `test_vendored_payload_stays_under_the_50mb_
 budget` sums this directory plus `vendor/` against the project's 50MB
-vendoring limit (`docs/cycle-24.md`).
+vendoring limit.
 
 All four packages below are `py3-none-any` / `py2.py3-none-any` pure-Python
 wheels — confirmed by inspecting the actual downloaded wheel contents, not
@@ -22,8 +22,7 @@ network call.
   and `<dt>`/`<dd>` structural pairing (CQ-07/CQ-08) and `<main>`/`<article>`
   boundary extraction (CQ-01), replacing ad hoc regex/state-machine parsing
   for those two needs. Runs on the stdlib `html.parser` backend only — no
-  `lxml`, no `html5lib` — a fixed decision independent of vendor-budget size
-  (see `docs/cycle-24.md`'s dependency-policy revision).
+  `lxml`, no `html5lib` — a fixed decision independent of vendor-budget size.
 - **Size:** ~820KB.
 
 ## soupsieve 2.9.2

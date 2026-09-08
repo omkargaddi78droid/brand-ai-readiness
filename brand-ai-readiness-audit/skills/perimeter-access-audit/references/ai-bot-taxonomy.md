@@ -179,9 +179,8 @@ rest of Cluster A.
 PER-04:** `low` severity, proactive track, absence alone not flagged for
 PER-05 specifically (it is llms.txt's optional companion, one step further
 from established practice than llms.txt itself). Neither convention has
-measured evidence of citation impact — the same discipline
-`docs/baseline-gaps.md` §2 established for llms.txt applies here without
-modification.
+measured evidence of citation impact — the same severity-calibration
+discipline established for llms.txt applies here without modification.
 
 **PER-06 (sitemap.xml) parses with a regex, not `xml.etree.ElementTree`.**
 The sitemap is fetched from the audited site — untrusted input — and a

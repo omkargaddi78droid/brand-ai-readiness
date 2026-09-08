@@ -7,8 +7,7 @@ citability-audit) need the same "every outbound link, with its anchor text,
 resolved to an absolute URL" extraction ENT-07 needed — duplicating an
 HTMLParser subclass a third and fourth time is exactly the kind of
 six-near-identical-copies problem shared/page_fetch.py already fixed once
-for fetch_page_html (see docs/02-project-plan.md Phase 1). This module is
-the same fix for link extraction.
+for fetch_page_html. This module is the same fix for link extraction.
 
 Pure stdlib, pure parsing over caller-supplied HTML text: no network, no
 file I/O. `is_internal_link` is the only function that reaches into

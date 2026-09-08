@@ -8,11 +8,10 @@ is everything it relies on.
 
 This module also absorbs a genuine triplication: three skills
 (`entity-audit`, `retrieval-readiness-audit`, `static-extraction-audit`)
-each contain an identical private `_flatten_json_ld` function plus an
+each contained an identical private `_flatten_json_ld` function plus an
 identical parse-and-skip wrapper around it. `flatten` below replicates that
-combined behavior exactly. The three existing skill scripts are left
-untouched by this task; only `entity-audit`'s call sites are migrated to
-this module, and only in a later, separate task.
+combined behavior exactly. All three skill scripts now call `flatten`
+directly; none carries a local copy of the duplicated logic anymore.
 
 Pure stdlib, pure data-structure processing on already-parsed JSON: no
 network, no file I/O, no third-party imports, no browser/DOM/JS.

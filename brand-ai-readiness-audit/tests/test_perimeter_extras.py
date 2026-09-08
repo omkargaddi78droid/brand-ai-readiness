@@ -3,7 +3,7 @@ Cluster A, added after PER-01/02/03/04 were already frozen. Each detector is
 tested as a positive/negative pair, same convention as every prior detector
 in this project.
 
-Field validation (docs/phase-4-completion-6.md) confirmed the happy path
+Field validation confirmed the happy path
 against a real, 857-line sitemap.xml (apple.com) using the standard default
 namespace, and confirmed the "genuinely blocked, not missing" distinction
 against two sites that 403/406 rather than 404 on /sitemap.xml.

@@ -62,7 +62,7 @@ starved (well below the sample's mean) while a non-fact-dense page holds
 the sample's single highest PageRank — the concrete, scriptable shape of
 "navigational hubs and fact-dense authority pages not separated; trust
 flows badly." Adopts the minority objection's discipline while shipping the
-majority view (`docs/02-project-plan.md` Phase 4): a bounded,
+majority view: a bounded,
 template-stratified subgraph is a structurally biased estimate of
 site-wide link authority (pages reachable only via pagination or a deep
 facet are invisible to it, and that exclusion correlates with the very
@@ -154,6 +154,8 @@ from page_fetch import (  # noqa: E402
 from links import extract_links, is_internal_link  # noqa: E402
 from graph_metrics import pagerank  # noqa: E402
 from budget import StageBudget, coverage_manifest  # noqa: E402
+from report_shape import site_label, stamp_page as _stamp_page, unknown_output  # noqa: E402
+from skill_cli import add_page_arguments, resolve_page_html  # noqa: E402
 
 OWNER_SKILL = "citability-audit"
 CAPABILITY_IDS = ["CIT-01", "CIT-02", "CIT-04", "CIT-06", "CIT-07", "CIT-08", "CIT-09", "CIT-13"]
@@ -725,39 +727,13 @@ def audit_html(
     }
 
 
-def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
-    if not page_url:
-        return findings
-    for finding in findings:
-        finding.evidence = f"On {page_url}: {finding.evidence}"
-        finding.structured_evidence = {**(finding.structured_evidence or {}), "page_url": page_url}
-    return findings
-
-
 def _unknown_output(site: str, reason: str, page_url: str | None = None) -> dict:
-    return {
-        "owner_skill": OWNER_SKILL,
-        "capability_ids": CAPABILITY_IDS,
-        "site": site,
-        "page_url": page_url,
-        "findings": [],
-        "agent_judgement_required": [],
-        "unknown_checks": [UnknownCheck("*", OWNER_SKILL, reason).to_dict()],
-    }
+    return unknown_output(OWNER_SKILL, CAPABILITY_IDS, site, reason, page_url=page_url)
 
 
 # ---------------------------------------------------------------------------
 # Fetching (--url mode only)
 # ---------------------------------------------------------------------------
-
-
-def site_label(url_or_domain: str) -> str:
-    value = url_or_domain.strip()
-    for scheme in ("https://", "http://"):
-        if value.lower().startswith(scheme):
-            value = value[len(scheme):]
-            break
-    return value.split("/")[0].strip().lower()
 
 
 # ---------------------------------------------------------------------------
@@ -1064,10 +1040,7 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
 
 def main(argv: list[str] | None = None) -> int:
     parser_ = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser_.add_argument("--url", help="A single page URL to fetch and audit")
-    parser_.add_argument("--site", help="Site label for the report, e.g. example.com")
-    parser_.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
-    parser_.add_argument("--page-url", help="Label findings with this page URL (default: --url)")
+    add_page_arguments(parser_)
     parser_.add_argument(
         "--offsite-url",
         action="append",
@@ -1107,19 +1080,9 @@ def main(argv: list[str] | None = None) -> int:
     site = site_label(args.site or args.url)
     page_url = args.page_url or args.url
 
-    if args.html_file:
-        html = Path(args.html_file).read_text(encoding="utf-8", errors="replace")
-    elif args.url:
-        html_or_error, status = fetch_page_html(args.url)
-        if status != "present":
-            json.dump(_unknown_output(site, html_or_error or "fetch failed", page_url), sys.stdout, indent=2)
-            sys.stdout.write("\n")
-            return 0
-        html = html_or_error
-    else:
-        json.dump(_unknown_output(site, "no --url or --html-file given", page_url), sys.stdout, indent=2)
-        sys.stdout.write("\n")
-        return 0
+    html, exit_code = resolve_page_html(args, site, page_url, _unknown_output)
+    if html is None:
+        return exit_code
 
     json.dump(audit_html(site, html, page_url=page_url, offsite_urls=args.offsite_url), sys.stdout, indent=2)
     sys.stdout.write("\n")

@@ -185,7 +185,13 @@ class SafetyTests(unittest.TestCase):
             "time", "typing", "unittest", "urllib", "zlib", "finding_contract", "text_spans",
             "jsonld_graph", "page_fetch", "graph_metrics", "page_sample", "xml", "budget",
             "public_suffix", "fuzzy_match", "shingles", "links", "__future__", "judgement_merge",
-            "html_extract", "phone_numbers",
+            "html_extract", "phone_numbers", "report_shape", "skill_cli",
+            # perimeter-access-audit's own sibling modules (skills/perimeter-access-audit/
+            # scripts/), split out of check_perimeter.py for decoupling — not shared/ modules,
+            # so only check_perimeter.py and each other import these.
+            "_perimeter_constants", "_perimeter_encoding", "_perimeter_fetch",
+            "_perimeter_access_rules", "_perimeter_edge_probe", "_perimeter_content_parity",
+            "_perimeter_artifacts", "_perimeter_contradictions",
             # Vendored under third_party/, never pip-installed — see third_party/VENDORED.md.
             "bs4", "soupsieve", "typing_extensions", "phonenumbers",
         }

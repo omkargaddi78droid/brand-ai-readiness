@@ -11,7 +11,7 @@ while building this skill — not hypothetical edge cases:
   failed to parse at all
 
 All four were caught by running the detectors against realistic fixtures
-before writing a single formal test — see docs/phase-4-completion-2.md.
+before writing a single formal test.
 """
 
 import email.utils

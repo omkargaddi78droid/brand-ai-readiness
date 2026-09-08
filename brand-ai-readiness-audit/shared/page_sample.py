@@ -3,8 +3,8 @@
 Today, page selection for every per-page skill is a prose instruction in
 skills/audit-orchestrator/SKILL.md: "pick a small, representative sample of
 pages... not every URL on the site." That is exactly the interest-biased
-selection docs/02-project-plan.md identifies as having silently disabled
-near-duplicate detection (B6, a later phase) — a human or an LLM picking
+selection that silently disabled near-duplicate detection (B6, a later
+phase) — a human or an LLM picking
 "interesting" pages tends to pick *different* pages, so a sampler built
 this way never happens to select two members of the same template cluster
 to compare against each other.

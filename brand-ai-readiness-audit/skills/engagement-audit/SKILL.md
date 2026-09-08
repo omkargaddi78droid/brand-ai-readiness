@@ -46,8 +46,7 @@ lexical-overlap candidates) into an `agent_judgement_required` array and
 emits no verdict for them — asserting "disoriented: yes" from a word-count
 heuristic, or "weak scent: yes" from a lexical score alone, would be a
 judgement the evidence does not support, exactly the failure mode this
-project's severity-calibration discipline exists to prevent (see
-`docs/baseline-gaps.md` §2 for the general principle).
+project's severity-calibration discipline exists to prevent.
 
 **You must resolve `agent_judgement_required` yourself, per step 3 below,
 before this file's output is handed to the entrypoint.** An unresolved
@@ -221,7 +220,7 @@ One JSON object on stdout:
 ```json
 {
   "owner_skill": "engagement-audit",
-  "capability_ids": ["EN-01", "EN-03", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"],
+  "capability_ids": ["EN-01", "EN-03", "EN-04", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"],
   "site": "example.com",
   "page_url": "https://example.com/",
   "findings": [
@@ -274,7 +273,7 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 ```json
 {
   "owner_skill": "engagement-audit",
-  "capability_ids": ["EN-01", "EN-03", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"],
+  "capability_ids": ["EN-01", "EN-03", "EN-04", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"],
   "site": "example.com",
   "findings": [
     {

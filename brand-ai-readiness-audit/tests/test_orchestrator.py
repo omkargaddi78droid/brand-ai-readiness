@@ -5,8 +5,8 @@ through `compose_report.py` (confirmed by grep across all nine prior call
 sites before this file was written). This file is the first to compose more
 than one real skill's output together, across more than one page, the way
 the entrypoint's own documented Procedure actually runs in production —
-closing the gap identified in the orchestrator end-to-end validation pass
-(`docs/phase-4-completion-15.md`).
+closing a gap identified in an earlier orchestrator end-to-end validation
+pass.
 
 Offline and deterministic throughout: every skill function is called
 in-process with inline fixture text, never over the network, matching this
@@ -259,9 +259,9 @@ class UnresolvedJudgementAlongsideCleanSkillsTests(unittest.TestCase):
 
 class Inf08NotBuiltTests(unittest.TestCase):
     """INF-08 (cross-skill dedup) stays NOT_STARTED per this pass's own
-    checked negative result (docs/phase-4-completion-15.md, docs/capability-
-    matrix.md): no genuine cross-skill redundancy was found in either of the
-    two real composed reports produced during Part 1. This test documents
+    checked negative result: no genuine cross-skill redundancy was found in
+    either of the two real composed reports produced during Part 1. This
+    test documents
     that two distinct skills' findings about unrelated defects on the same
     page are never merged or suppressed — the current, correct behaviour in
     the absence of INF-08."""

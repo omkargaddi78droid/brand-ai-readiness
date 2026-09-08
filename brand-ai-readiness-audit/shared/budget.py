@@ -2,8 +2,8 @@
 
 Every multi-page capability (Phase 3/4: engagement grounding, near-duplicate
 detection, cross-page consistency) runs a bounded but still potentially large
-number of comparisons — docs/02-project-plan.md's own worked example is ~30
-sampled pages, ~450 pairwise comparisons for near-duplicate detection. None of
+number of comparisons — a worked example is ~30 sampled pages, ~450 pairwise
+comparisons for near-duplicate detection. None of
 that is safe to ship inside a 5-minute audit budget without a cap: a `for`
 loop over every page pair with no time awareness either finishes fast on a
 small site or silently blows the budget on a large one.

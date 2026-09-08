@@ -97,7 +97,10 @@ _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
 from budget import StageBudget, coverage_manifest  # noqa: E402
+from report_shape import site_label, stamp_page as _stamp_page, unknown_output  # noqa: E402
+from skill_cli import add_page_arguments, resolve_page_html  # noqa: E402
 from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from jsonld_graph import flatten  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
     FETCH_TIMEOUT_SECONDS,
@@ -297,22 +300,6 @@ def _has_main_or_article(html: str) -> bool:
     return bool(_MAIN_ARTICLE_TAG_PATTERN.search(html))
 
 
-def _flatten_json_ld(value) -> list[dict]:
-    if isinstance(value, list):
-        flattened = []
-        for item in value:
-            flattened.extend(_flatten_json_ld(item))
-        return flattened
-    if isinstance(value, dict):
-        if isinstance(value.get("@graph"), list):
-            flattened = []
-            for item in value["@graph"]:
-                flattened.extend(_flatten_json_ld(item))
-            return flattened
-        return [value]
-    return []
-
-
 def _node_types(node: dict) -> set[str]:
     type_value = node.get("@type")
     if isinstance(type_value, str):
@@ -323,17 +310,7 @@ def _node_types(node: dict) -> set[str]:
 
 
 def extract_json_ld_nodes(json_ld_blocks: list[str]) -> list[dict]:
-    nodes: list[dict] = []
-    for block in json_ld_blocks:
-        stripped = block.strip()
-        if not stripped:
-            continue
-        try:
-            value = json.loads(stripped)
-        except json.JSONDecodeError:
-            continue
-        nodes.extend(_flatten_json_ld(value))
-    return nodes
+    return flatten(json_ld_blocks)
 
 
 # ---------------------------------------------------------------------------
@@ -1613,17 +1590,6 @@ def find_concealed_agent_instructions(html: str) -> list[Finding]:
 # ---------------------------------------------------------------------------
 
 
-def _stamp_page(findings: list[Finding], page_url: str | None) -> list[Finding]:
-    if not page_url:
-        return findings
-    stamped = []
-    for finding in findings:
-        finding.evidence = f"On {page_url}: {finding.evidence}"
-        finding.structured_evidence = {**(finding.structured_evidence or {}), "page_url": page_url}
-        stamped.append(finding)
-    return stamped
-
-
 def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
     parsed = parse_page(html)
     json_ld_nodes = extract_json_ld_nodes(parsed["json_ld_blocks"])
@@ -1662,15 +1628,7 @@ def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
 
 
 def _unknown_output(site: str, reason: str, page_url: str | None = None) -> dict:
-    return {
-        "owner_skill": OWNER_SKILL,
-        "capability_ids": CAPABILITY_IDS,
-        "site": site,
-        "page_url": page_url,
-        "findings": [],
-        "agent_judgement_required": [],
-        "unknown_checks": [UnknownCheck("*", OWNER_SKILL, reason).to_dict()],
-    }
+    return unknown_output(OWNER_SKILL, CAPABILITY_IDS, site, reason, page_url=page_url)
 
 
 _SAMPLE_FETCH_BUDGET_SECONDS = 90.0
@@ -1736,21 +1694,9 @@ def audit_sample(site: str, page_urls: list[str], *, clock=None) -> dict:
     }
 
 
-def site_label(url_or_domain: str) -> str:
-    value = url_or_domain.strip()
-    for scheme in ("https://", "http://"):
-        if value.lower().startswith(scheme):
-            value = value[len(scheme):]
-            break
-    return value.split("/")[0].strip().lower()
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--url", help="A single page URL to fetch and audit")
-    parser.add_argument("--site", help="Site label for the report, e.g. example.com")
-    parser.add_argument("--html-file", help="Read page HTML from a local file instead of fetching")
-    parser.add_argument("--page-url", help="Label findings with this page URL (default: --url)")
+    add_page_arguments(parser)
     parser.add_argument(
         "--sample-file",
         help="Run every REN capability across a whole page sample: a file of one page URL per "
@@ -1776,19 +1722,9 @@ def main(argv: list[str] | None = None) -> int:
     site = site_label(args.site or args.url)
     page_url = args.page_url or args.url
 
-    if args.html_file:
-        html = Path(args.html_file).read_text(encoding="utf-8", errors="replace")
-    elif args.url:
-        html_or_error, status = fetch_page_html(args.url)
-        if status != "present":
-            json.dump(_unknown_output(site, html_or_error or "fetch failed", page_url), sys.stdout, indent=2)
-            sys.stdout.write("\n")
-            return 0
-        html = html_or_error
-    else:
-        json.dump(_unknown_output(site, "no --url or --html-file given", page_url), sys.stdout, indent=2)
-        sys.stdout.write("\n")
-        return 0
+    html, exit_code = resolve_page_html(args, site, page_url, _unknown_output)
+    if html is None:
+        return exit_code
 
     json.dump(audit_html(site, html, page_url=page_url), sys.stdout, indent=2)
     sys.stdout.write("\n")

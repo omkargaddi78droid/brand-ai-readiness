@@ -74,8 +74,8 @@ _VOID_TAGS = {
 # broader, div/section/table-aware walk than this module's own _BLOCK_TAGS/
 # _SKIP_TAGS above (which serve extract_blocks()'s narrower, offset-preserving
 # paragraph/list-item block model and are not for reuse here). Consolidated
-# per docs/cycle-24.md item 2.5: the six skills' own definitions were
-# byte-for-byte identical (bar content-quality-audit's own, deliberately
+# because the six skills' own definitions were byte-for-byte identical (bar
+# content-quality-audit's own, deliberately
 # wider superset — see that skill's script for why), so this removes six
 # places the same set could silently drift, without changing any skill's
 # extraction algorithm or control flow — each skill still owns its own

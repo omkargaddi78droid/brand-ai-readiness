@@ -1,5 +1,5 @@
 """Unit tests for shared/graph_metrics.py (replaces networkx — see the
-module docstring and docs/02-project-plan.md Part 1 for why)."""
+module docstring for why)."""
 
 import sys
 import unittest

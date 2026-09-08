@@ -1,8 +1,6 @@
 #!/usr/bin/env bash
-# Builds the actual submission zip, replacing every prior cycle's manual,
-# unscripted `du`/`zip` size estimate (docs/phase-4-completion-10.md,
-# -15.md, -16.md) with a reproducible artifact that gets inspected, not
-# guessed at.
+# Builds the actual submission zip as a reproducible artifact that gets
+# inspected, not guessed at.
 #
 # Submission shape per problem-statement.txt: "a zip of the marketplace
 # root directory (containing marketplace.json and every skill folder),
@@ -12,8 +10,11 @@
 # included for the same reason (shared/public_suffix.py's PSL data asset —
 # see vendor/VENDORED.md); it is a runtime dependency, not tooling, but
 # ships data only, never code (tests/test_marketplace_manifest.py enforces
-# this). `tests/` is deliberately excluded: it is this project's own
-# development-time verification, not part of what a grader runs.
+# this). `third_party/` is included for the same reason — shared/html_extract.py
+# and shared/phone_numbers.py import vendored bs4/phonenumbers from it at
+# runtime (see third_party/VENDORED.md). `tests/` is deliberately excluded:
+# it is this project's own development-time verification, not part of what
+# a grader runs.
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -29,6 +30,7 @@ zip -r -q "$OUT" \
     shared \
     skills \
     vendor \
+    third_party \
     -x '*__pycache__*' -x '*.pyc' -x '*.pyo'
 
 echo "Built: $OUT"

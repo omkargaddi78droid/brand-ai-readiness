@@ -18,7 +18,7 @@ class FindPhoneNumbersTests(unittest.TestCase):
         )
 
     def test_no_default_region_and_no_plus_finds_nothing(self):
-        """The conservative default (docs/cycle-24.md item 4): with no
+        """The conservative default: with no
         `default_region`, a bare national-format number carries no signal
         about which country it belongs to, so it is not matched."""
         self.assertEqual(find_phone_numbers("Call 202-555-0173 for support."), [])

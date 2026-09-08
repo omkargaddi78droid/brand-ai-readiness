@@ -34,9 +34,9 @@ missing — it never raises on a missing or unreadable vendor asset.
   uses only the 15 hand-curated `BOT_TIERS` entries. Widening that threshold
   to require blocking all 175 (mostly obscure) bots would make the
   realistic "block the well-known AI bots" robots.txt pattern stop tripping
-  the critical PER-02 finding at all — an explicit user decision this cycle
-  to keep threshold accuracy over raw coverage (`docs/cycle-24.md`).
-  `resolve_bot_tiers()` remains available, tested, and correct for a future
+  the critical PER-02 finding at all — an explicit decision to keep
+  threshold accuracy over raw coverage. `resolve_bot_tiers()` remains
+  available, tested, and correct for a future
   capability that wants the wider list for something other than that
   threshold.
 - **Classification:** each of the 175 bots is deterministically sorted into
