@@ -25,47 +25,20 @@ from _perimeter_constants import (  # noqa: E402
     REPRESENTATIVE_AGENTS,
 )
 from _perimeter_encoding import _best_effort_decode_content_encoding  # noqa: E402
-from _perimeter_fetch import fetch_text  # noqa: E402
+from _perimeter_fetch import (  # noqa: E402
+    fetch_text,
+    classify_response,
+    CHALLENGE_MARKERS,
+    EDGE_BLOCK_STATUS_CODES,
+)
 from _perimeter_access_rules import can_fetch_root, parse_groups  # noqa: E402
 
-
-# Status codes that name a deliberate access decision. 5xx and other errors are
-# excluded on purpose: a 500 is at least as likely to be an origin fault as a
-# bot-specific block, and asserting a block from an ambiguous status would be
-# exactly the false-positive-of-severity failure this project tests against.
-EDGE_BLOCK_STATUS_CODES = (403, 429)
-
-# A CDN challenge page often returns 200 with a JS/CAPTCHA interstitial rather
-# than a 4xx. These are the markers of the major bot-management vendors' stock
-# challenge pages. A body match is a weaker signal than a status code, so it is
-# reported at reduced confidence (see `_edge_block_finding`).
-CHALLENGE_MARKERS = (
-    "checking your browser",
-    "just a moment",
-    "cf-browser-verification",
-    "attention required! | cloudflare",
-    "please verify you are a human",
-    "captcha-delivery.com",
-    "distil_r_captcha",
-    "perimeterx",
-    "access denied",
-    "request blocked",
-    "you have been blocked",
-)
-
-
-def classify_response(status: int | None, body: str) -> str:
-    """Pure classifier: HTTP status + body -> "ok" | "blocked" | "challenge" |
-    "ambiguous". No network I/O, so this is the part of PER-03 that is unit
-    tested directly with fixed inputs."""
-    lowered = body.lower()
-    if any(marker in lowered for marker in CHALLENGE_MARKERS):
-        return "challenge"
-    if status in EDGE_BLOCK_STATUS_CODES:
-        return "blocked"
-    if status is not None and 200 <= status < 300:
-        return "ok"
-    return "ambiguous"
+# `EDGE_BLOCK_STATUS_CODES`/`CHALLENGE_MARKERS`/`classify_response` now live in
+# `_perimeter_fetch` (single source of truth shared with `fetch_text`, so a
+# 429/403 hit on /llms.txt or similar well-known file is classified the same
+# way this module's own root-`/` probes are) and are re-imported here so
+# every existing `from _perimeter_edge_probe import classify_response`
+# (check_perimeter.py, tests/test_edge_access.py) keeps working unchanged.
 
 
 def plan_edge_probes(groups: list[tuple[set[str], list[str]]]) -> dict:

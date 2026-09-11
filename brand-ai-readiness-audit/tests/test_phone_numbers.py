@@ -45,6 +45,19 @@ class FindPhoneNumbersTests(unittest.TestCase):
         validator correctly does not."""
         self.assertEqual(find_phone_numbers("Call 555-123-4567.", default_region="US"), [])
 
+    def test_a_bare_local_only_number_with_no_area_code_is_rejected(self):
+        """Live regression (tryhackme.com help center, 2026-09-11):
+        '"helpCenterId":3107781' — a plain numeric config id with no phone
+        context, no separators, and no area code — was matched as a "valid"
+        NANP local-only number by libphonenumber's backward-compatibility
+        allowance. Out of context that is indistinguishable from arbitrary
+        short numeric literals, so it must not be reported as a found phone
+        number."""
+        self.assertEqual(
+            find_phone_numbers('"helpCenterId":3107781,"url":"https://x"', default_region="US"),
+            [],
+        )
+
     def test_no_phone_number_in_text_returns_empty(self):
         self.assertEqual(find_phone_numbers("There is no phone number here."), [])
 

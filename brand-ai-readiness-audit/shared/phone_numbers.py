@@ -30,6 +30,18 @@ def find_phone_numbers(text: str, default_region: str | None = None) -> list[str
     for match in phonenumbers.PhoneNumberMatcher(text, default_region or "ZZ"):
         if not phonenumbers.is_valid_number(match.number):
             continue
+        # `is_valid_number` still accepts a bare local-format match (e.g. a
+        # 7-digit NANP number with no area code) for backward compatibility
+        # with pre-area-code dialing. Out of context that is indistinguishable
+        # from an arbitrary short numeric literal (a config id, a timestamp
+        # fragment) — real-world false positive: "helpCenterId":3107781 in an
+        # embedded app-config JSON blob matched as a "valid" local number.
+        # `is_possible_number_with_reason` names this case explicitly; reject it.
+        if (
+            phonenumbers.is_possible_number_with_reason(match.number)
+            == phonenumbers.ValidationResult.IS_POSSIBLE_LOCAL_ONLY
+        ):
+            continue
         formatted = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
         if formatted not in seen:
             seen.add(formatted)

@@ -96,7 +96,7 @@ from _perimeter_constants import (  # noqa: E402
     FETCH_TIMEOUT_SECONDS,
     REPRESENTATIVE_AGENTS,
 )
-from _perimeter_encoding import decode_content_encoding  # noqa: E402
+from _perimeter_encoding import decode_content_encoding, _best_effort_decode_content_encoding  # noqa: E402
 from _perimeter_fetch import fetch_text  # noqa: E402
 from _perimeter_access_rules import (  # noqa: E402
     BOT_TIERS,
@@ -167,6 +167,12 @@ def fetch_page_with_headers(url: str) -> tuple[str | None, dict[str, str], str]:
     object (`error.headers`), and those are captured here — a 403 or 500
     response's headers can still carry `X-Robots-Tag` or similar signal a
     later capability needs.
+
+    Same classification as `fetch_text` on that non-404/410 branch: the body
+    is still read and run through `classify_response`, so a 429/403 or a
+    challenge-interstitial 200 is named as a CDN/edge decision in the
+    returned text instead of a bare HTTP code indistinguishable from a
+    transient error.
     """
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     try:
@@ -179,10 +185,29 @@ def fetch_page_with_headers(url: str) -> tuple[str | None, dict[str, str], str]:
     except urllib.error.HTTPError as error:
         code = error.code
         error_headers = {key.lower(): value for key, value in error.headers.items()} if error.headers else {}
-        error.close()
         if code in (404, 410):
+            error.close()
             return None, {}, "absent"
-        return f"{url} returned HTTP {code}", error_headers, "unavailable"
+        try:
+            raw = error.read(4096)
+            raw = _best_effort_decode_content_encoding(raw, error_headers.get("content-encoding", ""))
+            body = raw.decode("utf-8", errors="replace")
+        except Exception:
+            body = ""
+        finally:
+            error.close()
+        classification = classify_response(code, body)
+        if classification in ("blocked", "challenge"):
+            how = "a bot-management challenge page" if classification == "challenge" else "a deliberate edge decision"
+            server_note = f" (server: {error_headers['server']})" if error_headers.get("server") else ""
+            text = (
+                f"{url} returned HTTP {code}, classified as a CDN/edge {classification}{server_note}: "
+                f"the edge answered with {how} rather than a generic error, so this is not confirmation "
+                "the file is absent — see PER-03 for the same classification applied to root access"
+            )
+        else:
+            text = f"{url} returned HTTP {code}"
+        return text, error_headers, "unavailable"
     except Exception as error:  # timeout, DNS, TLS, redirect loop
         return f"{url} could not be fetched: {type(error).__name__}: {error}", {}, "unavailable"
 

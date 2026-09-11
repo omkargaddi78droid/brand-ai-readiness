@@ -30,6 +30,7 @@ def _load(name: str, relative_path: str):
 
 
 perimeter = _load("check_perimeter", "skills/perimeter-access-audit/scripts/check_perimeter.py")
+perimeter_fetch = _load("_perimeter_fetch", "skills/perimeter-access-audit/scripts/_perimeter_fetch.py")
 orchestrator = _load("compose_report", "skills/audit-orchestrator/scripts/compose_report.py")
 
 FIXED_TIMESTAMP = "2026-09-20T14:32:00Z"
@@ -346,6 +347,66 @@ class FetchPageWithHeadersTests(unittest.TestCase):
         self.assertEqual(status, "unavailable")
         self.assertIsNotNone(text)
         self.assertEqual(headers, {})
+
+    def test_a_429_edge_challenge_is_named_and_headers_still_captured(self):
+        """Live regression (tryhackme.com, PER-10's api-catalog fetch,
+        2026-09-11): shares fetch_text's challenge classification, but must
+        not lose this function's own reason for existing — response headers
+        on a non-404 HTTPError are still captured."""
+        with _HeaderLocalServer(429, b"Too Many Requests", {"X-Robots-Tag": "noai"}) as server:
+            text, headers, status = perimeter.fetch_page_with_headers(server.url)
+        self.assertEqual(status, "unavailable")
+        self.assertIn("CDN/edge", text)
+        self.assertIn("blocked", text)
+        self.assertEqual(headers.get("x-robots-tag"), "noai")
+
+
+class FetchTextEdgeChallengeTests(unittest.TestCase):
+    """Live regression (tryhackme.com, 2026-09-11): /llms.txt, /llms-full.txt,
+    /index.md and /.well-known/api-catalog all returned HTTP 429 with a Vercel
+    bot-management challenge page, every time, for every user agent tested —
+    a persistent edge decision, not a transient rate limit. `fetch_text` used
+    to collapse that into a bare "returned HTTP 429", indistinguishable from a
+    generic error. It must now name the edge challenge explicitly, reusing
+    PER-03's own `classify_response` (imported from this same module, single
+    source of truth — see `_perimeter_edge_probe.py`)."""
+
+    def test_a_429_is_reported_as_a_blocked_edge_decision(self):
+        with _HeaderLocalServer(429, b"Too Many Requests") as server:
+            text, status = perimeter_fetch.fetch_text(server.url)
+        self.assertEqual(status, "unavailable")
+        self.assertIn("429", text)
+        self.assertIn("CDN/edge", text)
+        self.assertIn("blocked", text)
+
+    def test_a_200_challenge_interstitial_is_reported_as_a_challenge(self):
+        body = b"<title>Vercel Security Checkpoint</title>Checking your browser..."
+        with _HeaderLocalServer(403, body) as server:
+            text, status = perimeter_fetch.fetch_text(server.url)
+        self.assertEqual(status, "unavailable")
+        self.assertIn("403", text)
+        self.assertIn("CDN/edge", text)
+        self.assertIn("challenge", text)
+
+    def test_a_plain_403_with_no_challenge_markers_still_names_a_blocked_decision(self):
+        with _HeaderLocalServer(403, b"Forbidden") as server:
+            text, status = perimeter_fetch.fetch_text(server.url)
+        self.assertEqual(status, "unavailable")
+        self.assertIn("blocked", text)
+
+    def test_a_500_stays_a_generic_unavailable_not_a_block(self):
+        """5xx is deliberately excluded from EDGE_BLOCK_STATUS_CODES — an
+        origin fault must not be reported as a deliberate edge decision."""
+        with _HeaderLocalServer(500, b"Internal Server Error") as server:
+            text, status = perimeter_fetch.fetch_text(server.url)
+        self.assertEqual(status, "unavailable")
+        self.assertNotIn("CDN/edge", text)
+
+    def test_404_is_still_plain_absent(self):
+        with _HeaderLocalServer(404, b"not found") as server:
+            text, status = perimeter_fetch.fetch_text(server.url)
+        self.assertEqual(status, "absent")
+        self.assertIsNone(text)
 
 
 class BotTaxonomyAccelerationTests(unittest.TestCase):
