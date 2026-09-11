@@ -13,6 +13,7 @@ from finding_contract import (  # noqa: E402
     UnknownCheck,
     assign_sequential_ids,
     build_report,
+    merge_paginated_findings,
     to_floor_schema,
     validate_findings,
     validate_floor_shape,
@@ -164,6 +165,85 @@ class FloorShapeGuardTests(unittest.TestCase):
         report = build_report("example.com", [make_finding()], audited_at=FIXED_TIMESTAMP)
         del report["findings"][0]["suggested_action"]
         self.assertTrue(any("suggested_action" in e for e in validate_floor_shape(report)))
+
+
+class MergeTests(unittest.TestCase):
+    def test_a_singleton_id_passes_through_unchanged(self):
+        findings = [make_finding(structured_evidence={"page_url": "https://example.com/"})]
+        self.assertEqual(merge_paginated_findings(findings), findings)
+
+    def test_two_pages_merge_into_one_finding(self):
+        page1 = make_finding(
+            evidence="On https://example.com/a: 5 of 6 images unsized.",
+            structured_evidence={"page_url": "https://example.com/a", "unsized_count": 5},
+        )
+        page2 = make_finding(
+            evidence="On https://example.com/b: 3 of 3 images unsized.",
+            structured_evidence={"page_url": "https://example.com/b", "unsized_count": 3},
+        )
+        merged = merge_paginated_findings([page1, page2])
+
+        self.assertEqual(len(merged), 1)
+        result = merged[0]
+        self.assertEqual(
+            result.evidence,
+            "Found on 2 pages:\n"
+            "- On https://example.com/a: 5 of 6 images unsized.\n"
+            "- On https://example.com/b: 3 of 3 images unsized.",
+        )
+        self.assertEqual(result.structured_evidence["affected_page_count"], 2)
+        self.assertEqual(
+            [p["page_url"] for p in result.structured_evidence["pages"]],
+            ["https://example.com/a", "https://example.com/b"],
+        )
+
+    def test_identity_field_mismatch_raises(self):
+        page1 = make_finding(severity="critical", structured_evidence={"page_url": "https://example.com/a"})
+        page2 = make_finding(severity="low", structured_evidence={"page_url": "https://example.com/b"})
+        with self.assertRaises(ValueError):
+            merge_paginated_findings([page1, page2])
+
+    def test_suggested_action_priority_mismatch_raises(self):
+        page1 = make_finding(
+            suggested_action=SuggestedAction(summary="Fix it.", priority="critical"),
+            structured_evidence={"page_url": "https://example.com/a"},
+        )
+        page2 = make_finding(
+            suggested_action=SuggestedAction(summary="Fix it too.", priority="low"),
+            structured_evidence={"page_url": "https://example.com/b"},
+        )
+        with self.assertRaises(ValueError):
+            merge_paginated_findings([page1, page2])
+
+    def test_missing_page_url_raises(self):
+        page1 = make_finding(structured_evidence={"page_url": "https://example.com/a"})
+        page2 = make_finding(structured_evidence=None)
+        with self.assertRaises(ValueError):
+            merge_paginated_findings([page1, page2])
+
+    def test_duplicate_page_url_in_group_raises(self):
+        page1 = make_finding(structured_evidence={"page_url": "https://example.com/a"})
+        page2 = make_finding(structured_evidence={"page_url": "https://example.com/a"})
+        with self.assertRaises(ValueError):
+            merge_paginated_findings([page1, page2])
+
+    def test_differing_confidence_resolves_to_the_weakest(self):
+        page1 = make_finding(confidence="high", structured_evidence={"page_url": "https://example.com/a"})
+        page2 = make_finding(confidence="low", structured_evidence={"page_url": "https://example.com/b"})
+        merged = merge_paginated_findings([page1, page2])
+        self.assertEqual(merged[0].confidence, "low")
+
+    def test_differing_suggested_action_summary_merges_via_lexicographically_first_page(self):
+        page_b = make_finding(
+            suggested_action=SuggestedAction(summary="Fix field X missing on b.", priority="critical"),
+            structured_evidence={"page_url": "https://example.com/b"},
+        )
+        page_a = make_finding(
+            suggested_action=SuggestedAction(summary="Fix field Y missing on a.", priority="critical"),
+            structured_evidence={"page_url": "https://example.com/a"},
+        )
+        merged = merge_paginated_findings([page_b, page_a])
+        self.assertEqual(merged[0].suggested_action.summary, "Fix field Y missing on a.")
 
 
 if __name__ == "__main__":

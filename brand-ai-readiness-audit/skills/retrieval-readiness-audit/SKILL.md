@@ -54,7 +54,7 @@ and `entity-audit`'s ENT-09.
   the preferred way to run this skill**, since every capability here is
   per-page anyway (there is no separate site-wide check) and bulk mode
   fetches the sample concurrently instead of one sequential subprocess per
-  page (Defect 2 / INF-10).
+  page.
 
 ## Procedure
 
@@ -66,7 +66,7 @@ and `entity-audit`'s ENT-09.
    ```
 
    `--sample-file` is one on-site URL per line — pass the `sample_urls`
-   from `audit-orchestrator`'s `sample_pages.py` (INF-01). The script
+   from `audit-orchestrator`'s `sample_pages.py`. The script
    fetches every page concurrently (bounded, order-preserving batches;
    capped at 90s total via `shared/budget.StageBudget`) and merges every
    page's findings AND `agent_judgement_required` entries into one report —
@@ -226,66 +226,6 @@ One JSON object on stdout, same shape as the other audit skills:
       "gate": 3,
       "confidence": "high",
       "structured_evidence": {"missing_tokens": [{"field": "sku", "token": "WID-123"}], "count": 1, "page_url": "..."}
-    },
-    {
-      "id": "RET-04-keyword-stuffing",
-      "title": "A phrase is repeated at unnatural density in the page's own prose",
-      "severity": "medium",
-      "evidence": "On https://example.com/product/widget: 1 phrase(s) repeat at a density generative engines associate with keyword stuffing, out of 105 prose word(s) (table/list/glossary regions excluded from this count): \"cheap flights to paris\" (6x).",
-      "suggested_action": {"summary": "...", "priority": "medium"},
-      "category": "discoverability",
-      "capability_id": "RET-04",
-      "owner_skill": "retrieval-readiness-audit",
-      "mechanism": "...",
-      "track": "defect",
-      "gate": 3,
-      "confidence": "medium",
-      "structured_evidence": {"repeated_phrases": [{"phrase": "cheap flights to paris", "count": 6}], "prose_word_count": 105, "page_url": "..."}
-    },
-    {
-      "id": "RET-07-no-retrieval-structure",
-      "title": "A substantial page has no headings, Q&A framing, or definition blocks",
-      "severity": "medium",
-      "evidence": "On https://example.com/about: This page has 510 word(s) of visible text but no heading elements, no Q&A-style heading or FAQPage/QAPage markup, and no definition-list (<dt>/<dd>) block anywhere — none of the structural aids that let a retrieval system split it into self-contained chunks.",
-      "suggested_action": {"summary": "...", "priority": "medium"},
-      "category": "discoverability",
-      "capability_id": "RET-07",
-      "owner_skill": "retrieval-readiness-audit",
-      "mechanism": "...",
-      "track": "defect",
-      "gate": 3,
-      "confidence": "medium",
-      "structured_evidence": {"content_word_count": 510, "has_headings": false, "has_qa_framing": false, "has_definition_block": false, "page_url": "..."}
-    },
-    {
-      "id": "RET-09-facts-interred-mid-document",
-      "title": "Load-bearing values appear only in the middle of the page, restated nowhere",
-      "severity": "medium",
-      "evidence": "On https://example.com/product/widget: This page runs 3412 word(s). 4 of its 4 extracted load-bearing figure(s) — $1,299, 40%, 18 months, 2.4 GB — each appear only in the document's middle band (normalized position between 0.25 and 0.75), with no restatement in the title, any h1/h2, the opening or closing 15% of prose, a table cell, a definition, or JSON-LD. Published attention-bias research (Liu et al. 2024; Chroma 2025) identifies this band as the highest-risk zone for omission during synthesis.",
-      "suggested_action": {"summary": "...", "priority": "medium"},
-      "category": "discoverability",
-      "capability_id": "RET-09",
-      "owner_skill": "retrieval-readiness-audit",
-      "mechanism": "...",
-      "track": "defect",
-      "gate": 3,
-      "confidence": "medium",
-      "structured_evidence": {"prose_word_count": 3412, "values": [{"value": "$1,299", "normalized_position": 0.41, "restated_at": null}], "interred_ratio": 1.0, "page_url": "..."}
-    },
-    {
-      "id": "RET-10-context-dependent-blocks",
-      "title": "Content blocks open with an unresolved reference and never name their own subject",
-      "severity": "medium",
-      "evidence": "On https://example.com/product/widget: 12 of 34 content blocks (35%) open with an unresolved reference and never name their subject inside the block. Read alone — the unit a RAG pipeline retrieves — block 6 reads: 'It cut onboarding time by 40% for their enterprise tier.' Nothing in that block says what the leading pronoun, demonstrative, or generic reference refers to.",
-      "suggested_action": {"summary": "...", "priority": "medium"},
-      "category": "discoverability",
-      "capability_id": "RET-10",
-      "owner_skill": "retrieval-readiness-audit",
-      "mechanism": "...",
-      "track": "defect",
-      "gate": 3,
-      "confidence": "medium",
-      "structured_evidence": {"total_blocks_judged": 34, "context_dependent_count": 12, "ratio": 0.3529, "examples": [{"text": "It cut onboarding time by 40% for their enterprise tier.", "first_sentence": "It cut onboarding time by 40% for their enterprise tier.", "nearest_heading": "Pricing"}], "page_url": "..."}
     }
   ],
   "agent_judgement_required": [
@@ -301,6 +241,17 @@ One JSON object on stdout, same shape as the other audit skills:
   "unknown_checks": []
 }
 ```
+
+The other four script-decided capabilities follow the identical shape above
+with a different `capability_id`/`title`/`structured_evidence` — see
+`references/retrieval-readiness-checks.md` for exactly what each one's
+`evidence` and `structured_evidence` carry: RET-04 (`repeated_phrases`,
+`prose_word_count`, `confidence: "medium"`), RET-07 (`content_word_count`,
+`has_headings`/`has_qa_framing`/`has_definition_block`), RET-09
+(`prose_word_count`, `values`, `interred_ratio`, `confidence: "medium"`),
+and RET-10 (`total_blocks_judged`, `context_dependent_count`, `ratio`,
+`examples`, `confidence` `"high"` or `"medium"` depending on heading
+anchoring — see the reference for why).
 
 `agent_judgement_required` always carries four entries (RET-02/03/05/06),
 one shown above for brevity — resolve each per the Procedure above and

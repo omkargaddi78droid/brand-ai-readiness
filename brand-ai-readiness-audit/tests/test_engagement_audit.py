@@ -71,6 +71,37 @@ class FormLabelingTests(unittest.TestCase):
         parser = eng.parse_page(html)
         self.assertEqual(parser.fields, [])
 
+    def test_bug_003_a_css_class_hidden_text_field_is_excluded(self):
+        # type="hidden" is not the only way markup takes a field out of a
+        # person's or an agent's path — class="... hidden" is the common
+        # JS-widget convention for the same thing on a type="text" field.
+        parser = eng.parse_page('<input type="text" class="lead-service-id hidden" value="2">')
+        self.assertEqual(parser.fields, [])
+
+    def test_bug_003_the_hidden_boolean_attribute_is_excluded(self):
+        parser = eng.parse_page('<input type="text" hidden value="x">')
+        self.assertEqual(parser.fields, [])
+
+    def test_bug_003_aria_hidden_true_is_excluded(self):
+        parser = eng.parse_page('<input type="text" aria-hidden="true">')
+        self.assertEqual(parser.fields, [])
+
+    def test_bug_003_inline_display_none_is_excluded(self):
+        parser = eng.parse_page('<input type="text" style="display: none;">')
+        self.assertEqual(parser.fields, [])
+
+    def test_bug_003_visually_hidden_class_is_not_excluded(self):
+        # "visually-hidden"/"sr-only" means hidden from sighted users but
+        # still exposed to assistive tech — it still needs a real name.
+        parser = eng.parse_page('<input type="text" class="visually-hidden">')
+        self.assertEqual(len(parser.fields), 1)
+
+    def test_bug_003_a_class_token_that_merely_contains_hidden_is_not_excluded(self):
+        # "hidden" must match as a whole class token, not a substring —
+        # a class like "overhidden-field" is not this convention.
+        parser = eng.parse_page('<input type="text" class="overhidden-field">')
+        self.assertEqual(len(parser.fields), 1)
+
     def test_select_and_textarea_are_checked_too(self):
         parser = eng.parse_page("<select><option>A</option></select><textarea></textarea>")
         self.assertEqual(len(parser.fields), 2)
@@ -324,6 +355,53 @@ class ExtractionForAgentJudgementTests(unittest.TestCase):
         self.assertIn("Get started", signals["candidate_cta_texts"])
         self.assertIn("Book a demo", signals["candidate_cta_texts"])
 
+    def test_bug_001_a_leading_cookie_banner_is_skipped_from_first_150_words(self):
+        html = (
+            "<p>We use cookies to improve your experience. Accept all cookies to continue.</p>"
+            "<h1>Example Corp</h1><p>We help small teams ship faster.</p>"
+        )
+        parser = eng.parse_page(html)
+        signals = eng.extract_orientation_signals(parser, parser.visible_text())
+        self.assertIn("ship faster", signals["first_150_words"])
+        self.assertNotIn("cookies", signals["first_150_words"].lower())
+
+    def test_bug_001_a_generic_intro_line_before_the_banner_sentence_is_also_skipped(self):
+        # Real consent banners often render a generic intro/heading line
+        # ("Help us improve your experience") before the sentence that
+        # actually names a cookie action, and use a curly apostrophe
+        # ("we’d like...") rather than a straight one. Both must not
+        # defeat the skip.
+        html = (
+            "<p>Help us improve your experience</p>"
+            "<p>In addition to Cookies necessary for this site, we’d like your "
+            "permission to set some additional Cookies.</p>"
+            "<p>Accept All Additional Cookies Reject All Additional Cookies</p>"
+            "<h1>Example Corp</h1><p>We help small teams ship faster.</p>"
+        )
+        parser = eng.parse_page(html)
+        signals = eng.extract_orientation_signals(parser, parser.visible_text())
+        self.assertIn("ship faster", signals["first_150_words"])
+        self.assertNotIn("cookies", signals["first_150_words"].lower())
+
+    def test_bug_001_total_word_count_still_counts_the_banner(self):
+        # The 150-word opening window skips the banner; the page's overall
+        # word count must not silently shrink because of that.
+        html = "<p>We use cookies to improve your experience.</p><h1>Example Corp</h1>"
+        parser = eng.parse_page(html)
+        full_text = parser.visible_text()
+        signals = eng.extract_orientation_signals(parser, full_text)
+        self.assertEqual(signals["total_word_count"], len(full_text.split()))
+
+    def test_bug_001_cookie_banner_buttons_are_excluded_from_candidate_ctas(self):
+        html = (
+            "<button>Accept All Additional Cookies</button>"
+            "<button>Reject All Additional Cookies</button>"
+            '<a href="/start">Get started</a>'
+        )
+        parser = eng.parse_page(html)
+        signals = eng.extract_orientation_signals(parser, parser.visible_text())
+        self.assertEqual(signals["candidate_cta_texts"], ["Get started"])
+
     def test_conversion_signals_detect_a_password_field_without_guest_language(self):
         html = '<form><input type="password"></form><p>Checkout now.</p>'
         parser = eng.parse_page(html)
@@ -426,6 +504,19 @@ class PrimaryCtaTests(unittest.TestCase):
 
     def test_no_cta_at_all_returns_none(self):
         parser = eng.parse_page("<p>No buttons or links here.</p>")
+        self.assertIsNone(eng._primary_cta(parser))
+
+    def test_bug_001_a_leading_cookie_banner_button_is_skipped(self):
+        html = (
+            "<button>Accept All Additional Cookies</button>"
+            "<button>Reject All Additional Cookies</button>"
+            '<a href="/start">Start free trial</a>'
+        )
+        parser = eng.parse_page(html)
+        self.assertEqual(eng._primary_cta(parser), "Start free trial")
+
+    def test_bug_001_only_cookie_banner_ctas_returns_none(self):
+        parser = eng.parse_page("<button>Accept All Cookies</button><button>Cookie settings</button>")
         self.assertIsNone(eng._primary_cta(parser))
 
 

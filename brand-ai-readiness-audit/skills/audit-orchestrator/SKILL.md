@@ -64,9 +64,9 @@ or otherwise alters the audited site.
    different instance), and allocates a fixed page budget across clusters
    proportionally, always including the homepage and any `/contact`,
    `/checkout`, `/search`, `/pricing` page found — so the sample spans the
-   site's different page *kinds* instead of just its most numerous one (a
-   hand-picked "interesting pages" sample tends to under-sample near-duplicate
-   templates, the exact gap that later disables near-duplicate detection):
+   site's different page *kinds* instead of just its most numerous one (see
+   `references/orchestration-notes.md` for why a hand-picked sample defeats
+   near-duplicate detection):
 
    ```bash
    python3 ../audit-orchestrator/scripts/sample_pages.py \
@@ -265,9 +265,9 @@ or otherwise alters the audited site.
    per-page (there is no separate site-wide capability), so **prefer their
    `--sample-file` bulk mode over one `--url` invocation per page** — it
    fetches the whole page-sample file concurrently in one process instead of
-   spawning one sequential subprocess per page, closing the gap that made
-   this project's own 5-minute budget unrealistic on a full 25-page sample
-   across every skill (Defect 2 / INF-10 follow-up):
+   spawning one sequential subprocess per page — see
+   `references/orchestration-notes.md` for why sequential per-page fetching
+   made the 5-minute budget unrealistic on a full 25-page sample:
 
    ```bash
    python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \
@@ -297,9 +297,14 @@ or otherwise alters the audited site.
        --url https://example.com/product/widget > /tmp/audit/static-extraction-widget.json
    ```
 
-6. **Compose one report.**
+6. **Compose one report and write it to `report/`.** The marketplace root
+   has a standing `report/` directory for exactly this — every audit's
+   output lands there, one file per site, instead of being pasted into the
+   chat response:
 
    ```bash
+   mkdir -p report
+
    python3 scripts/compose_report.py --site example.com \
        --skill perimeter-access-audit /tmp/audit/perimeter.json \
        --skill content-quality-audit /tmp/audit/content-pricing.json \
@@ -311,7 +316,8 @@ or otherwise alters the audited site.
        --skill engagement-audit /tmp/audit/engagement-home.json \
        --skill citability-audit /tmp/audit/citability-guide.json \
        --skill retrieval-readiness-audit /tmp/audit/retrieval-sample.json \
-       --skill static-extraction-audit /tmp/audit/static-extraction-sample.json
+       --skill static-extraction-audit /tmp/audit/static-extraction-sample.json \
+       > report/result_example.com.json
    ```
 
    Repeat `--skill NAME PATH` once per invocation that ran, including once per
@@ -319,10 +325,20 @@ or otherwise alters the audited site.
    per site — the same skill name may appear more than once. Add
    `--floor-only` for the minimal required schema instead of the full report.
 
-7. **Return the JSON the script printed, unmodified.** It has already been
-   validated. Do not add findings, re-word evidence, re-rank severities or
-   summarise the report into prose in place of the JSON — a finding's severity
-   and mechanism are set by the skill that has the evidence.
+   The output filename is always `result_<site>.json`, where `<site>` is the
+   same normalised site label used in step 1 (`example.com`, not the full
+   URL) — so re-auditing the same site overwrites its own prior result rather
+   than accumulating duplicates, and two different sites never collide.
+
+7. **Do not paste the report JSON into the chat.** It has already been
+   validated and written to `report/result_<site>.json` in the previous
+   step. Do not add findings, re-word evidence, re-rank severities, or
+   summarise the report into prose in place of the file — a finding's
+   severity and mechanism are set by the skill that has the evidence, and the
+   file is the deliverable. Reply to the user with confirmation that the
+   audit is complete, the file path it was written to, and the top-line
+   counts from the report's own `summary` (total findings, and the
+   critical/high breakdown) — not the findings themselves.
 
 8. **If a skill produced nothing usable**, the composer records it as an
    `unknown_checks` entry naming that skill, and the report is still emitted
@@ -330,8 +346,8 @@ or otherwise alters the audited site.
    six `--sample-file` skills (`entity-audit`, `content-quality-audit`,
    `citability-audit`, `engagement-audit`, `retrieval-readiness-audit`,
    `static-extraction-audit`) each fetch their page sample concurrently and
-   cap the whole fetch loop at 90s via `shared/budget.StageBudget` (INF-10)
-   — if that cap is hit mid-run, `compose_report.py` merges each skill's own
+   cap the whole fetch loop at 90s via `shared/budget.StageBudget` — if that
+   cap is hit mid-run, `compose_report.py` merges each skill's own
    `coverage.stages` entry into the final report's `coverage.stages`, so a
    partially-covered sample is visible in the report itself, not just
    inferrable from a shorter-than-expected findings list.
@@ -351,6 +367,37 @@ composition bug.
 | `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-08 hub/authority link-graph structure + CIT-09 comparison-content gap (multi-page, proactive) · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per sampled page, plus once per site for CIT-08/09's `--sample-file` mode |
 | `retrieval-readiness-audit` | RET-01/04/07/08/09/10 (script), RET-02/03/05/06 (agent-judged) | 3 | Once per site via `--sample-file` (preferred), or once per page via `--url` for a one-off page |
 | `static-extraction-audit` | REN-02 hydration-state coverage · REN-04 price-render gating · REN-05 availability freshness · REN-06 semantic HTML5 boundary · REN-07 content ratio · REN-08 multimodal accessibility · REN-10 NAP render asymmetry (phone) · REN-11 PDF-only fact lock (proactive) · REN-12 concealed agent-directed instruction scanner — all script-decided, no headless browser | 2 | Once per site via `--sample-file` (preferred), or once per page via `--url` for a one-off page |
+
+## Cross-skill boundaries
+
+A handful of pairs across this registry look like the same defect checked
+twice — they are not, and each pair is backed by its own overlap-control
+test proving both sides can legitimately fire together without tripping
+`compose_report.py`'s one-owner-per-capability guard:
+
+- **`entity-audit`'s ENT-08 (address clustering) vs. `static-extraction-audit`'s
+  REN-10 (phone-number render asymmetry).** Both look like "NAP consistency"
+  (Name/Address/Phone). ENT-08 owns the address; REN-10 owns the phone
+  number. Neither duplicates the other's field.
+- **`content-quality-audit`'s CQ-01 (answer extractability, agent-judged) vs.
+  `retrieval-readiness-audit`'s RET-09 (positional fact interment, script-
+  decided).** CQ-01 asks whether the *opening* reads as a good answer; RET-09
+  asks whether already-present *values* are anchored anywhere sensible in the
+  *whole* document, never judging the opening itself.
+  `tests/test_retrieval_readiness.py::OverlapControlTests` proves both can
+  fire on one page without a duplicate-id collision.
+- **`retrieval-readiness-audit`'s own RET-06 (chunk quality, agent-judged) vs.
+  RET-10 (chunk self-containment, script-decided).** RET-06 asks whether a
+  long paragraph blends unrelated ideas; RET-10 asks only whether a block
+  names its own subject, never reading what the block is about.
+  `Ret10Ret06OverlapControlTests` proves the same non-collision.
+- **`perimeter-access-audit`'s PER-06 (sitemap discovery) vs. `entity-audit`'s
+  ENT-04 sitemap-scoped half (canonicalization forks).** Both read
+  `sitemap.xml`, for different questions: PER-06 asks whether it exists and
+  is structurally valid; ENT-04 asks whether its own listed URLs fork into
+  trailing-slash/`www.`/scheme duplicates of each other. ENT-04's
+  `--sitemap-file` mode only runs once PER-06 has already confirmed a real
+  sitemap exists.
 
 ## Output
 

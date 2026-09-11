@@ -117,7 +117,7 @@ python3 scripts/check_engagement.py --site example.com \
 ```
 
 `--sample-file` is one on-site URL per line — pass the `sample_urls` from
-`audit-orchestrator`'s `sample_pages.py` (INF-01).
+`audit-orchestrator`'s `sample_pages.py`.
 
 **C1 — information scent (EN-11, EN-08 slice), agent-judged.** Narrows two
 kinds of candidate (Pirolli & Card 1999, Information Foraging Theory) down
@@ -270,66 +270,57 @@ this file reaches the entrypoint — resolve it per Procedure step 3.
 
 ## Output (multi-page mode)
 
+Same top-level shape as the single-page `## Output` above (`owner_skill`,
+`capability_ids`, `site`, `findings`, `agent_judgement_required`,
+`unknown_checks`), with two differences: there is no top-level `page_url` —
+findings span multiple pages, so each one carries its own page instead, in
+`structured_evidence.page_url` — and a script-decided finding here (EN-04's
+orphan half) can carry `confidence: "medium"` plus a `sample_size`, since its
+evidence only proves "not reached by a link *within this sample*," not
+site-wide:
+
 ```json
 {
+  "id": "EN-04-orphan-in-sample-e5f6a7b8",
+  "title": "No internal link to this page found within the sampled pages",
+  "severity": "medium",
+  "evidence": "Within the 25 pages sampled for this audit, no internal link pointed to https://example.com/deep-archive-page — this does not prove site-wide orphan status, only that no link path to it was found within the sampled subset.",
+  "suggested_action": {"summary": "...", "priority": "medium"},
+  "category": "engagement",
+  "capability_id": "EN-04",
   "owner_skill": "engagement-audit",
-  "capability_ids": ["EN-01", "EN-03", "EN-04", "EN-05", "EN-06", "EN-07", "EN-08", "EN-09", "EN-11"],
-  "site": "example.com",
-  "findings": [
-    {
-      "id": "EN-04-dead-end-a1b2c3d4",
-      "title": "Page offers no next action",
-      "severity": "medium",
-      "evidence": "https://example.com/thank-you has no internal outbound link and no call-to-action element — a visitor (or an autonomous agent following links) who lands here has nowhere to go next on this site.",
-      "suggested_action": {"summary": "...", "priority": "medium"},
-      "category": "engagement",
-      "capability_id": "EN-04",
-      "owner_skill": "engagement-audit",
-      "mechanism": "...",
-      "track": "defect",
-      "gate": null,
-      "confidence": "high",
-      "structured_evidence": {"page_url": "https://example.com/thank-you"}
-    },
-    {
-      "id": "EN-04-orphan-in-sample-e5f6a7b8",
-      "title": "No internal link to this page found within the sampled pages",
-      "severity": "medium",
-      "evidence": "Within the 25 pages sampled for this audit, no internal link pointed to https://example.com/deep-archive-page — this does not prove site-wide orphan status, only that no link path to it was found within the sampled subset.",
-      "suggested_action": {"summary": "...", "priority": "medium"},
-      "category": "engagement",
-      "capability_id": "EN-04",
-      "owner_skill": "engagement-audit",
-      "mechanism": "...",
-      "track": "defect",
-      "gate": null,
-      "confidence": "medium",
-      "structured_evidence": {"page_url": "https://example.com/deep-archive-page", "sample_size": 25}
-    }
-  ],
-  "agent_judgement_required": [
-    {
-      "capability_id": "EN-11",
-      "instructions": "...",
-      "observations": {
-        "candidates": [
-          {"page_url": "https://example.com/refund-policy", "h1_text": "Refund Policy", "primary_cta_text": "Subscribe to our newsletter", "lexical_overlap_score": 8.3}
-        ]
-      }
-    },
-    {
-      "capability_id": "EN-08",
-      "instructions": "...",
-      "observations": {
-        "candidates": [
-          {"source_page_url": "https://example.com/home", "target_page_url": "https://example.com/returns", "anchor_text": "Check this out", "target_h1_text": "Return & Refund Policy", "lexical_overlap_score": 5.1}
-        ]
-      }
-    }
-  ],
-  "unknown_checks": []
+  "mechanism": "...",
+  "track": "defect",
+  "gate": null,
+  "confidence": "medium",
+  "structured_evidence": {"page_url": "https://example.com/deep-archive-page", "sample_size": 25}
 }
 ```
+
+EN-04's dead-end half (a page with no outbound link or CTA) has the same
+shape at `confidence: "high"`, since that's a direct fact about the one
+fetched page rather than an absence within a sample.
+
+The two agent-judged multi-page capabilities (EN-08, EN-11) both hand the
+agent a `candidates` array instead of a single `observations` object, since
+C1 can surface more than one link/CTA pair per site:
+
+```json
+{
+  "capability_id": "EN-08",
+  "instructions": "...",
+  "observations": {
+    "candidates": [
+      {"source_page_url": "https://example.com/home", "target_page_url": "https://example.com/returns", "anchor_text": "Check this out", "target_h1_text": "Return & Refund Policy", "lexical_overlap_score": 5.1}
+    ]
+  }
+}
+```
+
+EN-11 carries the same `candidates` shape under its own `capability_id`, with
+`page_url`/`h1_text`/`primary_cta_text`/`lexical_overlap_score` fields
+instead (see `references/engagement-judgement-rubric.md` §EN-11 for what
+each candidate means and how to judge it).
 
 ## Safety
 

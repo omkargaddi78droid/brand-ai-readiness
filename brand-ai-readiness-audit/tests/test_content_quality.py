@@ -515,7 +515,7 @@ class PageAttributionTests(unittest.TestCase):
         output = cq.audit_text("example.com", "Welcome, {{first_name}}!")
         self.assertFalse(output["findings"][0]["evidence"].startswith("On "))
 
-    def test_two_pages_with_the_same_defect_stay_distinguishable_after_composition(self):
+    def test_two_pages_with_the_same_defect_merge_into_one_finding_with_both_pages_recoverable(self):
         page1 = cq.audit_text("example.com", "Welcome, {{first_name}}!", page_url="https://example.com/home")
         page2 = cq.audit_text("example.com", "Hi {{name}}, shipped.", page_url="https://example.com/checkout")
 
@@ -535,11 +535,16 @@ class PageAttributionTests(unittest.TestCase):
                 audited_at="2026-09-20T14:32:00Z",
             )
 
-        self.assertEqual(len(report["findings"]), 2)
-        self.assertEqual({f["check_id"] for f in report["findings"]}, {"CQ-03-template-leakage"})
-        pages_mentioned = {f["structured_evidence"]["page_url"] for f in report["findings"]}
+        # Same semantic id, same page-count check across two pages: one merged finding.
+        self.assertEqual(len(report["findings"]), 1)
+        finding = report["findings"][0]
+        self.assertEqual(finding["id"], "F-001")
+        self.assertEqual(finding["check_id"], "CQ-03-template-leakage")
+        pages_mentioned = {p["page_url"] for p in finding["structured_evidence"]["pages"]}
         self.assertEqual(pages_mentioned, {"https://example.com/home", "https://example.com/checkout"})
-        self.assertEqual({f["id"] for f in report["findings"]}, {"F-001", "F-002"})
+        self.assertEqual(finding["structured_evidence"]["affected_page_count"], 2)
+        self.assertIn("https://example.com/home", finding["evidence"])
+        self.assertIn("https://example.com/checkout", finding["evidence"])
 
 
 class SsrfGuardTests(unittest.TestCase):

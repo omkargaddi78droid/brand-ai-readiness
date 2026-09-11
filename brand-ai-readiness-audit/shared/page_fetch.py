@@ -101,11 +101,61 @@ def is_public_host(hostname: str) -> bool:
 _robots_cache: dict[str, bool | None] = {}
 
 
+def _encode_url_for_request(url: str) -> str:
+    """Percent-encode a URL's path/query/fragment before it reaches
+    `urllib.request.Request` — live-tested against pw.live, which puts raw
+    Devanagari text directly in course-page URL paths (e.g.
+    `/bseb/batches/...-हिंदी-माध्यम-...`). Handing such a URL to
+    `urllib.request.Request` unmodified makes the request-line encoding
+    inside `http.client` raise `UnicodeEncodeError` ("'ascii' codec can't
+    encode characters..."), which previously took down every skill sharing
+    this module for every page whose URL contained a non-ASCII character —
+    a real loss of coverage for any site with localized/regional-language
+    URL slugs, not just pw.live.
+
+    `safe="/%..."` on each component preserves any characters that are
+    already meaningful there (and any already-percent-encoded `%XX`
+    sequences, since `%` itself is kept safe) — only genuinely raw non-ASCII
+    or otherwise-unsafe bytes get escaped, so an already-well-formed ASCII
+    URL round-trips unchanged."""
+    parts = urllib.parse.urlsplit(url)
+    netloc = parts.netloc
+    if not netloc.isascii():
+        host, sep, port = netloc.partition(":")
+        try:
+            host = host.encode("idna").decode("ascii")
+        except UnicodeError:
+            pass  # not a valid hostname shape; leave as-is and let the request fail normally
+        netloc = host + sep + port
+    path = urllib.parse.quote(parts.path, safe="/%:@!$&'()*+,;=")
+    query = urllib.parse.quote(parts.query, safe="/%:@!$&'()*+,;=?")
+    fragment = urllib.parse.quote(parts.fragment, safe="/%:@!$&'()*+,;=?")
+    return urllib.parse.urlunsplit((parts.scheme, netloc, path, query, fragment))
+
+
+def _is_page_content_type(content_type: str) -> bool:
+    """True when a Content-Type header is HTML/text page content a check
+    script can analyze — false for anything XML-shaped, even when the MIME
+    type happens to contain the substring "text". Live-tested against
+    pw.live: its sitemap.xml files are served as `Content-Type: text/xml`,
+    which a naive `"text" in content_type` check let straight through as if
+    it were a real page. That produced a confirmed false positive (an EN-05
+    "no viewport meta tag" finding against a raw XML sitemap document) and
+    fed the sitemap's own `<loc>`/`<lastmod>` text into an agent-judgement
+    prompt as if it were page prose. `application/xml`, `text/xml`, and any
+    `+xml` suffix (e.g. `application/rss+xml`) are all excluded regardless
+    of an "html" or "text" substring elsewhere in the value."""
+    lowered = content_type.lower()
+    if "xml" in lowered:
+        return False
+    return "html" in lowered or "text" in lowered
+
+
 def _raw_get(url: str, *, timeout: int) -> bytes | None:
     """Single, unretried, un-robots-gated GET — used only to fetch a host's
     own /robots.txt, which must never be gated by itself. Returns None on
     any failure; never raises."""
-    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
+    request = urllib.request.Request(_encode_url_for_request(url), headers=_REQUEST_HEADERS, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return response.read(MAX_PAGE_BYTES)
@@ -254,7 +304,7 @@ def fetch_text(url: str) -> tuple[str | None, str]:
     if not robots_allows_fetch(url):
         return f"{url} disallowed by robots.txt", "unavailable"
 
-    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
+    request = urllib.request.Request(_encode_url_for_request(url), headers=_REQUEST_HEADERS, method="GET")
     try:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             raw = response.read(MAX_PAGE_BYTES)
@@ -285,11 +335,11 @@ def fetch_page_html(url: str) -> tuple[str | None, str]:
     if not robots_allows_fetch(url):
         return f"{url} disallowed by robots.txt", "unavailable"
 
-    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
+    request = urllib.request.Request(_encode_url_for_request(url), headers=_REQUEST_HEADERS, method="GET")
     try:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             content_type = response.headers.get("Content-Type", "")
-            if content_type and "html" not in content_type.lower() and "text" not in content_type.lower():
+            if content_type and not _is_page_content_type(content_type):
                 return f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
             raw = response.read(MAX_PAGE_BYTES)
             content_encoding = response.headers.get("Content-Encoding", "")
@@ -356,14 +406,14 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
             headers={},
         )
 
-    request = urllib.request.Request(url, headers=_REQUEST_HEADERS, method="GET")
+    request = urllib.request.Request(_encode_url_for_request(url), headers=_REQUEST_HEADERS, method="GET")
     try:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             response_headers = response.headers
             headers = dict(response_headers.items())
             final_url = response.geturl()
             content_type = response_headers.get("Content-Type", "")
-            if content_type and "html" not in content_type.lower() and "text" not in content_type.lower():
+            if content_type and not _is_page_content_type(content_type):
                 return PageBundle(
                     url=url,
                     status="not_html",

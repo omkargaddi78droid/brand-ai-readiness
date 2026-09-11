@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import html
 import json
 import re
 import sys
@@ -321,6 +322,20 @@ _REN02_MIN_FRAGMENT_CHARS = 20
 _REN02_MIN_FRAGMENT_WORDS = 3
 _REN02_MAX_CANDIDATES = 5
 
+_HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+
+
+def _plain_text(value: str) -> str:
+    """Tag-stripped, entity-decoded view of a string that may carry embedded
+    HTML markup — a common CMS pattern for a rich-text field (a FAQ answer,
+    a WYSIWYG body block) serialized into a hydration-state JSON blob as
+    `"<p>...</p>"` rather than as plain prose. `visible_text` is always plain,
+    entity-decoded text (built by HTMLParser with convert_charrefs=True), so
+    a fragment that still carries its own tags can never match it by literal
+    substring even when the fragment's real content is fully rendered on the
+    page — this puts both sides of that comparison in the same shape."""
+    return html.unescape(_HTML_TAG_PATTERN.sub(" ", value))
+
 
 def _walk_json_strings(value, out: list[str]) -> None:
     if isinstance(value, str):
@@ -462,7 +477,12 @@ def extract_hydration_text_fragments(hydration_blocks: list[tuple[str, str]]) ->
     discipline RET-01 applies to its own JSON-LD field list: it will miss
     short hydrated facts (a price, a single-word status) by design — REN-04/
     REN-05 own JSON-LD-declared facts specifically; this row is about
-    hydrated *prose*, not every hydrated value."""
+    hydrated *prose*, not every hydrated value. Each string is run through
+    `_plain_text()` first — a rich-text field serialized as `"<p>...</p>"`
+    is stripped to plain prose before the length/word filters and the later
+    visible-text membership test, so a fragment that only differs from the
+    page's real text by its own embedded markup isn't mistaken for content
+    that was never rendered at all."""
     fragments: list[dict] = []
     seen: set[str] = set()
     for source_id, raw in hydration_blocks:
@@ -476,7 +496,7 @@ def extract_hydration_text_fragments(hydration_blocks: list[tuple[str, str]]) ->
         strings: list[str] = []
         _walk_json_strings(value, strings)
         for s in strings:
-            normalized = " ".join(s.split())
+            normalized = " ".join(_plain_text(s).split())
             if len(normalized) < _REN02_MIN_FRAGMENT_CHARS:
                 continue
             if len(normalized.split()) < _REN02_MIN_FRAGMENT_WORDS:

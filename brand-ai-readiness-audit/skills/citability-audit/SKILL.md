@@ -114,7 +114,7 @@ python3 scripts/check_citability.py --site example.com \
 ```
 
 `--sample-file` is one on-site URL per line — pass the `sample_urls` from
-`audit-orchestrator`'s `sample_pages.py` (INF-01). The script fetches each
+`audit-orchestrator`'s `sample_pages.py`. The script fetches each
 page once and runs both capabilities off that one fetch pass:
 
 - **CIT-08** builds a directed internal-link graph (`shared/links`) and

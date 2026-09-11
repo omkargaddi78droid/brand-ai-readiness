@@ -108,12 +108,91 @@ class FetchPageHtmlEndToEndTests(unittest.TestCase):
         self.assertEqual(status, "present")
         self.assertIn("Example Corp", html)
 
+    def test_text_xml_content_type_is_rejected_as_not_html(self):
+        # Regression: text/xml (pw.live's own sitemap.xml Content-Type,
+        # live-confirmed) contains the substring "text" and was previously
+        # accepted as page content by a naive substring check, producing a
+        # false-positive engagement finding against a raw XML document.
+        with _LocalServer(_TextXmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            html, status = page_fetch.fetch_page_html(server.url)
+        self.assertEqual(status, "not_html")
+        self.assertIn("not HTML/text", html)
+
+    def test_a_non_ascii_url_path_does_not_raise_unicode_encode_error(self):
+        # Regression: a raw non-ASCII character in the URL path (e.g.
+        # pw.live's Devanagari course-page slugs) previously made
+        # urllib.request.Request's request-line encoding raise
+        # UnicodeEncodeError before any socket was even opened.
+        with _LocalServer(_UnicodePathHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            html, status = page_fetch.fetch_page_html(server.url + "हिंदी-माध्यम-2027")
+        self.assertEqual(status, "present")
+        self.assertIn("Example Corp", html)
+
+
+class EncodeUrlForRequestTests(unittest.TestCase):
+    def test_an_ascii_only_url_round_trips_unchanged(self):
+        url = "https://example.com/a/b?x=1&y=2#frag"
+        self.assertEqual(page_fetch._encode_url_for_request(url), url)
+
+    def test_non_ascii_path_characters_are_percent_encoded(self):
+        encoded = page_fetch._encode_url_for_request("https://example.com/हिंदी-माध्यम")
+        self.assertTrue(encoded.isascii())
+        self.assertTrue(encoded.startswith("https://example.com/%"))
+
+    def test_already_percent_encoded_sequences_are_preserved(self):
+        url = "https://example.com/a%20b"
+        self.assertEqual(page_fetch._encode_url_for_request(url), url)
+
+    def test_non_ascii_query_characters_are_percent_encoded(self):
+        encoded = page_fetch._encode_url_for_request("https://example.com/search?q=हिंदी")
+        self.assertTrue(encoded.isascii())
+        self.assertIn("q=%", encoded)
+
 
 class _XmlHandler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         body = b"<?xml version='1.0'?><urlset></urlset>"
         self.send_response(200)
         self.send_header("Content-Type", "application/xml")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class _TextXmlHandler(http.server.BaseHTTPRequestHandler):
+    """Serves Content-Type: text/xml — the exact header pw.live's own
+    sitemap.xml files use live. Regression coverage for the false-positive
+    bug where `"text" in content_type` let this straight through
+    `fetch_page_html`/`fetch_page` as if it were an HTML page."""
+
+    def do_GET(self):  # noqa: N802
+        body = b"<?xml version='1.0'?><urlset><url><loc>https://example.com/a</loc></url></urlset>"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/xml; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass
+
+
+class _UnicodePathHandler(http.server.BaseHTTPRequestHandler):
+    """Returns the same page regardless of path — used to prove a request
+    whose URL path contains non-ASCII characters reaches this server at all
+    (no UnicodeEncodeError raised before the socket is even opened)."""
+
+    def do_GET(self):  # noqa: N802
+        body = SAMPLE_HTML.encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

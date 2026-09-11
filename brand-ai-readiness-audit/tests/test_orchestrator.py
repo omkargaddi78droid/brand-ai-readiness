@@ -39,6 +39,7 @@ content_quality = _load(
     "check_content_quality", "skills/content-quality-audit/scripts/check_content_quality.py"
 )
 entity = _load("check_entity", "skills/entity-audit/scripts/check_entity.py")
+engagement = _load("check_engagement", "skills/engagement-audit/scripts/check_engagement.py")
 
 FIXED_TIMESTAMP = "2026-09-20T14:32:00Z"
 
@@ -331,6 +332,75 @@ class CoverageManifestMergeTests(unittest.TestCase):
             report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
 
         self.assertNotIn("coverage", report)
+
+
+_UNSIZED_IMAGES_HTML = (
+    '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>'
+    "<body><img src=\"a.jpg\"><img src=\"b.jpg\"><img src=\"c.jpg\"><p>Hello world.</p></body></html>"
+)
+
+
+def _resolve_judgement(out: dict) -> None:
+    for pending in out["agent_judgement_required"]:
+        caps_with_candidates = pending["observations"].get("candidates")
+        if caps_with_candidates:
+            raise AssertionError("fixture text unexpectedly produced a judgement candidate")
+    del out["agent_judgement_required"]
+
+
+class PaginatedFindingMergeTests(unittest.TestCase):
+    """merge_paginated_findings, exercised end-to-end through compose(): the
+    real reproduction of the F-018..F-021 bug report, where the same
+    engagement-audit EN-07 unsized-images check fires on several sampled
+    pages of one site and used to become one report finding per page."""
+
+    def test_the_same_check_firing_on_two_pages_becomes_one_merged_finding(self):
+        page1_out = engagement.audit_html(
+            "example.com", _UNSIZED_IMAGES_HTML, page_url="https://example.com/a"
+        )
+        page2_out = engagement.audit_html(
+            "example.com", _UNSIZED_IMAGES_HTML, page_url="https://example.com/b"
+        )
+        _resolve_judgement(page1_out)
+        _resolve_judgement(page2_out)
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [
+                ("engagement-audit", _write(workdir, "en-a.json", page1_out)),
+                ("engagement-audit", _write(workdir, "en-b.json", page2_out)),
+            ]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertEqual(validate_floor_shape(report), [])
+        en07 = [f for f in report["findings"] if f["check_id"] == "EN-07-unsized-images"]
+        self.assertEqual(len(en07), 1)
+        finding = en07[0]
+        pages_mentioned = {p["page_url"] for p in finding["structured_evidence"]["pages"]}
+        self.assertEqual(pages_mentioned, {"https://example.com/a", "https://example.com/b"})
+        self.assertIn("Found on 2 pages:", finding["evidence"])
+
+    def test_a_genuine_severity_mismatch_under_the_same_id_aborts_composition(self):
+        page1_out = engagement.audit_html(
+            "example.com", _UNSIZED_IMAGES_HTML, page_url="https://example.com/a"
+        )
+        page2_out = engagement.audit_html(
+            "example.com", _UNSIZED_IMAGES_HTML, page_url="https://example.com/b"
+        )
+        _resolve_judgement(page1_out)
+        _resolve_judgement(page2_out)
+        # Corrupt one page's EN-07 finding to simulate an authoring bug: same
+        # semantic id, genuinely different severity.
+        for finding in page2_out["findings"]:
+            if finding["id"] == "EN-07-unsized-images":
+                finding["severity"] = "high"
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [
+                ("engagement-audit", _write(workdir, "en-a.json", page1_out)),
+                ("engagement-audit", _write(workdir, "en-b.json", page2_out)),
+            ]
+            with self.assertRaises(ValueError):
+                orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
 
 
 if __name__ == "__main__":

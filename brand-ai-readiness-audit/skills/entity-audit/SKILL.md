@@ -138,7 +138,7 @@ python3 scripts/check_entity.py --site example.com \
 ```
 
 `--sample-file` is one on-site URL per line — pass the `sample_urls` from
-`audit-orchestrator`'s `sample_pages.py` (INF-01), the same bounded page
+`audit-orchestrator`'s `sample_pages.py`, the same bounded page
 sample every other multi-page check draws from. The script fetches each
 page itself once (same fetch path as `--url`) and runs both capabilities
 off that one fetch pass:
@@ -240,9 +240,8 @@ node, say) is expected, not fragmented.
   capped at Medium severity and states its own sample size.
 - (ENT-09, taxonomy consistency, needs neither off-site nor multi-page
   reasoning — it compares a page's own declared category against its own
-  body text, both from the one page this script was given; an earlier
-  version of this file incorrectly grouped it with ENT-07/08, corrected in
-  cycle 9.)
+  body text, both from the one page this script was given. It does not
+  belong alongside ENT-07/08 above, which both need the multi-page sample.)
 - **ENT-07's brand-token guard is a hostname substring match, not a legal
   or semantic brand check.** A third party whose own hostname happens to
   contain the brand's name coincidentally (rare, but possible) would still

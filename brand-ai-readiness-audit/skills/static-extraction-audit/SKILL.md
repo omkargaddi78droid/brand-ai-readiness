@@ -65,7 +65,7 @@ never approved and does not know is on their own site.
   the preferred way to run this skill**, since every capability here is
   per-page anyway (there is no separate site-wide check) and bulk mode
   fetches the sample concurrently instead of one sequential subprocess per
-  page (Defect 2 / INF-10).
+  page.
 
 ## Procedure
 
@@ -77,7 +77,7 @@ never approved and does not know is on their own site.
    ```
 
    `--sample-file` is one on-site URL per line — pass the `sample_urls`
-   from `audit-orchestrator`'s `sample_pages.py` (INF-01). The script
+   from `audit-orchestrator`'s `sample_pages.py`. The script
    fetches every page concurrently (bounded, order-preserving batches;
    capped at 90s total via `shared/budget.StageBudget`) and merges every
    page's findings into one report.

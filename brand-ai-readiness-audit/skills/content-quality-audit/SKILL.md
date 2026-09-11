@@ -135,7 +135,7 @@ python3 scripts/check_content_quality.py --site example.com \
 ```
 
 `--sample-file` is one on-site URL per line — pass the `sample_urls` from
-`audit-orchestrator`'s `sample_pages.py` (INF-01). The script fetches each
+`audit-orchestrator`'s `sample_pages.py`. The script fetches each
 page once and runs both capabilities off that one fetch pass:
 
 - **CQ-13** strips lines repeated verbatim across at least half the sample

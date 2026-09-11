@@ -135,6 +135,39 @@ _CTA_TAGS = {"button", "a"}
 _WEBMCP_FORM_ATTRS = ("toolname", "data-toolname")
 _WEBMCP_SCRIPT_PATTERN = re.compile(r"navigator\.modelContext\.registerTool", re.IGNORECASE)
 
+# BUG-003: `type="hidden"` is not the only way markup takes a field out of
+# a person's or an agent's path. A curated set of class tokens that mean
+# "not rendered at all" — never a token like "visually-hidden"/"sr-only",
+# which means hidden from sighted users but still exposed to assistive
+# tech, and still needs a real accessible name.
+_HIDDEN_CLASS_TOKENS = {"hidden", "d-none"}
+_DISPLAY_NONE_PATTERN = re.compile(r"display\s*:\s*none\b", re.IGNORECASE)
+
+
+def _is_non_interactive_field(attr_dict: dict) -> bool:
+    """True when a field's own attributes already mark it not rendered/not
+    interactive by a mechanism other than `type="hidden"`: the `hidden`
+    boolean attribute, `aria-hidden="true"`, a hidden-convention `class`
+    token, or an inline `style="display:none"`. A field marked this way is a
+    JS widget's internal bookkeeping input (never shown, never tabbed into,
+    never meant to carry a name) — not a real accessibility gap.
+
+    Deliberately narrow: this checks only the field's own attributes, not a
+    wrapping ancestor marked hidden. Ancestor-level hiding needs a
+    per-element hidden-depth stack this parser's flat `_open_tag`/
+    `_close_tag` pass doesn't keep; the same class of narrowing EN-05
+    already documents for the CSS cascade resolution it doesn't attempt."""
+    if "hidden" in attr_dict:
+        return True
+    if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
+        return True
+    class_tokens = (attr_dict.get("class") or "").split()
+    if any(token in _HIDDEN_CLASS_TOKENS for token in class_tokens):
+        return True
+    if _DISPLAY_NONE_PATTERN.search(attr_dict.get("style") or ""):
+        return True
+    return False
+
 
 class _PageParser(HTMLParser):
     """One pass collects everything EN-06/EN-09 decide on and everything
@@ -221,6 +254,8 @@ class _PageParser(HTMLParser):
             if tag == "input" and field_type == "password":
                 self._current_form_has_password = True
             if field_type in _LABELABLE_INPUT_TYPES_EXCLUDED:
+                return
+            if _is_non_interactive_field(attr_dict):
                 return
             aria_label = (attr_dict.get("aria-label") or "").strip()
             labelled_by = attr_dict.get("aria-labelledby")
@@ -891,11 +926,73 @@ def _interstitial_wall_finding(matched_phrase: str, window_text: str) -> Finding
 # EN-01 / EN-03 — extraction only; the agent judges these
 # ---------------------------------------------------------------------------
 
+# BUG-001: a cookie-consent banner injected early in document order (common
+# — many consent-management platforms inject their banner markup at or near
+# the top of <body>, even though it renders as a bottom/top overlay, not as
+# the page's actual first visual content) corrupts EN-01's opening-window
+# extraction and EN-11's primary-CTA selection alike, since both read
+# straight document order with nothing excluding consent boilerplate. Same
+# pattern as `_NAV_CHROME_ANCHOR_TEXTS` below: a curated phrase list, not a
+# bare "cookie" keyword, so a page that's genuinely about cookies (a bakery
+# menu, a recipe) is never touched — every entry here names a specific
+# consent-platform action or disclosure, not the word alone.
+_COOKIE_BANNER_PHRASES = frozenset({
+    "accept all cookies", "accept all additional cookies", "accept cookies",
+    "accept all", "reject all cookies", "reject all additional cookies",
+    "reject all", "decline all cookies", "decline all", "decline cookies",
+    "allow all cookies", "allow all", "allow cookies", "cookie settings",
+    "cookie preferences", "manage cookies", "manage preferences",
+    "manage cookie preferences", "customize cookies", "necessary cookies",
+    "only necessary cookies", "we use cookies", "this site uses cookies",
+    "this website uses cookies", "we'd like your permission to set",
+    "set some additional cookies", "cookie policy", "cookie consent",
+})
+
+
+_CURLY_QUOTE_TRANSLATION = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"'})
+
+
+def _is_cookie_banner_text(text: str) -> bool:
+    # Real consent banners are near-universally rendered with curly/smart
+    # quotes ("we'd like..."), not the straight apostrophe a phrase list is
+    # written with — normalize both to the same character before matching.
+    lowered = text.strip().translate(_CURLY_QUOTE_TRANSLATION).lower()
+    return any(phrase in lowered for phrase in _COOKIE_BANNER_PHRASES)
+
+
+_COOKIE_BANNER_LOOKAHEAD_LINES = 10
+
+
+def _skip_cookie_banner_prefix(text: str) -> str:
+    """EN-01's opening-window extraction takes the page's first ~150 words
+    verbatim, one line (one block-level text run) at a time. A real consent
+    banner is rarely one line that itself names a cookie action — a generic
+    branding/intro line ("Help us improve your Mozilla experience") often
+    precedes the actual disclosure sentence and its buttons, so a leading
+    run only skipped while every single line matches would stop at that
+    first generic line and never reach the banner text after it. Instead:
+    look at a bounded window of leading lines, find the *last* line in that
+    window that reads as consent-banner boilerplate, and drop everything up
+    to and including it — so a banner spanning a heading, a disclosure
+    sentence and its buttons is skipped as one block. If nothing in the
+    window matches, nothing is skipped: a page's real content mentioning
+    cookies further in is never touched."""
+    lines = text.split("\n")
+    window = lines[:_COOKIE_BANNER_LOOKAHEAD_LINES]
+    last_match = -1
+    for index, line in enumerate(window):
+        if _is_cookie_banner_text(line):
+            last_match = index
+    if last_match == -1:
+        return text
+    return "\n".join(lines[last_match + 1 :])
+
 
 def extract_orientation_signals(parser: _PageParser, visible_text: str) -> dict:
     words = visible_text.split()
-    first_150 = " ".join(words[:150])
-    cta_before_150 = [c for c in parser.cta_texts[:5]]
+    opening_words = _skip_cookie_banner_prefix(visible_text).split()
+    first_150 = " ".join(opening_words[:150])
+    cta_before_150 = [c for c in parser.cta_texts if not _is_cookie_banner_text(c)][:5]
     return {
         "h1_text": parser.h1_text,
         "first_150_words": first_150,
@@ -992,8 +1089,14 @@ def _primary_cta(parser: _PageParser) -> str | None:
     """The page's first call-to-action text in document order — the
     hero/primary action a real visitor sees first. Later CTAs (footer
     links, secondary buttons) are out of scope: EN-11 is about the one
-    action a page foregrounds, not every clickable element on it."""
-    return parser.cta_texts[0] if parser.cta_texts else None
+    action a page foregrounds, not every clickable element on it.
+    Cookie-consent banner buttons (BUG-001) are skipped: a banner injected
+    early in document order is not the page's real primary action, whatever
+    position it happens to render at."""
+    for text in parser.cta_texts:
+        if not _is_cookie_banner_text(text):
+            return text
+    return None
 
 
 def _cta_coherence_candidate(page_url: str, h1_text: str, primary_cta: str) -> dict | None:

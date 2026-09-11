@@ -108,76 +108,22 @@ header/meta comparison by one more GET.
 | PER-11 | AI-crawler content-parity diff | A live GET under a tier's representative agent gets HTTP 200 (i.e., not blocked — that's PER-03), but with under half the visible-text length of the same GET under an ordinary browser UA, or zero JSON-LD nodes where the browser copy has at least one |
 
 Three tiers, because a block on one means something different from a block on
-another. Real-time AI search crawlers are the citation path and rate as
-`critical`. On-demand fetchers act on an explicit user request that providers
-may treat as outside crawl rules, so they rate `high` with `medium` confidence.
-Training crawlers shape what a model knows unprompted and are frequently
-blocked on purpose as a licensing position, so they rate `medium`. The full
-agent list and the reasoning behind each tier is in
-`references/ai-bot-taxonomy.md`. PER-03 reuses the same tier severities — the
-detection layer changed, not what a block of that tier means.
+another: real-time AI search crawlers are the citation path (`critical`),
+on-demand fetchers act on an explicit user request (`high`, `medium`
+confidence), training crawlers shape what a model knows unprompted and are
+often blocked on purpose as a licensing position (`medium`). PER-03 reuses
+these same severities — the detection layer changed, not what a block of
+that tier means.
 
-**PER-03 probes one representative agent per tier**, not all fifteen: edge
-bot-management products typically block by vendor category rather than by
-individually enumerated agent, so one probe per tier is the considerate,
-cheap design. It **never probes an agent robots.txt already disallows** — that
-request would itself violate "respect robots.txt" and would write a hit under
-that agent's exact name into the target's own bot-traffic logs. It also never
-asserts a block unless an ordinary-browser-UA control request to the same path
-succeeded first, so a site that challenges everyone (not just AI bots) is
-reported `unknown`, not as an AI-bot-specific finding — confirmed live against
-two sites with aggressive bot-management CDNs, where a naive per-agent-only
-check would have produced a false positive.
-
-`llms.txt` findings are capped at `low` and travel in the proactive track, not
-the defect track. Measured AI-crawler traffic to that file is a rounding error
-next to robots.txt and no major provider has committed to consuming it, so
-calling its absence a defect would assert a causal claim the evidence does not
-support. PER-05 (llms-full.txt) and PER-07 (`.md` negotiation) are calibrated
-the same way — both `low`, both `proactive` — for the same reason: neither
-has established evidence of citation impact.
-
-**PER-08 only evaluates once PER-06 confirms a sitemap exists.** A missing
-sitemap is PER-06's finding; asking whether robots.txt references a sitemap
-that doesn't exist would be a second finding for the same root cause. PER-08
-also distinguishes "confirmed no sitemap" (silent) from "couldn't determine
-whether a sitemap exists" (`unknown`) — collapsing the two would silently
-drop a genuine unknown into a bucket that means something different.
-
-PER-06's XML parsing is regex-based, not a full XML parser, on purpose:
-sitemap.xml is fetched from the audited site, i.e. untrusted input, and a
-regex has no entity-expansion attack surface at all — the same reasoning that
-keeps JSON-LD parsing elsewhere in this marketplace on `json.loads` and HTML
-parsing on a restricted `HTMLParser` rather than a fuller, riskier parser.
-
-**PER-09 asks a different kind of question than PER-01 through PER-08: not
-"is X present and valid?" but "do the site's own declarations agree with each
-other?"** A site declares its access policy in up to six independent places
-— robots.txt, the `X-Robots-Tag` response header, `<meta name="robots">` /
-`<meta name="googlebot">` / `noai` / `noimageai`, `/.well-known/tdmrep.json`
-(TDMRep, the W3C mechanism the EU CDSM Art. 4 / AI Act TDM opt-out expects),
-llms.txt and sitemap.xml — and they routinely disagree, because the header
-layer wins silently and nothing before PER-09 ever read it. Five rules, each
-a literal set/flag comparison rather than an interpretive judgement:
-
-- **A sitemap-declared URL disallowed for an AI tier by a path-specific
-  robots.txt rule** (the crawl-free slice of "is this page actually
-  reachable", scoped to what a site's own files can answer without a crawl).
-  Excludes any bot already blocked at the root — that is PER-01/02's
-  finding, not a new one.
-- **A page declared canonical in sitemap.xml or llms.txt that carries a
-  noindex/noai signal** (header or meta) — the site simultaneously
-  advertises the page and tells every indexer to drop it.
-- **A TDM reservation that robots.txt doesn't back up** — `tdmrep.json`
-  reserves training rights while GPTBot/ClaudeBot/CCBot can still crawl the
-  root, leaving the reservation unenforced in practice.
-- **`X-Robots-Tag` and `<meta name="robots">` disagreeing on the same page**
-  — the header always wins, and content authors who only edit the page
-  usually don't know a server-level header is overriding them.
-- **No TDMRep declaration despite robots.txt already naming specific AI
-  agents** (proactive, `low`) — gated behind demonstrated engagement with AI
-  access at all, so it never fires as generic noise on a site that has never
-  named an AI agent.
+The full agent list, the reasoning behind each tier's severity, why PER-03
+probes one representative agent per tier instead of all fifteen, why its
+control-request-first discipline exists, why PER-05/07 are capped `low`/
+proactive, why PER-08 only evaluates once PER-06 confirms a sitemap exists,
+why PER-06 parses with a regex rather than a full XML parser, and the full
+reasoning behind each of PER-09's five contradiction rules (C1–C5) all live
+in `references/ai-bot-taxonomy.md` — read it before extending or judging any
+of these checks, since each one's scope (what it deliberately does *not*
+flag) is as load-bearing as what it does.
 
 ## Excludes
 

@@ -23,6 +23,20 @@
       "expected_findings": ["REN-02-hydration-content-not-in-text"]
     },
     {
+      "id": "clean-hydration-markup-restated",
+      "label": "clean",
+      "file": "clean_hydration_markup_restated.html",
+      "note": "BUG-002 regression: __NEXT_DATA__ carries a rich-text field serialized with HTML markup (<p>...</p>) whose plain-text content is also present, word-for-word, in real visible prose. Must not fire REN-02 just because the hydration copy still carries its own tags.",
+      "expected_findings": []
+    },
+    {
+      "id": "defect-hydration-markup-gap",
+      "label": "defect",
+      "file": "defect_hydration_markup_gap.html",
+      "note": "BUG-002 regression, other direction: __NEXT_DATA__ carries an HTML-tagged rich-text field whose plain-text content genuinely never appears anywhere in visible text. Tag-stripping must not swallow a real gap.",
+      "expected_findings": ["REN-02-hydration-content-not-in-text"]
+    },
+    {
       "id": "defect-price-gap",
       "label": "defect",
       "file": "defect_price_gap.html",

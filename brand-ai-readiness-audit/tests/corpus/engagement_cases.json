@@ -23,10 +23,24 @@
       "expected_findings": []
     },
     {
+      "id": "clean-hidden-bookkeeping-field",
+      "label": "clean",
+      "file": "clean_hidden_bookkeeping_field.html",
+      "note": "BUG-003 regression: every visible field is labeled; one CSS-class-hidden (`class=\"... hidden\"`) JS bookkeeping field with no label must not fire EN-09's unlabelled-field check just because its `type` is `text`, not `hidden`. Still carries the unrelated, pre-existing EN-09-no-machine-readable-action proactive suggestion every plain `<form>` in this corpus gets (no WebMCP/potentialAction declared).",
+      "expected_findings": ["EN-09-no-machine-readable-action"]
+    },
+    {
       "id": "defect-unlabelled-form",
       "label": "defect",
       "file": "defect_unlabelled_form.html",
       "note": "Every field relies on a placeholder only.",
+      "expected_findings": ["EN-09-unlabelled-form-fields"]
+    },
+    {
+      "id": "defect-unlabelled-field-among-hidden",
+      "label": "defect",
+      "file": "defect_unlabelled_field_among_hidden.html",
+      "note": "BUG-003 regression, other direction: a genuinely visible, unlabelled field sits alongside a CSS-class-hidden bookkeeping field. The hidden field's own exclusion must not swallow the real one — EN-09 must still fire. Only 1 labelable field remains after the hidden one is excluded, under EN-09-no-machine-readable-action's own 2-field non-trivial-form threshold, so that suggestion correctly stays silent here.",
       "expected_findings": ["EN-09-unlabelled-form-fields"]
     },
     {

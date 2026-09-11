@@ -3,15 +3,18 @@
 
 This script composes; it never detects. Every finding in the report was
 produced by an audit skill and passes through with its evidence, mechanism and
-severity intact. The orchestrator's only jobs are: collect, validate, renumber,
-order, count, and emit.
+severity intact. The orchestrator's only jobs are: collect, merge, validate,
+renumber, order, count, and emit.
 
 Failure handling: a skill whose output is missing or unparseable becomes one
 `unknown_checks` entry attributed to that skill, and the report is still
 produced from the skills that did run. One broken skill degrades coverage; it
 does not destroy the audit. A *malformed finding*, by contrast, aborts the run
 loudly — that is an authoring bug in the owning skill, and hiding it would ship
-a report whose evidence cannot be trusted.
+a report whose evidence cannot be trusted. A *merge conflict* (two findings
+sharing a semantic id but disagreeing on an identity field, or missing the
+page attribution a multi-page merge requires) aborts the run the same way: see
+`merge_paginated_findings` in `shared/finding_contract.py`.
 
 An unresolved `agent_judgement_required` entry (from a skill with agent-judged
 capabilities, e.g. engagement-audit's EN-01/EN-03) becomes one `unknown_checks`
@@ -43,6 +46,7 @@ from finding_contract import (  # noqa: E402
     UnknownCheck,
     assign_sequential_ids,
     build_report,
+    merge_paginated_findings,
     to_floor_schema,
     validate_floor_shape,
 )
@@ -103,6 +107,7 @@ def compose(
         unknowns.extend(skill_unknowns)
         stages.extend(skill_stages)
 
+    findings = merge_paginated_findings(findings)
     coverage = {"stages": stages} if stages else None
     return build_report(site, assign_sequential_ids(findings), unknowns, audited_at=audited_at, coverage=coverage)
 

@@ -36,6 +36,7 @@ TRACKS = ("defect", "proactive")
 CONFIDENCES = ("high", "medium", "low")
 
 _SEVERITY_ORDER = {name: index for index, name in enumerate(SEVERITIES)}
+_CONFIDENCE_ORDER = {name: index for index, name in enumerate(("low", "medium", "high"))}
 
 
 @dataclasses.dataclass
@@ -236,6 +237,111 @@ def assign_sequential_ids(findings: list[Finding]) -> list[Finding]:
         copy.id = f"F-{index:03d}"
         renumbered.append(copy)
     return renumbered
+
+
+def merge_paginated_findings(findings: list[Finding]) -> list[Finding]:
+    """Collapse same-id findings from different pages into one finding.
+
+    A per-page check (e.g. EN-07 "unsized images") emits one `Finding` per
+    page it runs on, all sharing the same semantic `id`. Left alone, that
+    turns into N separate report findings for what is really one issue
+    observed on N pages. This groups by `id` and merges each group of size
+    > 1 into a single finding.
+
+    Identity fields (title, severity, category, track, owner_skill,
+    capability_id, mechanism, gate, suggested_action.priority) must match
+    exactly across a group — a mismatch means the id was reused for
+    genuinely different content, an authoring bug, and raises `ValueError`
+    rather than silently picking one. Every finding in a group of size > 1
+    must carry `structured_evidence["page_url"]` (i.e. went through
+    `report_shape.stamp_page`) with no two members sharing a `page_url`;
+    either violation also raises, since it means the duplicate isn't a
+    legitimate multi-page case.
+
+    Instance fields vary per page and are resolved deterministically:
+    - `confidence` takes the weakest value present across the group.
+    - `suggested_action` (summary/details) is taken from the group member
+      with the lexicographically smallest `page_url`. Full per-page detail
+      stays visible in `evidence` and `structured_evidence` regardless.
+
+    Findings with a unique id pass through unchanged.
+    """
+    groups: dict[str, list[Finding]] = {}
+    order: list[str] = []
+    for finding in findings:
+        if finding.id not in groups:
+            groups[finding.id] = []
+            order.append(finding.id)
+        groups[finding.id].append(finding)
+
+    merged: list[Finding] = []
+    for finding_id in order:
+        group = groups[finding_id]
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+
+        identity_fields = (
+            "title",
+            "severity",
+            "category",
+            "track",
+            "owner_skill",
+            "capability_id",
+            "mechanism",
+            "gate",
+        )
+        first = group[0]
+        for field in identity_fields:
+            values = {getattr(f, field) for f in group}
+            if len(values) > 1:
+                raise ValueError(
+                    f"cannot merge findings sharing id {finding_id!r}: "
+                    f"{field} differs across pages: {sorted(map(repr, values))}"
+                )
+        priorities = {f.suggested_action.priority for f in group}
+        if len(priorities) > 1:
+            raise ValueError(
+                f"cannot merge findings sharing id {finding_id!r}: "
+                f"suggested_action.priority differs across pages: {sorted(priorities)}"
+            )
+
+        page_urls: list[str] = []
+        for f in group:
+            page_url = (f.structured_evidence or {}).get("page_url")
+            if not page_url:
+                raise ValueError(
+                    f"cannot merge findings sharing id {finding_id!r}: "
+                    "a finding in the group has no structured_evidence['page_url']"
+                )
+            page_urls.append(page_url)
+        if len(set(page_urls)) != len(page_urls):
+            raise ValueError(
+                f"cannot merge findings sharing id {finding_id!r}: "
+                f"duplicate page_url within the group: {sorted(page_urls)}"
+            )
+
+        group_sorted = sorted(group, key=lambda f: f.structured_evidence["page_url"])
+        lead_in = f"Found on {len(group_sorted)} pages:"
+        merged_evidence = lead_in + "\n" + "\n".join(f"- {f.evidence}" for f in group_sorted)
+        merged_structured_evidence = {
+            "pages": [dict(f.structured_evidence) for f in group_sorted],
+            "affected_page_count": len(group_sorted),
+        }
+        weakest_confidence = min(
+            (f.confidence for f in group), key=lambda c: _CONFIDENCE_ORDER.get(c, len(_CONFIDENCE_ORDER))
+        )
+        chosen_action = group_sorted[0].suggested_action
+
+        copy = dataclasses.replace(
+            first,
+            evidence=merged_evidence,
+            structured_evidence=merged_structured_evidence,
+            confidence=weakest_confidence,
+            suggested_action=chosen_action,
+        )
+        merged.append(copy)
+    return merged
 
 
 def build_report(

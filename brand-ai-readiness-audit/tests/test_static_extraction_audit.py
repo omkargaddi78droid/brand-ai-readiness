@@ -127,6 +127,24 @@ class HydrationCoverageGapTests(unittest.TestCase):
         fragments = sea.extract_hydration_text_fragments([("__NEXT_DATA__", "{not valid json")])
         self.assertEqual(fragments, [])
 
+    def test_html_tagged_fragment_restated_in_plain_text_does_not_fire(self):
+        # BUG-002: a rich-text field serialized as "<p>...</p>" must be
+        # compared to visible_text as plain text, not as a literal string
+        # that still carries its own markup.
+        fragments = sea.extract_hydration_text_fragments(
+            [("page-settings-object", '{"answer": "<p>Consider hiring a handyman if the job is big.</p>"}')]
+        )
+        text = "Consider hiring a handyman if the job is big."
+        self.assertEqual(sea.find_hydration_coverage_gaps(fragments, text), [])
+
+    def test_html_tagged_fragment_genuinely_missing_still_fires(self):
+        fragments = sea.extract_hydration_text_fragments(
+            [("page-settings-object", '{"answer": "<p>Our team arrives fully equipped for same-day repairs.</p>"}')]
+        )
+        findings = sea.find_hydration_coverage_gaps(fragments, "Nothing related to that on the page.")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "REN-02-hydration-content-not-in-text")
+
 
 class ScanBalancedLiteralTests(unittest.TestCase):
     """Adversarial cases for the manual brace-counting scanner behind the

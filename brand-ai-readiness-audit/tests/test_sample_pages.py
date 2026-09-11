@@ -3,10 +3,14 @@
 
 Before this fix, a `<sitemapindex>` root (what WordPress, Shopify, and
 Next.js all generate by default) made the whole sampler return zero pages,
-silently disabling every multi-page check on most real sites. These tests
-verify the fetch-and-recurse-one-level replacement, entirely offline via a
-monkeypatched `fetch_text` (matching this project's no-network-in-tests
-guarantee).
+silently disabling every multi-page check on most real sites. A follow-up
+fix (live-tested against pw.live) then found that a fixed one-level-only
+recursion, gated on root tag name alone, still returns zero real pages
+against a site whose sitemap nests deeper or wraps further sitemap files in
+a `<urlset>` instead of a `<sitemapindex>`. These tests verify the
+budget-bounded, tag-and-shape-aware walk that replaced both, entirely
+offline via a monkeypatched `fetch_text` (matching this project's
+no-network-in-tests guarantee).
 """
 
 import contextlib
@@ -101,26 +105,74 @@ class CollectSitemapUrlsTests(unittest.TestCase):
             sample_pages_cli.collect_sitemap_urls(index_xml), ["https://example.com/ok-page"]
         )
 
-    def test_a_sub_sitemap_that_is_itself_an_index_is_not_chased_further(self):
+    def test_a_multi_level_chain_of_nested_indexes_is_chased_to_real_pages(self):
+        # pw.live's live sitemap tree is this shape: sitemapindex ->
+        # sitemapindex -> urlset. A one-level-only recursion returns zero
+        # pages against it; the fix must not stop until it hits a urlset of
+        # real (non-.xml) page URLs.
         index_xml = _sitemapindex("https://example.com/sitemap-nested-index.xml")
+        chain = {
+            "https://example.com/sitemap-nested-index.xml": _sitemapindex(
+                "https://example.com/sitemap-leaf.xml"
+            ),
+            "https://example.com/sitemap-leaf.xml": _urlset("https://example.com/real-page"),
+        }
 
         def fake_fetch_text(url):
-            return _sitemapindex("https://example.com/sitemap-should-not-be-fetched.xml"), "present"
+            return chain[url], "present"
 
+        sample_pages_cli.fetch_text = fake_fetch_text
+
+        self.assertEqual(
+            sample_pages_cli.collect_sitemap_urls(index_xml), ["https://example.com/real-page"]
+        )
+
+    def test_a_urlset_whose_locs_are_further_sitemap_files_is_recursed_into(self):
+        # pw.live's own middle sitemap level: tagged <urlset>, but every
+        # <loc> inside it is a further per-category sitemap.xml file, not a
+        # page. A root-tag-only check misreads these as pages.
+        index_xml = _sitemapindex("https://example.com/sitemap-1.xml")
+        chain = {
+            "https://example.com/sitemap-1.xml": _urlset(
+                "https://example.com/category-a/sitemap.xml",
+                "https://example.com/category-b/sitemap.xml",
+            ),
+            "https://example.com/category-a/sitemap.xml": _urlset("https://example.com/a/page-1"),
+            "https://example.com/category-b/sitemap.xml": _urlset("https://example.com/b/page-1"),
+        }
+
+        def fake_fetch_text(url):
+            return chain[url], "present"
+
+        sample_pages_cli.fetch_text = fake_fetch_text
+
+        self.assertEqual(
+            sorted(sample_pages_cli.collect_sitemap_urls(index_xml)),
+            sorted(["https://example.com/a/page-1", "https://example.com/b/page-1"]),
+        )
+
+    def test_a_cyclic_sitemap_graph_terminates_instead_of_looping(self):
+        index_xml = _sitemapindex("https://example.com/sitemap-a.xml")
+        chain = {
+            "https://example.com/sitemap-a.xml": _sitemapindex("https://example.com/sitemap-b.xml"),
+            "https://example.com/sitemap-b.xml": _sitemapindex("https://example.com/sitemap-a.xml"),
+        }
         calls = []
-        real_fake = fake_fetch_text
 
-        def counting_fetch_text(url):
+        def fake_fetch_text(url):
             calls.append(url)
-            return real_fake(url)
+            return chain[url], "present"
 
-        sample_pages_cli.fetch_text = counting_fetch_text
+        sample_pages_cli.fetch_text = fake_fetch_text
 
         self.assertEqual(sample_pages_cli.collect_sitemap_urls(index_xml), [])
-        self.assertEqual(calls, ["https://example.com/sitemap-nested-index.xml"])
+        # each distinct sub-sitemap URL is fetched at most once, so a cycle
+        # terminates on the dedup set long before the fetch budget would
+        # have to catch it
+        self.assertEqual(calls, ["https://example.com/sitemap-a.xml", "https://example.com/sitemap-b.xml"])
 
     def test_sub_sitemap_fetch_count_is_bounded(self):
-        many_sub_locs = [f"https://example.com/sitemap-{i}.xml" for i in range(20)]
+        many_sub_locs = [f"https://example.com/sitemap-{i}.xml" for i in range(50)]
         index_xml = _sitemapindex(*many_sub_locs)
 
         calls = []
