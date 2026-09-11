@@ -41,6 +41,10 @@ or otherwise alters the audited site.
    host. `https://Example.com/pricing` → `example.com`. Use this label for the
    report's `site` field and as the base for every skill invocation.
 
+   Also start the run's wall-clock budget in a **file** (a later step's
+   deadline check must survive a separate tool call, which a shell variable
+   won't): `mkdir -p /tmp/audit && date +%s > /tmp/audit/start_epoch`.
+
 2. **Run gate 1 first.** Discovery is three sequential gates: the crawler is
    let in, then can read the page, then can pick out the fact. Gate 1 is
    perimeter access, and its result changes how everything else is reported.
@@ -70,16 +74,16 @@ or otherwise alters the audited site.
 
    ```bash
    python3 ../audit-orchestrator/scripts/sample_pages.py \
-       --url https://example.com --budget 25 > /tmp/audit/page-sample.json
+       --url https://example.com --budget 100 > /tmp/audit/page-sample.json
    ```
 
    If `sitemap.xml` is absent (`total_urls: 0`), fall back to picking pages by
-   hand as before. Otherwise, read `sample_urls` from the output and use it as
-   the page list for every per-page skill below — the 5-minute budget still
-   does not allow running every skill against every sampled URL, so prioritize
-   pages that carry claims worth getting right (pricing, specs, policies,
-   dated announcements, how-to guides) within that list rather than the full
-   set.
+   hand as before. Otherwise, read `sample_urls` from the output and use it,
+   **in the order given**, as the page list for every per-page skill below —
+   it is already priority-ordered highest-first (homepage/forced process
+   pages, then claim-bearing pages like pricing/specs/policies/how-to guides,
+   then dated/announcement pages, then everything else), so stopping partway
+   at the step-5 deadline still audits the pages that matter most.
 
    Write `sample_urls` to a plain one-URL-per-line file too
    (`/tmp/audit/page-sample.txt`) — several multi-page checks below
@@ -94,6 +98,18 @@ or otherwise alters the audited site.
 5. **Run the remaining audit skills** listed in the registry below, each
    writing its JSON to its own file. Skills are independent; a failure in one
    does not stop the others.
+
+   **Deadline check, before each per-page invocation** of
+   `content-quality-audit`, `entity-audit`, `engagement-audit`, and
+   `citability-audit` (their per-`--url` mode only — not their
+   `--sample-file`/`--sitemap-file`/off-site modes, which already self-cap
+   via `StageBudget`'s internal 90s fetch budget regardless of sample size):
+   `echo $(( $(date +%s) - $(cat /tmp/audit/start_epoch) ))`. Once elapsed
+   reaches 280s (4m40s), stop issuing further per-page invocations for **all
+   four** skills — they share the same priority-ordered `sample_urls` list
+   and budget, so a lower-priority page skipped by one shouldn't be reached
+   by another. A page never reached simply produces no output file for that
+   skill; `compose_report.py` composes it exactly like a smaller sample.
 
    `content-quality-audit` runs per page, not per site, against pages drawn
    from the sample built above. Five of its per-page capabilities (CQ-01,
@@ -267,7 +283,7 @@ or otherwise alters the audited site.
    fetches the whole page-sample file concurrently in one process instead of
    spawning one sequential subprocess per page — see
    `references/orchestration-notes.md` for why sequential per-page fetching
-   made the 5-minute budget unrealistic on a full 25-page sample:
+   made the 280s budget unrealistic on a full 100-page sample:
 
    ```bash
    python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \

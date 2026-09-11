@@ -22,11 +22,15 @@ recursion) falls back to `fallback_nav_footer_urls`: the homepage's own
 JS-only-navigation SPA can still yield nothing).
 
 Usage:
-    sample_pages.py --url https://example.com [--budget 25]
-    sample_pages.py --sitemap-file sitemap.xml [--budget 25]
+    sample_pages.py --url https://example.com [--budget 100]
+    sample_pages.py --sitemap-file sitemap.xml [--budget 100]
 
 Emits one JSON object on stdout: {"total_urls": ..., "budget": ...,
 "strata": [...], "sample_urls": [...], "forced_included": [...]}.
+"sample_urls" is priority-ordered (highest first) via
+shared/page_sample.py's rank_sample_urls — a deadline-gated caller (see
+audit-orchestrator/SKILL.md) can stop partway through the list and still
+have audited the highest-priority pages first.
 """
 
 from __future__ import annotations
@@ -151,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--url", help="Target site; fetches /sitemap.xml over the network")
     parser.add_argument("--sitemap-file", help="Read sitemap.xml from a local file instead of fetching")
     parser.add_argument(
-        "--budget", type=int, default=25, help="Maximum sampled pages before forced inclusions (default 25)"
+        "--budget", type=int, default=100, help="Maximum sampled pages before forced inclusions (default 100)"
     )
     args = parser.parse_args(argv)
 

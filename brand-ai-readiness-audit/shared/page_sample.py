@@ -204,6 +204,55 @@ def _pick_evenly(urls: list[str], count: int) -> list[str]:
     return [urls[int(i * step)] for i in range(count)]
 
 
+_TIER2_KEYWORDS = (
+    "pricing",
+    "plans",
+    "product",
+    "spec",
+    "docs",
+    "guide",
+    "how-to",
+    "howto",
+    "policy",
+    "terms",
+    "review",
+    "compare",
+)
+
+_TIER1_SEGMENTS = ("blog", "news", "press", "announcement")
+
+_YEAR_SEGMENT_PATTERN = re.compile(r"^(19|20)\d{2}$")
+
+
+def page_priority(url: str) -> int:
+    """Tier a URL for audit ordering: 3 (homepage/force-include process
+    pages), 2 (a claim-bearing keyword segment — pricing/specs/policies/
+    guides, per SKILL.md's own existing prioritization prose), 1 (a dated or
+    announcement-shaped path — a 4-digit-year segment or a
+    blog/news/press/announcement segment), 0 (everything else). Higher tiers
+    are audited first; see `rank_sample_urls`."""
+    path = urlsplit(url).path or "/"
+    normalized_path = path.rstrip("/").lower() or "/"
+    if normalized_path in _FORCE_INCLUDE_PATHS:
+        return 3
+
+    segments = [s.lower() for s in path.split("/") if s]
+    if any(keyword in segment for segment in segments for keyword in _TIER2_KEYWORDS):
+        return 2
+    if any(segment in _TIER1_SEGMENTS or _YEAR_SEGMENT_PATTERN.match(segment) for segment in segments):
+        return 1
+    return 0
+
+
+def rank_sample_urls(urls: list[str]) -> list[str]:
+    """Reorder `urls` by `page_priority`, highest tier first, stable on ties
+    (original relative order preserved within a tier) — so a deadline-gated
+    audit loop that stops partway through still audits the pages that matter
+    most, regardless of what order the upstream sample happened to emit them
+    in. Same set of URLs in and out, just reordered."""
+    return sorted(urls, key=lambda u: -page_priority(u))
+
+
 def sample_pages(urls: list[str], budget: int = _DEFAULT_BUDGET) -> dict:
     """Cluster `urls` by template shape and return a budgeted, stratified
     sample every per-page skill can consume.
@@ -214,7 +263,10 @@ def sample_pages(urls: list[str], budget: int = _DEFAULT_BUDGET) -> dict:
     top of the proportional allocation — `sample_urls` can therefore run a
     few entries past `budget` when a forced page wasn't already picked, by
     design: the whole point of force-including these is to guarantee their
-    presence rather than let a proportional split omit them.
+    presence rather than let a proportional split omit them. `sample_urls` is
+    returned priority-ordered (`rank_sample_urls`), highest tier first, so a
+    deadline-gated caller that stops partway through the list still audits
+    the highest-priority pages.
     """
     deduped = list(dict.fromkeys(urls))
     if not deduped:
@@ -253,6 +305,6 @@ def sample_pages(urls: list[str], budget: int = _DEFAULT_BUDGET) -> dict:
         "total_urls": len(deduped),
         "budget": budget,
         "strata": strata,
-        "sample_urls": list(dict.fromkeys(sample + forced)),
+        "sample_urls": rank_sample_urls(list(dict.fromkeys(sample + forced))),
         "forced_included": forced,
     }

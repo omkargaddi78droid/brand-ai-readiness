@@ -15,8 +15,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared"))
 
 from page_sample import (  # noqa: E402
+    page_priority,
     parse_sitemap_index_locs,
     parse_sitemap_urls,
+    rank_sample_urls,
     sample_pages,
     sitemap_root_kind,
     template_key,
@@ -206,6 +208,73 @@ class SamplePagesTests(unittest.TestCase):
         urls = ["https://example.com/a", "https://example.com/b"]
         result = sample_pages(urls, budget=25)
         self.assertEqual(set(result["sample_urls"]), set(urls))
+
+
+class PagePriorityTests(unittest.TestCase):
+    def test_homepage_is_tier_3(self):
+        self.assertEqual(page_priority("https://example.com/"), 3)
+
+    def test_a_force_include_process_page_is_tier_3(self):
+        self.assertEqual(page_priority("https://example.com/pricing"), 3)
+        self.assertEqual(page_priority("https://example.com/checkout"), 3)
+
+    def test_a_claim_bearing_keyword_path_is_tier_2(self):
+        self.assertEqual(page_priority("https://example.com/docs/setup"), 2)
+        self.assertEqual(page_priority("https://example.com/product-specs"), 2)
+
+    def test_a_dated_path_is_tier_1(self):
+        self.assertEqual(page_priority("https://example.com/blog/2024/my-post"), 1)
+
+    def test_an_announcement_segment_without_a_year_is_tier_1(self):
+        self.assertEqual(page_priority("https://example.com/news/launch"), 1)
+
+    def test_a_plain_path_is_tier_0(self):
+        self.assertEqual(page_priority("https://example.com/about"), 0)
+
+    def test_keyword_tier_outranks_dated_tier(self):
+        # A path matching both a tier-2 keyword and a tier-1 dated segment
+        # ranks as tier 2 (claim-bearing keyword wins).
+        self.assertEqual(page_priority("https://example.com/docs/2024/guide"), 2)
+
+
+class RankSampleUrlsTests(unittest.TestCase):
+    def test_force_include_pages_rank_first(self):
+        urls = ["https://example.com/about", "https://example.com/", "https://example.com/pricing"]
+        ranked = rank_sample_urls(urls)
+        self.assertEqual(ranked, ["https://example.com/", "https://example.com/pricing", "https://example.com/about"])
+
+    def test_keyword_path_outranks_plain_path(self):
+        urls = ["https://example.com/about", "https://example.com/docs/setup"]
+        ranked = rank_sample_urls(urls)
+        self.assertEqual(ranked, ["https://example.com/docs/setup", "https://example.com/about"])
+
+    def test_dated_path_outranks_undated_but_ranks_below_keyword_match(self):
+        urls = [
+            "https://example.com/about",
+            "https://example.com/blog/2024/my-post",
+            "https://example.com/docs/setup",
+        ]
+        ranked = rank_sample_urls(urls)
+        self.assertEqual(
+            ranked,
+            ["https://example.com/docs/setup", "https://example.com/blog/2024/my-post", "https://example.com/about"],
+        )
+
+    def test_ties_preserve_original_order(self):
+        urls = ["https://example.com/a", "https://example.com/b", "https://example.com/c"]
+        self.assertEqual(rank_sample_urls(urls), urls)
+
+    def test_reordering_does_not_drop_or_duplicate_any_url(self):
+        urls = [
+            "https://example.com/",
+            "https://example.com/about",
+            "https://example.com/blog/2024/my-post",
+            "https://example.com/docs/setup",
+            "https://example.com/contact",
+        ]
+        ranked = rank_sample_urls(urls)
+        self.assertEqual(sorted(ranked), sorted(urls))
+        self.assertEqual(len(ranked), len(urls))
 
 
 if __name__ == "__main__":
