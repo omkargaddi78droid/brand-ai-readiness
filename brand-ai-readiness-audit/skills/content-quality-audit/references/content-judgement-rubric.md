@@ -1,16 +1,15 @@
 # Content judgement rubric: CQ-01, CQ-02, CQ-04, CQ-09, CQ-10, CQ-12
 
-Reference for `content-quality-audit`. These five capabilities are agent-
-judged — the capability matrix names all five as judgement calls, and this
+Reference for `content-quality-audit`. These six capabilities are agent-
+judged — the capability matrix names all six as judgement calls, and this
 document is what makes the judgement repeatable instead of arbitrary. Read
 the relevant section before scoring, per SKILL.md's procedure.
 
 When still unsure after checking the examples below, say nothing rather than
 force a verdict — precision beats recall in this project's rubric, and a
-wrong judgement call costs more than a missed one. Every extraction function
-behind these four capabilities is deliberately narrow (see each section's
-"why this scope" note); the rubric does not expand what the script handed
-you, it only helps you judge it correctly.
+wrong judgement call costs more than a missed one. Evidence and mechanism
+text is capped at 150 words (SKILL.md's Output section); a page/URL list in
+evidence is capped at 3-4 representative entries plus the true count.
 
 ---
 
@@ -373,9 +372,9 @@ Same reasoning — a per-item identifier is expected to vary by design.
 
 - `id`: a stable slug incorporating the label, e.g.
   `CQ-10-fact-collision-founded`.
-- `evidence`: quote the label, every distinct value found, and the pages
-  each came from — a reader must be able to verify the collision without
-  re-fetching every page.
+- `evidence`: quote the label and at most 3-4 distinct values with the pages
+  each came from, plus the true count if more exist — enough for a reader to
+  verify the collision without re-fetching every page.
 - `severity`: `medium` for a genuine collision — a citing assistant would
   get a materially different, non-obviously-per-item fact depending on
   which page it read.

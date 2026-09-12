@@ -379,18 +379,14 @@ to suppress the finding.
    performance floor.
 
 **Why the overlap with CQ-01 (`content-quality-audit`) is intentional, not
-a duplicate.** CQ-01 (agent-judged) asks whether a *canonical answer* sits
-near the top of a page; its own documented blind spot is that the opening
-block is document-start and is frequently nav chrome, not real content.
-RET-09 asks a narrower, fully deterministic question over the *whole*
+a duplicate.** CQ-01 asks whether a *canonical answer* sits near the top of
+the page. RET-09 asks a narrower, deterministic question over the *whole*
 document: are load-bearing *values* anchored at either margin, a heading, a
-table, a definition, or JSON-LD — never whether the opening itself reads
-well. Different trigger (position of values vs. quality of the opening),
-different remedy (restate the number vs. write a lede), different owning
-skill and capability id — both can legitimately fire on the same page, and
-`tests/test_retrieval_readiness.py::OverlapControlTests` proves composing
-both skills' outputs never trips `compose_report.py`'s duplicate-finding-id
-guard.
+table, a definition, or JSON-LD — never whether the opening reads well.
+Different trigger, different remedy, different capability id — both can
+fire on the same page; `OverlapControlTests` in
+`tests/test_retrieval_readiness.py` proves neither trips the duplicate-
+finding-id guard.
 
 **What was left out, and why.** Abbreviated month names ("Jan 15, 2024")
 are not matched — only full month names, ISO dates, and slash-form dates —

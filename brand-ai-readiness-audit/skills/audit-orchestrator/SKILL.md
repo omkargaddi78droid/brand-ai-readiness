@@ -27,13 +27,10 @@ routing it through a full report adds nothing.
 
 ## Inputs
 
-- **Required:** a site URL or bare domain (`https://example.com`,
-  `example.com`).
-- **Optional:** `--audited-at` for a fixed timestamp, which makes two runs of
-  the same site byte-identical. Useful for regression checks.
+- **Required:** a site URL or bare domain (`https://example.com`, `example.com`).
+- **Optional:** `--audited-at` for a fixed timestamp, which makes two runs of the same site byte-identical. Useful for regression checks.
 
-Recommend-only. Nothing in this marketplace writes to, authenticates against,
-or otherwise alters the audited site.
+Recommend-only. Nothing in this marketplace writes to, authenticates against, or otherwise alters the audited site.
 
 ## Procedure
 
@@ -111,6 +108,12 @@ or otherwise alters the audited site.
    another. A skipped invocation simply produces no output file;
    `compose_report.py` composes it exactly like a smaller sample.
 
+   **Judgement cap (per skill, item-based, 5 skills × 5 items = 25 max):**
+   do not resolve `agent_judgement_required` per invocation as you go — run
+   every invocation for a given agent-judged skill first, then rank and cap
+   that skill's candidates by severity in one pass. See **"Judgement
+   resolution"** at the end of this step for the exact procedure.
+
    `content-quality-audit` runs per page, not per site, against pages drawn
    from the sample built above. Five of its per-page capabilities (CQ-01,
    CQ-02, CQ-04, CQ-09, CQ-12) are judgement calls the script deliberately
@@ -125,11 +128,11 @@ or otherwise alters the audited site.
        --url https://example.com/pricing > /tmp/audit/content-pricing.json
    ```
 
-   Read the resulting file's `agent_judgement_required` array and resolve it
-   yourself, per `content-quality-audit`'s own SKILL.md procedure, **before**
-   passing the file to `compose_report.py`. Run it again per page in the
-   sample; each invocation's findings carry that page's URL, so composing
-   several runs keeps every finding attributable to the page it came from.
+   Leave `agent_judgement_required` as-is — resolved together with every
+   other content-quality-audit invocation in "Judgement resolution" below.
+   Run it again per page in the sample; each invocation's findings carry
+   that page's URL, so composing several runs keeps every finding
+   attributable to the page it came from.
 
    Also run `content-quality-audit`'s multi-page mode (CQ-13 near-duplicate
    detection + CQ-10 cross-page fact collision) once per site, against the
@@ -140,19 +143,15 @@ or otherwise alters the audited site.
        --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/content-near-dup.json
    ```
 
-   CQ-13's findings in this file are final (script-decided). Resolve
-   `agent_judgement_required` (CQ-10) against
-   `references/content-judgement-rubric.md` §CQ-10 the same way as
-   CQ-01/02/04/09/12, before composing.
+   CQ-13's findings are final (script-decided); CQ-10's here join the rest
+   of content-quality-audit's candidates in "Judgement resolution" below.
 
    `entity-audit` runs the same way, per page — homepage/About page for
    Organization markup and canonical hygiene, product or review pages for
    rating agreement, category/breadcrumbed pages for taxonomy consistency.
    One of its capabilities (ENT-09) is a judgement call the script
-   deliberately does not resolve — read the resulting file's
-   `agent_judgement_required` array and resolve it yourself, per
-   `entity-audit`'s own SKILL.md procedure, before passing the file to
-   `compose_report.py`:
+   deliberately does not resolve — leave `agent_judgement_required` as-is;
+   it joins ENT-05/ENT-06 in "Judgement resolution" below:
 
    ```bash
    python3 ../entity-audit/scripts/check_entity.py \
@@ -195,11 +194,10 @@ or otherwise alters the audited site.
        --offsite-url https://acme-w1dgets.com/ > /tmp/audit/entity-offsite.json
    ```
 
-   Resolve the resulting `agent_judgement_required` array (ENT-05 and
-   ENT-06) against `references/entity-judgement-rubric.md` §ENT-05/§ENT-06
-   the same way as ENT-09, before composing. Skip this call entirely when
-   no off-site candidates were found or worth checking — ENT-05/06 are not
-   reported `unknown` for being omitted.
+   Leave `agent_judgement_required` (ENT-05/06) as-is — resolved with ENT-09
+   in "Judgement resolution" below. Skip this call entirely when no off-site
+   candidates were found or worth checking — ENT-05/06 are not reported
+   `unknown` for being omitted.
 
    `engagement-audit` runs the same way, per page — but its output is not
    final on its own. Two of its four capabilities (EN-01, EN-03) are
@@ -210,14 +208,8 @@ or otherwise alters the audited site.
        --url https://example.com/ > /tmp/audit/engagement-home.json
    ```
 
-   Read the resulting file's `agent_judgement_required` array and resolve it
-   yourself, per `engagement-audit`'s own SKILL.md procedure, **before**
-   passing the file to `compose_report.py` — append any findings you
-   author into the file's `findings` array and remove
-   `agent_judgement_required` entirely. `compose_report.py` treats an
-   unresolved entry as an `unknown_checks` entry rather than crashing or
-   dropping it silently, but resolving it properly is still your job, not a
-   fallback to rely on.
+   Leave `agent_judgement_required` as-is — it joins EN-08/EN-11 and every
+   other engagement-audit invocation in "Judgement resolution" below.
 
    Also run `engagement-audit`'s multi-page mode (C1's information-scent
    check, EN-11 + the EN-08 slice; and B1+B8's dead-end/orphan detection,
@@ -229,14 +221,13 @@ or otherwise alters the audited site.
        --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/engagement-multi-page.json
    ```
 
-   EN-04's findings in this file are final (script-decided, same rule as
-   EN-05/06/07/09). Resolve `agent_judgement_required` (EN-08 and EN-11)
-   against `references/engagement-judgement-rubric.md` §EN-08/§EN-11 the
-   same way as EN-01/EN-03, before composing.
+   EN-04's findings are final (script-decided, same rule as EN-05/06/07/09);
+   EN-08/EN-11's here join the rest of engagement-audit's candidates in
+   "Judgement resolution" below.
 
-   `citability-audit` runs the same way, per page, with the same
-   `agent_judgement_required` resolution step for its agent-judged
-   capability (CIT-04):
+   `citability-audit` runs the same way, per page. It also has an
+   agent-judged capability (CIT-04) — leave `agent_judgement_required`
+   as-is; resolved in "Judgement resolution" below:
 
    ```bash
    python3 ../citability-audit/scripts/check_citability.py \
@@ -256,11 +247,9 @@ or otherwise alters the audited site.
        > /tmp/audit/citability-guide.json
    ```
 
-   Resolve CIT-13's `agent_judgement_required` entry against
-   `references/citability-judgement-rubric.md` §CIT-13 the same way as
-   CIT-04. Omit `--offsite-url` entirely when there is nothing worth
-   off-site-checking on this page — CIT-13 simply does not run, and is not
-   reported `unknown` for it.
+   Leave CIT-13's entry as-is — resolved with CIT-04 in "Judgement
+   resolution" below. Omit `--offsite-url` when nothing is worth off-site
+   checking — CIT-13 simply does not run, not reported `unknown`.
 
    Also run `citability-audit`'s hub/authority mode (CIT-08 link-graph
    structure + CIT-09 comparison-content gap) once per site, against the
@@ -271,19 +260,16 @@ or otherwise alters the audited site.
        --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/citability-link-graph.json
    ```
 
-   Both capabilities' findings in this file are final (script-decided) — no
-   `agent_judgement_required` resolution needed for this mode. CIT-09's
-   finding, if present, carries `"track": "proactive"` — compose it as a
-   suggestion, not a defect.
+   Both capabilities' findings here are final (script-decided). CIT-09's
+   finding, if present, carries `"track": "proactive"` — a suggestion, not
+   a defect.
 
    `retrieval-readiness-audit` and `static-extraction-audit` are unlike the
-   other four skills above: every one of their capabilities is inherently
-   per-page (there is no separate site-wide capability), so **prefer their
+   other four: every capability is inherently per-page, so **prefer their
    `--sample-file` bulk mode over one `--url` invocation per page** — it
-   fetches the whole page-sample file concurrently in one process instead of
-   spawning one sequential subprocess per page — see
-   `references/orchestration-notes.md` for why sequential per-page fetching
-   made the 280s budget unrealistic on a full 30-page sample:
+   fetches the whole sample concurrently in one process instead of spawning
+   one subprocess per page (see `references/orchestration-notes.md` for why
+   sequential fetching made the 280s budget unrealistic at a full sample):
 
    ```bash
    python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \
@@ -293,15 +279,11 @@ or otherwise alters the audited site.
        --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/static-extraction-sample.json
    ```
 
-   `static-extraction-audit`'s nine capabilities are all script-decided, so
-   there is no `agent_judgement_required` step for it either way.
+   `static-extraction-audit`'s nine capabilities are all script-decided.
    `retrieval-readiness-audit` still has four agent-judged capabilities
-   (RET-02/03/05/06) — in bulk mode, every sampled page's judgement requests
-   arrive together in one `agent_judgement_required` array, each entry still
-   carrying its own `observations.page_url` (stamped by the skill itself),
-   so resolve them exactly as you would per-page findings: per entry, using
-   that entry's own `page_url` to know which page it's about, **before**
-   passing the file to `compose_report.py`.
+   (RET-02/03/05/06) — in bulk mode every sampled page's requests arrive in
+   one array, each entry carrying its own `observations.page_url`. Leave it
+   as-is — resolved in "Judgement resolution" below, per entry.
 
    Fall back to a single `--url` invocation only for a one-off page outside
    the sample worth checking specifically (e.g. a product page for REN-04's
@@ -312,6 +294,35 @@ or otherwise alters the audited site.
    python3 ../static-extraction-audit/scripts/check_static_extraction.py \
        --url https://example.com/product/widget > /tmp/audit/static-extraction-widget.json
    ```
+
+   **Judgement resolution** (once per agent-judged skill — `content-quality-
+   audit`, `entity-audit`, `engagement-audit`, `citability-audit`,
+   `retrieval-readiness-audit`, not `static-extraction-audit` — after every
+   one of that skill's invocations above has run): call
+   `select_judgement_items.py --skill NAME` with every JSON file that skill
+   produced this run as `--input`, in `sample_urls` priority order. It
+   gathers every file's `agent_judgement_required` candidates, ranks them by
+   rubric-declared severity, and returns at most 5 — the rest are dropped,
+   never resolved:
+
+   ```bash
+   python3 ../audit-orchestrator/scripts/select_judgement_items.py \
+       --skill content-quality-audit \
+       --input /tmp/audit/content-pricing.json \
+       --input /tmp/audit/content-checkout.json \
+       --input /tmp/audit/content-near-dup.json \
+       > /tmp/audit/content-judgement-selection.json
+   ```
+
+   Read `.selected` (tagged `_source_file`/`_source_index`) and group by
+   `_source_file`. For every `--input` file, whether or not it won a
+   candidate, judge only its selected ones against that skill's own rubric
+   (`references/*-judgement-rubric.md`), author a `Finding` per real defect,
+   then strip `agent_judgement_required` from that file via
+   `shared/judgement_merge.py --report FILE --judgements JUDGEMENTS.json
+   --out FILE` (pass `[]` where nothing was selected or worth a Finding).
+   Sum every skill's `.items_resolved`/`.items_total` for step 6's
+   `--judgement-items-resolved`/`--judgement-items-total`.
 
 6. **Compose one report and write it to `report/`.** The marketplace root
    has a standing `report/` directory for exactly this — every audit's
@@ -334,6 +345,7 @@ or otherwise alters the audited site.
        --skill retrieval-readiness-audit /tmp/audit/retrieval-sample.json \
        --skill static-extraction-audit /tmp/audit/static-extraction-sample.json \
        --start-epoch-file /tmp/audit/start_epoch \
+       --judgement-items-resolved 23 --judgement-items-total 61 \
        > report/result_example.com.json
    ```
 
@@ -341,6 +353,10 @@ or otherwise alters the audited site.
    page for skills like `content-quality-audit` that run per page rather than
    per site — the same skill name may appear more than once. Add
    `--floor-only` for the minimal required schema instead of the full report.
+   `--judgement-items-resolved`/`--judgement-items-total` are the sum, across
+   the five agent-judged skills, of each skill's own
+   `select_judgement_items.py` selection's `items_resolved`/`items_total`
+   (step 5's "Judgement resolution").
 
    The output filename is always `result_<site>.json`, where `<site>` is the
    same normalised site label used in step 1 (`example.com`, not the full
@@ -392,29 +408,22 @@ twice — they are not, and each pair is backed by its own overlap-control
 test proving both sides can legitimately fire together without tripping
 `compose_report.py`'s one-owner-per-capability guard:
 
-- **`entity-audit`'s ENT-08 (address clustering) vs. `static-extraction-audit`'s
-  REN-10 (phone-number render asymmetry).** Both look like "NAP consistency"
-  (Name/Address/Phone). ENT-08 owns the address; REN-10 owns the phone
-  number. Neither duplicates the other's field.
-- **`content-quality-audit`'s CQ-01 (answer extractability, agent-judged) vs.
-  `retrieval-readiness-audit`'s RET-09 (positional fact interment, script-
-  decided).** CQ-01 asks whether the *opening* reads as a good answer; RET-09
-  asks whether already-present *values* are anchored anywhere sensible in the
-  *whole* document, never judging the opening itself.
-  `tests/test_retrieval_readiness.py::OverlapControlTests` proves both can
-  fire on one page without a duplicate-id collision.
-- **`retrieval-readiness-audit`'s own RET-06 (chunk quality, agent-judged) vs.
-  RET-10 (chunk self-containment, script-decided).** RET-06 asks whether a
-  long paragraph blends unrelated ideas; RET-10 asks only whether a block
-  names its own subject, never reading what the block is about.
+- **ENT-08 (address clustering) vs. REN-10 (phone-render asymmetry).** Both
+  look like "NAP consistency" — ENT-08 owns the address, REN-10 the phone.
+- **CQ-01 (answer extractability, agent-judged) vs. RET-09 (positional fact
+  interment, script-decided).** CQ-01 judges whether the *opening* reads as
+  a good answer; RET-09 checks whether already-present *values* are
+  anchored anywhere in the *whole* document. `OverlapControlTests` in
+  `tests/test_retrieval_readiness.py` proves both can fire without collision.
+- **RET-06 (chunk quality, agent-judged) vs. RET-10 (chunk self-containment,
+  script-decided).** RET-06 asks whether a paragraph blends unrelated
+  ideas; RET-10 only checks whether a block names its own subject.
   `Ret10Ret06OverlapControlTests` proves the same non-collision.
-- **`perimeter-access-audit`'s PER-06 (sitemap discovery) vs. `entity-audit`'s
-  ENT-04 sitemap-scoped half (canonicalization forks).** Both read
-  `sitemap.xml`, for different questions: PER-06 asks whether it exists and
-  is structurally valid; ENT-04 asks whether its own listed URLs fork into
-  trailing-slash/`www.`/scheme duplicates of each other. ENT-04's
-  `--sitemap-file` mode only runs once PER-06 has already confirmed a real
-  sitemap exists.
+- **PER-06 (sitemap discovery) vs. ENT-04's sitemap-scoped half
+  (canonicalization forks).** PER-06 asks whether `sitemap.xml` exists and
+  is valid; ENT-04 asks whether its listed URLs fork into trailing-slash/
+  `www.`/scheme duplicates. ENT-04's `--sitemap-file` mode only runs once
+  PER-06 has confirmed a real sitemap exists.
 
 ## Output
 
@@ -456,19 +465,17 @@ report schema and extends it:
 }
 ```
 
-What the extra fields buy, and why each is worth its space:
+What the extra fields buy:
 
-- **`mechanism`** — why this finding has the severity it has, stated so a
-  reader can argue with it instead of taking it on trust.
-- **`track`** — `defect` means a problem was observed. `proactive` means no
-  defect was found and the change would still strengthen the site. Both are
-  actionable; conflating them would dress up suggestions as faults.
-- **`confidence`** — reduced where the underlying mechanism is genuinely
-  contested, so a hedge is visible rather than buried in wording.
-- **`check_id`** — the stable semantic id of the check, so a finding can be
-  traced across runs while report ids stay short and ordered.
-- **`unknown_checks`** — checks that could not run, with the reason. A check
-  that did not run is never reported as a pass.
+- **`mechanism`** — why this finding has the severity it has, arguable
+  instead of taken on trust.
+- **`track`** — `defect` (a problem was observed) vs. `proactive` (no
+  defect, but the change would still help) — both actionable, not conflated.
+- **`confidence`** — reduced where the underlying mechanism is contested.
+- **`check_id`** — the stable semantic id, so a finding traces across runs
+  while report ids stay short and ordered.
+- **`unknown_checks`** — checks that could not run, with the reason; never
+  reported as a pass.
 
 Findings are ordered defects first, then by severity, then by id. Ids are
 assigned sequentially in that order, so the same set of findings always
@@ -479,14 +486,12 @@ produces the same report.
 | Situation | Result |
 |---|---|
 | An audit skill exits non-zero or emits unparseable JSON | One `unknown_checks` entry naming the skill; the report is still produced |
-| A skill emits a finding missing evidence, mechanism or a suggested action | The composer aborts loudly. That is an authoring bug in the skill, and a report whose evidence cannot be trusted is worse than no report |
+| A skill emits a finding missing evidence, mechanism or a suggested action | The composer aborts loudly — an authoring bug in the skill, and untrustworthy evidence is worse than no report |
 | Two skills emit the same finding id | The composer aborts. One owner per capability is a checkable rule |
-| The site is unreachable entirely | Gate 1 reports `unknown`; the report says the audit could not reach the site rather than reporting a clean site |
+| The site is unreachable entirely | Gate 1 reports `unknown`; the report says the audit could not reach the site, not that it's clean |
 
 ## Excludes
 
-- **No detection.** The entrypoint runs nothing that reads a page. If a check
-  seems to belong here, it belongs in an audit skill.
+- **No detection.** The entrypoint reads no page itself — that belongs in an audit skill.
 - **No re-scoring.** Severity, mechanism and evidence pass through untouched.
-- **No writes.** Nothing modifies the audited site, and no suggested action is
-  ever applied — the marketplace recommends.
+- **No writes.** Nothing modifies the audited site; the marketplace only recommends.

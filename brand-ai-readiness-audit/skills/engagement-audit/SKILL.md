@@ -50,7 +50,12 @@ project's severity-calibration discipline exists to prevent.
 
 **You must resolve `agent_judgement_required` yourself, per step 3 below,
 before this file's output is handed to the entrypoint.** An unresolved
-`agent_judgement_required` array must never reach the composed report.
+`agent_judgement_required` array must never reach the composed report. When
+`audit-orchestrator` drives this skill as part of a full-site audit, this
+array has already been filtered to at most 5 candidates total (across all
+of engagement-audit's invocations this run) by its own
+`select_judgement_items.py`, ranked by severity — see the orchestrator's
+SKILL.md step 5. Run standalone, resolve every entry with no such cap.
 
 ## Inputs
 
@@ -250,6 +255,11 @@ One JSON object on stdout:
 `agent_judgement_required` must be empty (or removed entirely) by the time
 this file reaches the entrypoint — resolve it per Procedure step 3.
 
+**Length caps on agent-authored text** (`evidence`, `mechanism`,
+`suggested_action.summary`/`details`): 150 words each. Where evidence would
+otherwise list pages or URLs, quote at most 3-4 representative ones plus the
+true count — never every one.
+
 ## Failure modes
 
 | Situation | Result |
@@ -281,7 +291,7 @@ site-wide:
 
 ```json
 {
-  "id": "EN-04-orphan-in-sample-e5f6a7b8",
+  "id": "EN-04-orphan-in-sample",
   "title": "No internal link to this page found within the sampled pages",
   "severity": "medium",
   "evidence": "Within the 25 pages sampled for this audit, no internal link pointed to https://example.com/deep-archive-page — this does not prove site-wide orphan status, only that no link path to it was found within the sampled subset.",

@@ -21,7 +21,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared"))
 
-from finding_contract import Finding  # noqa: E402
+from finding_contract import Finding, merge_paginated_findings  # noqa: E402
 
 _spec = importlib.util.spec_from_file_location(
     "check_engagement", REPO_ROOT / "skills/engagement-audit/scripts/check_engagement.py"
@@ -670,6 +670,14 @@ class DeadEndPageTests(unittest.TestCase):
         finding = eng.find_dead_end_pages(raw_internal_links, page_cta={})[0]
         self.assertEqual(finding.validate(), [])
 
+    def test_id_is_shared_across_pages_so_findings_can_be_merged(self):
+        """Regression: a per-URL id defeats merge_paginated_findings, which
+        groups by exact id — every dead-end finding must share one id."""
+        raw_internal_links = {"https://acme.com/thanks": [], "https://acme.com/other": []}
+        findings = eng.find_dead_end_pages(raw_internal_links, page_cta={})
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(findings[0].id, findings[1].id)
+
 
 class OrphanPageTests(unittest.TestCase):
     def test_a_page_with_no_inbound_internal_link_is_flagged(self):
@@ -710,6 +718,18 @@ class OrphanPageTests(unittest.TestCase):
         finding = eng.find_orphan_pages(raw_internal_links)[0]
         self.assertEqual(finding.validate(), [])
 
+    def test_id_is_shared_across_pages_so_findings_can_be_merged(self):
+        """Regression: a per-URL id defeats merge_paginated_findings, which
+        groups by exact id — every orphan finding must share one id."""
+        raw_internal_links = {
+            "https://acme.com/": [],
+            "https://acme.com/orphan-a": [],
+            "https://acme.com/orphan-b": [],
+        }
+        findings = eng.find_orphan_pages(raw_internal_links)
+        self.assertEqual(len(findings), 2)
+        self.assertEqual(findings[0].id, findings[1].id)
+
 
 class IsHomepageTests(unittest.TestCase):
     def test_root_path_is_the_homepage(self):
@@ -720,6 +740,36 @@ class IsHomepageTests(unittest.TestCase):
 
     def test_a_subpage_is_not_the_homepage(self):
         self.assertFalse(eng._is_homepage("https://acme.com/about"))
+
+
+class OrphanAndDeadEndMergeIntegrationTests(unittest.TestCase):
+    """Regression for the bug where per-URL ids defeated
+    merge_paginated_findings: many single-page orphan/dead-end findings
+    should collapse into one finding per check, not stay separate."""
+
+    def test_orphan_findings_across_pages_merge_into_one(self):
+        raw_internal_links = {
+            "https://acme.com/": [],
+            "https://acme.com/orphan-a": [],
+            "https://acme.com/orphan-b": [],
+            "https://acme.com/orphan-c": [],
+        }
+        findings = eng.find_orphan_pages(raw_internal_links)
+        self.assertEqual(len(findings), 3)
+        merged = merge_paginated_findings(findings)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].structured_evidence["affected_page_count"], 3)
+
+    def test_dead_end_findings_across_pages_merge_into_one(self):
+        raw_internal_links = {
+            "https://acme.com/dead-a": [],
+            "https://acme.com/dead-b": [],
+        }
+        findings = eng.find_dead_end_pages(raw_internal_links, page_cta={})
+        self.assertEqual(len(findings), 2)
+        merged = merge_paginated_findings(findings)
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].structured_evidence["affected_page_count"], 2)
 
 
 if __name__ == "__main__":

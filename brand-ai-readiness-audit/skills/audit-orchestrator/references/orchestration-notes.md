@@ -78,6 +78,42 @@ overrun still possible from agent-reasoning turns between calls (not
 measurable from inside a script) is at least visible in the report instead of
 silently absorbed.
 
+## Why judgement-resolution has its own, smaller cap
+
+The 280s/30-page budget above gates *fetching* — it says nothing about the
+cost of resolving what a fetch turns up. Sixteen agent-judged rubric items
+span five skill families (content-quality-audit ×6, entity-audit ×3,
+engagement-audit ×4, citability-audit ×2, retrieval-readiness-audit ×4 —
+static-extraction-audit contributes 0, every one of its capabilities is
+script-decided). At a 30-page fetch budget, an uncapped run could produce
+hundreds of judgement candidates: mechanical, rubric-driven LLM reasoning
+that turned out to be the dominant cost of a run — a live run's
+`coverage.stages` showed each fetch stage finishing in 11-19s against its
+90s cap, yet the run's `total_elapsed_seconds` was 1178.3s (~19.6 min), the
+gap being judgement resolution with no timer or cap of its own.
+
+Rather than build a second wall-clock deadline around an LLM reasoning step
+(hard to measure accurately mid-procedure, unlike a script's own fetch
+loop), or cap by page priority (which bounds cost but is blind to which
+candidates are actually worth judging), the fix caps **per skill, by
+severity**: `select_judgement_items.py` gathers every candidate a skill
+produced this run, ranks them by each capability's rubric-declared severity,
+and keeps the top 5. Each of the five agent-judged skills is capped
+independently, so the worst case is a flat **5 skills × 5 items = 25
+items**, constant regardless of site size — a 5-page site and a 500-page
+site cost the same judgement-resolution budget. Ties within a skill (same
+severity) break by input order: the orchestrator passes `--input` files in
+`sample_urls`' own priority order, so the same discovery order used for the
+fetch budget also decides which of several equal-severity candidates
+survives the cap.
+
+A candidate beyond the cap is not silently dropped: `compose_report.py
+--judgement-items-resolved`/`--judgement-items-total` records exactly how
+many candidates were resolved versus produced, summed across the five
+skills, in the report's own `coverage.stages` — the same "reduced coverage
+is reported, never hidden" principle the 90s-fetch-cap and 280s-deadline
+stages already follow.
+
 ## Why the multi-page skills fetch concurrently instead of one page at a time
 
 The competition's own runtime budget is 5 minutes for a typical site. Early

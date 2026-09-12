@@ -153,8 +153,6 @@ guard exists to prevent from ever needing your judgement at all.
 
 ## ENT-09 — Taxonomy consistency
 
-## ENT-09 — Taxonomy consistency
-
 ### The question
 
 Does `category_label` genuinely describe what `visible_text_excerpt` is

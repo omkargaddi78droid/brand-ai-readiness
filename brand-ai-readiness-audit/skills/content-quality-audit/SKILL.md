@@ -53,7 +53,12 @@ is a non-answer" from a phrase match alone would assert a judgement the
 pattern match cannot support. **You must resolve `agent_judgement_required`
 yourself before this file's output reaches the entrypoint** — the identical
 procedure `engagement-audit` uses for EN-01/EN-03 and `citability-audit`
-uses for CIT-04.
+uses for CIT-04. When `audit-orchestrator` drives this skill as part of a
+full-site audit, this array has already been filtered to at most 5
+candidates total (across all of content-quality-audit's invocations this
+run) by its own `select_judgement_items.py`, ranked by severity — see the
+orchestrator's SKILL.md step 5. Run standalone, resolve every entry with no
+such cap.
 
 CQ-10 has a second, unrelated half you do **not** need to judge: a
 single-page freshness check that only runs in `--url` mode (see "What it
@@ -252,6 +257,11 @@ One JSON object on stdout, same shape as `perimeter-access-audit`:
 
 `agent_judgement_required` must be empty (or removed entirely) by the time
 this file reaches the entrypoint — resolve it per Procedure step 3.
+
+**Length caps on agent-authored text** (`evidence`, `mechanism`,
+`suggested_action.summary`/`details`): 150 words each. Where evidence would
+otherwise list pages or URLs, quote at most 3-4 representative ones plus the
+true count (e.g. "3 of 11 pages, e.g. a, b, c") — never every one.
 
 ## Failure modes
 

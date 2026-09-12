@@ -99,6 +99,8 @@ def compose(
     skill_outputs: list[tuple[str, str]],
     audited_at: str | None = None,
     start_epoch_file: str | None = None,
+    judgement_items_resolved: int | None = None,
+    judgement_items_total: int | None = None,
 ) -> dict:
     findings: list[Finding] = []
     unknowns: list[UnknownCheck] = []
@@ -108,6 +110,17 @@ def compose(
         findings.extend(skill_findings)
         unknowns.extend(skill_unknowns)
         stages.extend(skill_stages)
+
+    if judgement_items_resolved is not None and judgement_items_total is not None:
+        stages.append(
+            {
+                "stage": "judgement-resolution",
+                "items_total": judgement_items_total,
+                "items_resolved": judgement_items_resolved,
+                "items_skipped": judgement_items_total - judgement_items_resolved,
+                "capped": judgement_items_resolved < judgement_items_total,
+            }
+        )
 
     findings = merge_paginated_findings(findings)
     coverage = {"stages": stages} if stages else None
@@ -145,13 +158,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit the strict required schema instead of the full report",
     )
+    parser.add_argument(
+        "--judgement-items-resolved",
+        type=int,
+        help="Sum, across the agent-judged skills, of each skill's select_judgement_items.py "
+        "selection's items_resolved. Must be passed together with --judgement-items-total.",
+    )
+    parser.add_argument(
+        "--judgement-items-total",
+        type=int,
+        help="Sum, across the agent-judged skills, of each skill's select_judgement_items.py "
+        "selection's items_total. Must be passed together with --judgement-items-resolved.",
+    )
     args = parser.parse_args(argv)
+
+    if (args.judgement_items_resolved is None) != (args.judgement_items_total is None):
+        parser.error("--judgement-items-resolved and --judgement-items-total must be passed together")
 
     report = compose(
         args.site,
         [(name, path) for name, path in args.skill],
         args.audited_at,
         args.start_epoch_file,
+        args.judgement_items_resolved,
+        args.judgement_items_total,
     )
 
     errors = validate_floor_shape(report)

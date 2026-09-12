@@ -1,0 +1,4 @@
+1. the cap of 20 agent judged is applied for per skill but i wanted the total agent judged to be 20 so make each agent judged to top 5 and ignore the rest. which makes 4 * 5 = 20.
+2. make the references of all skill self contained, remove unnecessary , unwanted, redundant data to keep the reference simple for agents. this save the time for agents  to make the judgements. also mention the cap of max 150 words or to mention 3-4 pages instead of mentioning all pages in evidence or somewhere else, for wherever the agent will be writing something such as evidence this too saves the time significantly and keep the report clean with concise data.
+3. also find all the opportunities where i can save the time such as something is uncapped making it caped will save you a time. 
+present a plan, and then start implementation. 

@@ -650,6 +650,6 @@ def evaluate_llms_sitemap_agreement(
             track="defect",
             gate=1,
             confidence="medium",
-            structured_evidence={"orphaned_urls": orphaned},
+            structured_evidence={"orphaned_urls": shown, "true_orphaned_count": len(orphaned)},
         )
     ], []

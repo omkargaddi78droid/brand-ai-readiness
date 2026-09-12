@@ -100,7 +100,7 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 from budget import StageBudget, coverage_manifest  # noqa: E402
 from report_shape import site_label, stamp_page as _stamp_page, unknown_output  # noqa: E402
 from skill_cli import add_page_arguments, resolve_page_html  # noqa: E402
-from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from finding_contract import Finding, SuggestedAction, UnknownCheck, cap_list  # noqa: E402
 from jsonld_graph import flatten  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
@@ -546,7 +546,7 @@ def find_hydration_coverage_gaps(fragments: list[dict], visible_text: str) -> li
             ),
             gate=2,
             confidence="medium",
-            structured_evidence={"missing_fragments": missing, "count": len(missing)},
+            structured_evidence={"missing_fragments": examples, "count": len(missing)},
         )
     ]
 
@@ -646,6 +646,9 @@ def _price_survives(price: str, visible_text: str) -> bool:
     return False
 
 
+_REN04_MAX_PRICES = 5
+
+
 def find_price_render_gaps(prices: list[dict], visible_text: str) -> list[Finding]:
     if not prices:
         return []
@@ -658,8 +661,9 @@ def find_price_render_gaps(prices: list[dict], visible_text: str) -> list[Findin
     for p in missing:
         if p["price"] not in seen:
             seen.append(p["price"])
-    quoted = ", ".join(seen[:5])
-    more = f" (+{len(seen) - 5} more)" if len(seen) > 5 else ""
+    shown, true_seen_count = cap_list(seen, _REN04_MAX_PRICES)
+    quoted = ", ".join(shown)
+    more = f" (+{true_seen_count - _REN04_MAX_PRICES} more)" if true_seen_count > _REN04_MAX_PRICES else ""
 
     return [
         Finding(
@@ -667,7 +671,7 @@ def find_price_render_gaps(prices: list[dict], visible_text: str) -> list[Findin
             title="A structured-data price does not appear in the page's own visible text",
             severity="high",
             evidence=(
-                f"{len(seen)} distinct price(s) declared in this page's JSON-LD Offer data do not "
+                f"{true_seen_count} distinct price(s) declared in this page's JSON-LD Offer data do not "
                 f"appear anywhere in its extracted visible text (numeric match, currency-symbol- and "
                 f"comma-tolerant): {quoted}{more}."
             ),
@@ -685,7 +689,7 @@ def find_price_render_gaps(prices: list[dict], visible_text: str) -> list[Findin
             ),
             gate=2,
             confidence="high",
-            structured_evidence={"missing_prices": seen, "count": len(seen)},
+            structured_evidence={"missing_prices": shown, "count": true_seen_count},
         )
     ]
 

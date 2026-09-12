@@ -121,9 +121,9 @@ built capability; RET-03 cares about coverage of content, not its framing.
 ### Writing the finding
 
 - `id`: `RET-03-unaddressed-category-questions`.
-- `evidence`: list the specific questions you judged obvious for this
-  category and state plainly that the page's content (quote what you
-  checked) does not address them.
+- `evidence`: list the 3-5 questions you judged obvious for this category
+  and state plainly that the page's content (quote what you checked) does
+  not address them.
 - `severity`: `low`. `category`: `"discoverability"`, `gate`: `3`.
 - `mechanism`: a retrieval/generative system answering a category-typical
   query about this brand has no content on the page to draw from for that
@@ -245,8 +245,9 @@ was the extraction filter, not the standard being judged.
 
 - `id`: `RET-06-blended-paragraph` (append a short slug if more than one
   candidate qualifies on the same page).
-- `evidence`: quote the paragraph in full as evidence — the reader should
-  be able to see the blend themselves, not take a summary on faith.
+- `evidence`: quote the paragraph, capped at 150 words (truncate with "..."
+  past that) — the reader should be able to see the blend themselves, not
+  take a summary on faith.
 - `severity`: `low`. `category`: `"discoverability"`, `gate`: `3`.
 - `mechanism`: state plainly which distinct ideas are blended and why a
   retrieval chunk built from this paragraph would serve neither well.

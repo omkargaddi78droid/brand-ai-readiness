@@ -140,7 +140,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
-from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from finding_contract import Finding, SuggestedAction, UnknownCheck, cap_list  # noqa: E402
 from text_spans import split_sentences, VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 from page_fetch import (  # noqa: E402
     USER_AGENT,
@@ -408,6 +408,7 @@ def find_missing_source_attribution(hrefs: list[str], visible_text: str, site: s
 # ---------------------------------------------------------------------------
 
 _LATE_CITATION_THRESHOLD = 0.8  # only the last 20% of the page counts as "buried"
+_CIT07_MAX_FRACTIONS = 10
 
 
 def find_late_citations(
@@ -435,6 +436,8 @@ def find_late_citations(
     if not fractions or min(fractions) < _LATE_CITATION_THRESHOLD:
         return []
 
+    shown_fractions, true_fraction_count = cap_list(fractions, _CIT07_MAX_FRACTIONS)
+
     return [
         Finding(
             id="CIT-07-late-citation",
@@ -460,7 +463,11 @@ def find_late_citations(
             ),
             gate=3,
             confidence="medium",
-            structured_evidence={"word_count": word_count, "citation_fractions": [round(f, 3) for f in fractions]},
+            structured_evidence={
+                "word_count": word_count,
+                "citation_fractions": [round(f, 3) for f in shown_fractions],
+                "true_citation_count": true_fraction_count,
+            },
         )
     ]
 
@@ -496,6 +503,9 @@ def _quoted_spans(text: str) -> list[str]:
     return _QUOTED_SPAN_PATTERN.findall(text)
 
 
+_CIT06_MAX_MATCHES = 5
+
+
 def find_unverifiable_superlatives(visible_text: str) -> list[Finding]:
     quoted_spans = _quoted_spans(visible_text)
     matches: list[tuple[str, str]] = []
@@ -515,9 +525,9 @@ def find_unverifiable_superlatives(visible_text: str) -> list[Finding]:
     if not matches:
         return []
 
-    examples = matches[:5]
+    examples, true_count = cap_list(matches, _CIT06_MAX_MATCHES)
     quoted = "; ".join(f'"{s}"' for _, s in examples)
-    more = f" (+{len(matches) - 5} more)" if len(matches) > 5 else ""
+    more = f" (+{true_count - _CIT06_MAX_MATCHES} more)" if true_count > _CIT06_MAX_MATCHES else ""
 
     return [
         Finding(
@@ -525,7 +535,7 @@ def find_unverifiable_superlatives(visible_text: str) -> list[Finding]:
             title="Superlative claims appear with no number to back them up",
             severity="low",
             evidence=(
-                f'Found {len(matches)} sentence(s) using an unqualified superlative '
+                f'Found {true_count} sentence(s) using an unqualified superlative '
                 f'("the best", "industry-leading", ...) with no statistic in the same '
                 f"sentence: {quoted}{more}."
             ),
@@ -547,7 +557,10 @@ def find_unverifiable_superlatives(visible_text: str) -> list[Finding]:
             ),
             gate=3,
             confidence="medium",
-            structured_evidence={"matches": [{"phrase": p, "sentence": s} for p, s in matches]},
+            structured_evidence={
+                "matches": [{"phrase": p, "sentence": s} for p, s in examples],
+                "true_match_count": true_count,
+            },
         )
     ]
 
@@ -781,6 +794,7 @@ def fetch_offsite_pages(urls: list[str]) -> tuple[list[dict], list[UnknownCheck]
 
 _MIN_SAMPLE_SIZE_FOR_PAGERANK = 5
 _STARVED_RANK_RATIO = 0.5
+_CIT08_MAX_STARVED_FINDINGS = 5
 
 
 def _link_authority_starved_finding(
@@ -857,10 +871,13 @@ def find_link_authority_starved_pages(
         # The sample's own top-authority page is itself fact-dense — hub
         # and authority coincide here, no separation problem to report.
         return []
+    starved = sorted(
+        (url for url in substantial if ranks.get(url, 0) < mean_rank * _STARVED_RANK_RATIO),
+        key=lambda url: ranks.get(url, 0),
+    )
     return [
         _link_authority_starved_finding(url, ranks[url], mean_rank, hub_url, len(node_ids))
-        for url in substantial
-        if ranks.get(url, 0) < mean_rank * _STARVED_RANK_RATIO
+        for url in starved[:_CIT08_MAX_STARVED_FINDINGS]
     ]
 
 

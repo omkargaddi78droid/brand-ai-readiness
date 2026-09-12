@@ -147,7 +147,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
-from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from finding_contract import Finding, SuggestedAction, UnknownCheck, cap_list  # noqa: E402
 from text_spans import KEYWORD_FOLDING_STOPWORDS, split_sentences, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 from page_sample import template_key  # noqa: E402
 from shingles import near_duplicate_groups  # noqa: E402
@@ -305,6 +305,9 @@ _TEMPLATE_PATTERNS = (
 )
 
 
+_CQ03_MAX_TOKENS = 8
+
+
 def find_template_leakage(text: str) -> list[Finding]:
     matches: list[str] = []
     for _name, pattern in _TEMPLATE_PATTERNS:
@@ -317,8 +320,9 @@ def find_template_leakage(text: str) -> list[Finding]:
         if token not in unique_tokens:
             unique_tokens.append(token)
 
-    quoted = ", ".join(f"'{t}'" for t in unique_tokens[:8])
-    more = f" (+{len(unique_tokens) - 8} more)" if len(unique_tokens) > 8 else ""
+    shown_tokens, true_token_count = cap_list(unique_tokens, _CQ03_MAX_TOKENS)
+    quoted = ", ".join(f"'{t}'" for t in shown_tokens)
+    more = f" (+{true_token_count - _CQ03_MAX_TOKENS} more)" if true_token_count > _CQ03_MAX_TOKENS else ""
 
     return [
         Finding(
@@ -347,7 +351,11 @@ def find_template_leakage(text: str) -> list[Finding]:
             ),
             gate=3,
             confidence="high",
-            structured_evidence={"tokens": unique_tokens, "total_matches": len(matches)},
+            structured_evidence={
+                "tokens": shown_tokens,
+                "true_token_count": true_token_count,
+                "total_matches": len(matches),
+            },
         )
     ]
 
@@ -415,6 +423,9 @@ def _span_gap(a: tuple[int, int], b: tuple[int, int]) -> int:
     return 0
 
 
+_CQ05_MAX_MATCHES = 5
+
+
 def find_relative_date_anchors(text: str) -> list[Finding]:
     matches: list[tuple[str, str]] = []
     for sentence in _split_sentences(text):
@@ -439,9 +450,9 @@ def find_relative_date_anchors(text: str) -> list[Finding]:
     if not matches:
         return []
 
-    examples = matches[:5]
+    examples, true_count = cap_list(matches, _CQ05_MAX_MATCHES)
     quoted = "; ".join(f'"{s}"' for _, s in examples)
-    more = f" (+{len(matches) - 5} more)" if len(matches) > 5 else ""
+    more = f" (+{true_count - _CQ05_MAX_MATCHES} more)" if true_count > _CQ05_MAX_MATCHES else ""
 
     return [
         Finding(
@@ -449,7 +460,7 @@ def find_relative_date_anchors(text: str) -> list[Finding]:
             title="Claims of change are dated relatively, not absolutely",
             severity="medium",
             evidence=(
-                f"Found {len(matches)} sentence(s) describing a change using a relative time "
+                f"Found {true_count} sentence(s) describing a change using a relative time "
                 f'phrase (e.g. "last month", "recently") with no absolute date in the same '
                 f"sentence: {quoted}{more}."
             ),
@@ -472,7 +483,10 @@ def find_relative_date_anchors(text: str) -> list[Finding]:
             ),
             gate=3,
             confidence="medium",
-            structured_evidence={"matches": [{"phrase": p, "sentence": s} for p, s in matches]},
+            structured_evidence={
+                "matches": [{"phrase": p, "sentence": s} for p, s in examples],
+                "true_match_count": true_count,
+            },
         )
     ]
 
@@ -535,10 +549,14 @@ def find_scope_ambiguous_numbers(text: str) -> list[Finding]:
     return findings
 
 
+_CQ07_MAX_VALUES = 4
+
+
 def _scope_ambiguous_finding(label_norm: str, unit: str, entries: list[tuple[float, str, bool]]) -> Finding:
     distinct_sorted = sorted({value for value, _, _ in entries})
     values_str = ", ".join(f"{v:g}{unit}" if unit else f"{v:g}" for v in distinct_sorted)
-    quoted_lines = "; ".join(f'"{line}"' for _, line, _ in entries[:4])
+    shown_entries, true_entry_count = cap_list(entries, _CQ07_MAX_VALUES)
+    quoted_lines = "; ".join(f'"{line}"' for _, line, _ in shown_entries)
     slug = re.sub(r"[^a-z0-9]+", "-", label_norm).strip("-")
     return Finding(
         id=f"CQ-07-scope-ambiguous-{slug}",
@@ -566,7 +584,12 @@ def _scope_ambiguous_finding(label_norm: str, unit: str, entries: list[tuple[flo
         ),
         gate=3,
         confidence="medium",
-        structured_evidence={"label": label_norm, "unit": unit, "values": [v for v, _, _ in entries]},
+        structured_evidence={
+            "label": label_norm,
+            "unit": unit,
+            "values": [v for v, _, _ in shown_entries],
+            "true_value_count": true_entry_count,
+        },
     )
 
 
@@ -654,15 +677,20 @@ def find_computed_stat_mismatches(text: str) -> list[Finding]:
     return findings
 
 
+_CQ08_MAX_VALUES = 10
+
+
 def _computed_stat_finding(entry: dict, claimed: float, claim_sentence: str) -> Finding:
-    values_str = ", ".join(f"{v:g}" for v in entry["values"])
+    shown_values, true_value_count = cap_list(entry["values"], _CQ08_MAX_VALUES)
+    values_str = ", ".join(f"{v:g}" for v in shown_values)
+    more = f" (+{true_value_count - _CQ08_MAX_VALUES} more)" if true_value_count > _CQ08_MAX_VALUES else ""
     slug = re.sub(r"[^a-z0-9]+", "-", entry["label"].lower()).strip("-")
     return Finding(
         id=f"CQ-08-computed-stat-{slug}",
         title=f'Stated average for "{entry["label"]}" does not match its own listed numbers',
         severity="high",
         evidence=(
-            f'"{entry["label"]}" lists {len(entry["values"])} values ({values_str}), which '
+            f'"{entry["label"]}" lists {true_value_count} values ({values_str}{more}), which '
             f'average to {entry["mean"]:.2f}, but the page states: "{claim_sentence}" ({claimed:g}).'
         ),
         suggested_action=SuggestedAction(
@@ -685,7 +713,8 @@ def _computed_stat_finding(entry: dict, claimed: float, claim_sentence: str) -> 
         confidence="high",
         structured_evidence={
             "label": entry["label"],
-            "values": entry["values"],
+            "values": shown_values,
+            "true_value_count": true_value_count,
             "computed_mean": entry["mean"],
             "claimed": claimed,
         },
@@ -1260,6 +1289,7 @@ def _unknown_output(site: str, reason: str) -> dict:
 # CQ-13 — Near-duplicate / template dilution (--sample-file mode only)
 # ---------------------------------------------------------------------------
 
+_CQ13_MAX_URLS = 10
 _CQ13_MIN_STRATUM_SIZE = 2
 _CQ13_CHROME_LINE_MIN_CHARS = 20
 _CQ13_SHINGLE_K = 5
@@ -1298,6 +1328,7 @@ def _strip_chrome_lines(pages_text: dict[str, str]) -> dict[str, str]:
 
 
 def _near_duplicate_finding(template_key_value: str, urls: list[str]) -> Finding:
+    capped_urls, true_url_count = cap_list(urls, _CQ13_MAX_URLS)
     slug = hashlib.sha256("|".join(sorted(urls)).encode("utf-8")).hexdigest()[:8]
     shown = ", ".join(urls[:4]) + ("…" if len(urls) > 4 else "")
     return Finding(
@@ -1332,7 +1363,8 @@ def _near_duplicate_finding(template_key_value: str, urls: list[str]) -> Finding
         confidence="medium",
         structured_evidence={
             "template_key": template_key_value,
-            "urls": urls,
+            "urls": capped_urls,
+            "url_count": true_url_count,
             "shingle_k": _CQ13_SHINGLE_K,
             "jaccard_threshold": _CQ13_JACCARD_THRESHOLD,
         },

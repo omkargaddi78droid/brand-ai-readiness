@@ -254,6 +254,25 @@ class MainCliFallbackIntegrationTests(unittest.TestCase):
         self.assertEqual(result["total_urls"], 0)
         self.assertEqual(result["sample_urls"], [])
 
+    def test_output_has_no_judgement_urls_key(self):
+        """judgement_urls/--judgement-cap were the old page-based judgement
+        cap, replaced by select_judgement_items.py's per-skill,
+        severity-ranked cap. Locks in the removal."""
+        sample_pages_cli.fetch_text = lambda url: ("site returned HTTP 403", "unavailable")
+        links = "".join(f'<a href="/page-{i}">Page {i}</a>' for i in range(25))
+        sample_pages_cli.fetch_page_html = lambda url: (f"<nav>{links}</nav>", "present")
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            exit_code = sample_pages_cli.main(["--url", "https://example.com"])
+
+        self.assertEqual(exit_code, 0)
+        result = json.loads(out.getvalue())
+        self.assertNotIn("judgement_urls", result)
+
+        with self.assertRaises(SystemExit):
+            sample_pages_cli.main(["--url", "https://example.com", "--judgement-cap", "5"])
+
 
 if __name__ == "__main__":
     unittest.main()

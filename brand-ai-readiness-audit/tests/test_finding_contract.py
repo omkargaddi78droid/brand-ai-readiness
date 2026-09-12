@@ -13,6 +13,7 @@ from finding_contract import (  # noqa: E402
     UnknownCheck,
     assign_sequential_ids,
     build_report,
+    cap_list,
     merge_paginated_findings,
     to_floor_schema,
     validate_findings,
@@ -254,6 +255,58 @@ class MergeTests(unittest.TestCase):
         )
         merged = merge_paginated_findings([page_b, page_a])
         self.assertEqual(merged[0].suggested_action.summary, "Fix field Y missing on a.")
+
+
+class CapListTests(unittest.TestCase):
+    def test_empty_list(self):
+        shown, total = cap_list([], 10)
+        self.assertEqual(shown, [])
+        self.assertEqual(total, 0)
+
+    def test_under_limit_is_untouched(self):
+        shown, total = cap_list([1, 2, 3], 10)
+        self.assertEqual(shown, [1, 2, 3])
+        self.assertEqual(total, 3)
+
+    def test_at_limit_is_untouched(self):
+        shown, total = cap_list([1, 2, 3], 3)
+        self.assertEqual(shown, [1, 2, 3])
+        self.assertEqual(total, 3)
+
+    def test_over_limit_is_truncated_but_total_is_true_count(self):
+        shown, total = cap_list(list(range(15)), 10)
+        self.assertEqual(shown, list(range(10)))
+        self.assertEqual(total, 15)
+
+
+class MergeCappingTests(unittest.TestCase):
+    def _make_group(self, count: int) -> list[Finding]:
+        return [
+            make_finding(
+                evidence=f"On https://example.com/p{i}: unsized.",
+                structured_evidence={"page_url": f"https://example.com/p{i}", "unsized_count": i},
+            )
+            for i in range(count)
+        ]
+
+    def test_structured_evidence_pages_capped_at_ten_but_count_is_true_total(self):
+        merged = merge_paginated_findings(self._make_group(15))
+        result = merged[0]
+        self.assertEqual(len(result.structured_evidence["pages"]), 10)
+        self.assertEqual(result.structured_evidence["affected_page_count"], 15)
+
+    def test_evidence_prose_states_true_total_and_notes_the_overflow(self):
+        merged = merge_paginated_findings(self._make_group(15))
+        result = merged[0]
+        self.assertIn("Found on 15 pages:", result.evidence)
+        self.assertIn("(+5 more)", result.evidence)
+
+    def test_exactly_ten_pages_is_not_marked_as_truncated(self):
+        merged = merge_paginated_findings(self._make_group(10))
+        result = merged[0]
+        self.assertEqual(len(result.structured_evidence["pages"]), 10)
+        self.assertEqual(result.structured_evidence["affected_page_count"], 10)
+        self.assertNotIn("more)", result.evidence)
 
 
 if __name__ == "__main__":

@@ -654,7 +654,7 @@ def find_fixed_width_overflow(html: str) -> list[Finding]:
             ),
             gate=None,
             confidence="medium",
-            structured_evidence={"fixed_widths_px": offenders, "count": len(offenders)},
+            structured_evidence={"fixed_widths_px": examples, "count": len(offenders)},
         )
     ]
 
@@ -1172,9 +1172,8 @@ def _is_homepage(url: str) -> bool:
 
 
 def _dead_end_finding(page_url: str) -> Finding:
-    slug = _stable_slug(page_url)
     return Finding(
-        id=f"EN-04-dead-end-{slug}",
+        id="EN-04-dead-end",
         title="Page offers no next action",
         severity="medium",
         evidence=(
@@ -1217,9 +1216,8 @@ def find_dead_end_pages(
 
 
 def _orphan_finding(page_url: str, sample_size: int) -> Finding:
-    slug = _stable_slug(page_url)
     return Finding(
-        id=f"EN-04-orphan-in-sample-{slug}",
+        id="EN-04-orphan-in-sample",
         title="No internal link to this page found within the sampled pages",
         severity="medium",
         evidence=(

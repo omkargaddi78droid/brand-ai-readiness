@@ -380,6 +380,81 @@ class TotalElapsedSecondsTests(unittest.TestCase):
         self.assertNotIn("total_elapsed_seconds", report)
 
 
+class JudgementItemCoverageTests(unittest.TestCase):
+    """`--judgement-items-resolved` / `--judgement-items-total`: records the
+    per-skill, severity-ranked judgement cap in the report's own coverage
+    section instead of silently under-covering the sample."""
+
+    def test_both_given_adds_a_judgement_resolution_stage(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            report = orchestrator.compose(
+                "example.com",
+                skills,
+                audited_at=FIXED_TIMESTAMP,
+                judgement_items_resolved=23,
+                judgement_items_total=61,
+            )
+
+        stages = {stage["stage"]: stage for stage in report["coverage"]["stages"]}
+        stage = stages["judgement-resolution"]
+        self.assertEqual(stage["items_total"], 61)
+        self.assertEqual(stage["items_resolved"], 23)
+        self.assertEqual(stage["items_skipped"], 38)
+        self.assertTrue(stage["capped"])
+
+    def test_resolved_equal_to_total_is_not_marked_capped(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            report = orchestrator.compose(
+                "example.com",
+                skills,
+                audited_at=FIXED_TIMESTAMP,
+                judgement_items_resolved=10,
+                judgement_items_total=10,
+            )
+
+        stages = {stage["stage"]: stage for stage in report["coverage"]["stages"]}
+        self.assertFalse(stages["judgement-resolution"]["capped"])
+
+    def test_neither_given_omits_the_stage(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertNotIn("coverage", report)
+
+    def test_cli_errors_when_only_one_of_the_pair_is_given(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            entity_path = _write(workdir, "entity.json", entity_out)
+            with self.assertRaises(SystemExit):
+                orchestrator.main(
+                    [
+                        "--site",
+                        "example.com",
+                        "--skill",
+                        "entity-audit",
+                        entity_path,
+                        "--audited-at",
+                        FIXED_TIMESTAMP,
+                        "--judgement-items-resolved",
+                        "20",
+                    ]
+                )
+
+
 _UNSIZED_IMAGES_HTML = (
     '<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>'
     "<body><img src=\"a.jpg\"><img src=\"b.jpg\"><img src=\"c.jpg\"><p>Hello world.</p></body></html>"

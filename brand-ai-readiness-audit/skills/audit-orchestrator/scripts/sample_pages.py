@@ -30,7 +30,9 @@ Emits one JSON object on stdout: {"total_urls": ..., "budget": ...,
 "sample_urls" is priority-ordered (highest first) via
 shared/page_sample.py's rank_sample_urls — a deadline-gated caller (see
 audit-orchestrator/SKILL.md) can stop partway through the list and still
-have audited the highest-priority pages first.
+have audited the highest-priority pages first. Judgement-resolution
+capping happens later, per skill and by severity, via
+select_judgement_items.py — not here.
 """
 
 from __future__ import annotations
@@ -62,6 +64,13 @@ from page_sample import (  # noqa: E402
 # per-category sitemap.xml files, each itself a <sitemapindex> pointing at
 # one more <urlset> of real pages — four levels, mixed tags).
 _MAX_SUB_SITEMAPS = 30
+
+# A single fetched sitemap document can list far more <loc> page entries than
+# any real budget will sample (a pathological or malicious sitemap could list
+# millions) — this bounds one collect_sitemap_urls() call's memory/CPU
+# independently of _MAX_SUB_SITEMAPS, which only bounds sub-sitemap fetches.
+# sample_pages()'s own --budget still governs the final sample size.
+_MAX_URLS_PER_SITEMAP = 5000
 
 
 def base_url(url: str) -> str:
@@ -115,13 +124,16 @@ def collect_sitemap_urls(sitemap_text: str) -> list[str]:
     def expand(text: str) -> list[str]:
         if sitemap_root_kind(text) == "sitemapindex":
             return parse_sitemap_index_locs(text)
+        if len(pages) >= _MAX_URLS_PER_SITEMAP:
+            return []
         leaf_urls = parse_sitemap_urls(text)
         pages.extend(u for u in leaf_urls if not _looks_like_sitemap_file(u))
+        del pages[_MAX_URLS_PER_SITEMAP:]
         return [u for u in leaf_urls if _looks_like_sitemap_file(u)]
 
     stack = expand(sitemap_text)
     fetch_budget = _MAX_SUB_SITEMAPS
-    while stack and fetch_budget > 0:
+    while stack and fetch_budget > 0 and len(pages) < _MAX_URLS_PER_SITEMAP:
         sub_url = stack.pop()
         if sub_url in seen:
             continue

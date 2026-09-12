@@ -42,7 +42,12 @@ similarity match cannot distinguish a real defect from an innocent
 lookalike. **You must resolve `agent_judgement_required` yourself before
 this file's output reaches the entrypoint** — the identical procedure
 `content-quality-audit`, `engagement-audit` and `citability-audit` already
-use for their own agent-judged capabilities.
+use for their own agent-judged capabilities. When `audit-orchestrator`
+drives this skill as part of a full-site audit, this array has already been
+filtered to at most 5 candidates total (across all of entity-audit's
+invocations this run) by its own `select_judgement_items.py`, ranked by
+severity — see the orchestrator's SKILL.md step 5. Run standalone, resolve
+every entry with no such cap.
 
 **ENT-05/ENT-06 additionally need you to supply the off-site URLs.** This
 script never picks which off-site pages to look at — that is your own
@@ -299,6 +304,11 @@ One JSON object on stdout, same shape as the other audit skills:
 
 `agent_judgement_required` must be empty (or removed entirely) by the time
 this file reaches the entrypoint — resolve it per Procedure step 3.
+
+**Length caps on agent-authored text** (`evidence`, `mechanism`,
+`suggested_action.summary`/`details`): 150 words each. Where evidence would
+otherwise list pages or URLs, quote at most 3-4 representative ones plus the
+true count — never every one.
 
 This skill runs per page, like `content-quality-audit`: a report composed
 from several pages can carry the same `check_id` more than once, so every

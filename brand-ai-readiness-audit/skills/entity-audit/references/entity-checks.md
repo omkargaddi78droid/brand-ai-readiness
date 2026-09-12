@@ -54,9 +54,9 @@ known limitation rather than attempting a longer, less-maintainable list.
 **Guard: only evaluated when an identity node exists.** A page with no
 Organization node at all gets `ENT-01-no-structured-data`, not also
 `ENT-02-no-knowledge-graph-link` — the fix for both is the same first step
-(add the node), and two findings for one root cause is exactly the report
-noise this project's other skills already avoid (see `perimeter-access-audit`
-§PER-02, one finding for a blanket block rather than three per-tier ones).
+(add the node), and two findings for one root cause is redundant report
+noise this project consistently avoids elsewhere (one finding per root
+cause, not one per symptom).
 
 **Guard: `sameAs` as a bare string is accepted, not just an array.**
 schema.org permits either shape; only checking the array form would produce
@@ -258,27 +258,21 @@ for the agent to judge, not two near-identical candidates.
 **Guard: zero keyword overlap, not "low" overlap.** Only a label sharing
 *no* keyword at all with the page's text becomes a candidate — any overlap
 at all (even one shared word) is treated as agreement and never reaches the
-agent. This is a deliberately conservative threshold: a partial-overlap
-case is far more likely to be a legitimate related term than a real
-mismatch, and the zero-overlap floor keeps the candidate set to the cases
-most worth a second look, the same "the pattern match cannot say more than
-this" discipline `content-quality-audit`'s extraction functions already use.
+agent. Deliberately conservative: a partial-overlap case is far more likely
+to be a legitimate related term than a real mismatch, so the zero-overlap
+floor keeps the candidate set to the cases most worth a second look.
 
 **Guard: generic labels are never candidates.** "Home", "Blog", "General",
 "Uncategorized" and similar carry no specific claim to check agreement on —
-excluded by an explicit list, the same category of guard as `content-
-quality-audit`'s CQ-07 excluding single-word metric labels as too generic
-to compare structurally.
+excluded by an explicit list, since flagging them would just be noise.
 
 **Guard: a 50-word minimum on visible text.** Below this, "zero keyword
 overlap" is at least as likely to mean "not enough text was extracted" as
-"the category is wrong" — the same "short sample is noise" principle
-`content-quality-audit`'s CQ-11 applies to its own readability threshold.
+"the category is wrong."
 
-**Keyword folding** reuses `content-quality-audit`'s CQ-08 approach
-(stopword-stripped, trailing-`s` singularised) — reimplemented here per this
-skill's own "independently runnable" convention (see Shared infrastructure
-notes below), not imported.
+**Keyword folding:** stopword-stripped, trailing-`s` singularised —
+reimplemented locally per this skill's own "independently runnable"
+convention (see Shared infrastructure notes below), not imported.
 
 ---
 

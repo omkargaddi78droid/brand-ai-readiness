@@ -141,7 +141,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
-from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from finding_contract import Finding, SuggestedAction, UnknownCheck, cap_list  # noqa: E402
 from jsonld_graph import Reference, build_id_index, classify_target, flatten, iter_references  # noqa: E402
 from graph_metrics import connected_components  # noqa: E402
 from text_spans import KEYWORD_FOLDING_STOPWORDS, VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
@@ -360,14 +360,18 @@ def _no_structured_data_finding() -> Finding:
     )
 
 
+_ENT01_MAX_ERRORS = 3
+
+
 def _malformed_json_ld_finding(errors: list[str]) -> Finding:
-    quoted = "; ".join(errors[:3])
-    more = f" (+{len(errors) - 3} more)" if len(errors) > 3 else ""
+    shown_errors, true_error_count = cap_list(errors, _ENT01_MAX_ERRORS)
+    quoted = "; ".join(shown_errors)
+    more = f" (+{true_error_count - _ENT01_MAX_ERRORS} more)" if true_error_count > _ENT01_MAX_ERRORS else ""
     return Finding(
         id="ENT-01-malformed-json-ld",
         title="A JSON-LD block on this page is not valid JSON",
         severity="high",
-        evidence=f"{len(errors)} <script type=\"application/ld+json\"> block(s) failed to parse: {quoted}{more}.",
+        evidence=f"{true_error_count} <script type=\"application/ld+json\"> block(s) failed to parse: {quoted}{more}.",
         suggested_action=SuggestedAction(
             summary="Fix the JSON syntax error in the affected block(s), or remove them if the feature was retired.",
             priority="high",
@@ -383,7 +387,7 @@ def _malformed_json_ld_finding(errors: list[str]) -> Finding:
         ),
         gate=3,
         confidence="high",
-        structured_evidence={"parse_errors": errors},
+        structured_evidence={"parse_errors": shown_errors, "true_error_count": true_error_count},
     )
 
 
@@ -466,11 +470,15 @@ def find_knowledge_graph_gaps(nodes: list[dict]) -> list[Finding]:
     return findings
 
 
+_ENT02_MAX_URLS = 3
+
+
 def _knowledge_graph_finding(node: dict, urls: list[str]) -> Finding:
     name = node.get("name", "the organization")
+    shown_urls, true_url_count = cap_list(urls, _ENT02_MAX_URLS)
     if urls:
         evidence = (
-            f'"{name}"\'s sameAs lists {len(urls)} URL(s) ({", ".join(urls[:3])}), none of which '
+            f'"{name}"\'s sameAs lists {true_url_count} URL(s) ({", ".join(shown_urls)}), none of which '
             "point to a recognised authority (Wikidata, Wikipedia, LinkedIn, Crunchbase, or a "
             "major verified social profile)."
         )
@@ -500,7 +508,7 @@ def _knowledge_graph_finding(node: dict, urls: list[str]) -> Finding:
         ),
         gate=3,
         confidence="medium",
-        structured_evidence={"name": name, "same_as_found": urls},
+        structured_evidence={"name": name, "same_as_found": shown_urls, "true_url_count": true_url_count},
     )
 
 
@@ -651,12 +659,16 @@ def _empty_canonical_finding() -> Finding:
     )
 
 
+_ENT04_MAX_HREFS = 4
+
+
 def _conflicting_canonical_finding(hrefs: list[str]) -> Finding:
+    shown_hrefs, true_href_count = cap_list(hrefs, _ENT04_MAX_HREFS)
     return Finding(
         id="ENT-04-canonical-conflicting",
         title="Multiple different rel=canonical links declared on one page",
         severity="high",
-        evidence=f"{len(hrefs)} distinct canonical URLs declared on the same page: {', '.join(hrefs[:4])}.",
+        evidence=f"{true_href_count} distinct canonical URLs declared on the same page: {', '.join(shown_hrefs)}.",
         suggested_action=SuggestedAction(
             summary="Keep exactly one <link rel=\"canonical\">; remove the conflicting duplicate(s).",
             priority="high",
@@ -672,7 +684,7 @@ def _conflicting_canonical_finding(hrefs: list[str]) -> Finding:
         ),
         gate=3,
         confidence="high",
-        structured_evidence={"hrefs": hrefs},
+        structured_evidence={"hrefs": shown_hrefs, "true_href_count": true_href_count},
     )
 
 
@@ -758,7 +770,7 @@ def find_sitemap_url_forks(sitemap_urls: list[str]) -> list[Finding]:
             ),
             gate=3,
             confidence="medium",
-            structured_evidence={"fork_groups": fork_groups},
+            structured_evidence={"fork_groups": shown, "true_fork_group_count": len(fork_groups)},
         )
     ]
 
@@ -816,11 +828,16 @@ def find_graph_integrity_issues(nodes: list[dict], page_url: str | None) -> list
     return findings
 
 
+_ENT11_MAX_DEFINED_IDS = 10
+
+
 def _defined_ids_clause(defined_ids: list[str]) -> str:
     if not defined_ids:
         return "defines no @ids at all"
-    quoted = ", ".join(f"'{i}'" for i in defined_ids)
-    return f"defines {len(defined_ids)} @id(s) — {quoted} — none of which match"
+    shown, true_count = cap_list(defined_ids, _ENT11_MAX_DEFINED_IDS)
+    quoted = ", ".join(f"'{i}'" for i in shown)
+    more = f" (+{true_count - _ENT11_MAX_DEFINED_IDS} more)" if true_count > _ENT11_MAX_DEFINED_IDS else ""
+    return f"defines {true_count} @id(s) — {quoted}{more} — none of which match"
 
 
 def _dangling_reference_finding(reference: Reference, defined_ids: list[str], cross_page: bool) -> Finding:
@@ -861,7 +878,8 @@ def _dangling_reference_finding(reference: Reference, defined_ids: list[str], cr
             structured_evidence={
                 "property_path": reference.property_path,
                 "target": reference.target_id,
-                "defined_ids": defined_ids,
+                "defined_ids": cap_list(defined_ids, _ENT11_MAX_DEFINED_IDS)[0],
+                "true_defined_id_count": len(defined_ids),
             },
         )
 
@@ -921,15 +939,15 @@ def _orphan_identity_finding(nodes: list[dict], referenced_targets: set[str]) ->
         return None
 
     content_types = sorted({t for node in disconnected_content for t in (_node_types(node) & _ORPHAN_CONTENT_TYPES)})
-    shown_ids = orphan_ids[:5]
-    more = f" (+{len(orphan_ids) - 5} more)" if len(orphan_ids) > 5 else ""
+    shown_ids, true_orphan_count = cap_list(orphan_ids, 5)
+    more = f" (+{true_orphan_count - 5} more)" if true_orphan_count > 5 else ""
 
     return Finding(
         id="ENT-11-orphan-identity-node",
         title="An identity node exists but is never connected to the page's content",
         severity="medium",
         evidence=(
-            f"{len(orphan_ids)} identity node(s) ({', '.join(shown_ids)}{more}) are never "
+            f"{true_orphan_count} identity node(s) ({', '.join(shown_ids)}{more}) are never "
             f"referenced by any other node's @id, while this page also carries "
             f"{len(disconnected_content)} {'/'.join(content_types)} node(s) with no "
             "brand/publisher/author link at all."
@@ -954,7 +972,11 @@ def _orphan_identity_finding(nodes: list[dict], referenced_targets: set[str]) ->
         ),
         gate=3,
         confidence="medium",
-        structured_evidence={"orphan_ids": orphan_ids, "disconnected_content_types": content_types},
+        structured_evidence={
+            "orphan_ids": shown_ids,
+            "true_orphan_id_count": true_orphan_count,
+            "disconnected_content_types": content_types,
+        },
     )
 
 
@@ -1453,9 +1475,13 @@ def _bridges_back_to_site(nodes: list[dict], site: str) -> bool:
     return False
 
 
+_ENT07_MAX_SOURCE_PAGES = 10
+
+
 def _cross_domain_unattributed_finding(candidate: dict) -> Finding:
     domain = candidate["domain"]
     pages = candidate["source_pages"]
+    capped_pages, true_page_count = cap_list(pages, _ENT07_MAX_SOURCE_PAGES)
     slug = hashlib.sha256(domain.encode("utf-8")).hexdigest()[:8]
     shown_pages = ", ".join(pages[:3]) + ("…" if len(pages) > 3 else "")
     return Finding(
@@ -1487,7 +1513,12 @@ def _cross_domain_unattributed_finding(candidate: dict) -> Finding:
         ),
         gate=3,
         confidence="medium",
-        structured_evidence={"domain": domain, "source_pages": pages, "example_url": candidate["example_url"]},
+        structured_evidence={
+            "domain": domain,
+            "source_pages": capped_pages,
+            "source_page_count": true_page_count,
+            "example_url": candidate["example_url"],
+        },
     )
 
 
@@ -1613,6 +1644,9 @@ def find_address_inconsistencies(page_addresses: dict[str, str], all_page_texts:
     return [_address_inconsistency_finding(clusters, pages, addresses)]
 
 
+_ENT08_MAX_ITEMS = 10
+
+
 def _address_inconsistency_finding(clusters: list[list[int]], pages: list[str], addresses: list[str]) -> Finding:
     shown = clusters[:3]
     lines = []
@@ -1658,8 +1692,8 @@ def _address_inconsistency_finding(clusters: list[list[int]], pages: list[str], 
         structured_evidence={
             "sample_size": len(pages),
             "cluster_count": len(clusters),
-            "addresses": addresses,
-            "pages": pages,
+            "addresses": addresses[:_ENT08_MAX_ITEMS],
+            "pages": pages[:_ENT08_MAX_ITEMS],
         },
     )
 

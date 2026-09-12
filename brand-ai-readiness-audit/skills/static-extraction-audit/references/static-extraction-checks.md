@@ -351,12 +351,11 @@ sites:**
 **Findings.** `REN-12-concealed-agent-instruction-<hash>` — one per
 distinct concealed-and-triggered fragment, capped at 5 (the highest-
 severity fragments first, when more than 5 exist on one page). The `<hash>`
-suffix (`sha256(dom_path|technique|text)[:8]`) is the same per-instance-id
-pattern `entity-audit`'s ENT-11 and `perimeter-access-audit`'s PER-09
-already use — needed because, unlike this skill's other capabilities, a
-single page can carry more than one genuinely distinct instance of this
-defect. `confidence: "high"` throughout: concealment and the matched
-phrase are both literal, verifiable facts, not an inference.
+suffix (`sha256(dom_path|technique|text)[:8]`) gives each instance a stable
+id — needed because, unlike this skill's other capabilities, a single page
+can carry more than one genuinely distinct instance of this defect.
+`confidence: "high"` throughout: concealment and the matched phrase are
+both literal, verifiable facts, not an inference.
 
 **What was left out, and why.**
 

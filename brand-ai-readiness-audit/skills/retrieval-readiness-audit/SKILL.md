@@ -41,7 +41,11 @@ whether a paragraph genuinely blends distinct ideas is a judgement about
 this specific page, not a pattern a script can safely assert. **You must
 resolve `agent_judgement_required` yourself before this file's output
 reaches the entrypoint** — the same procedure as `citability-audit`'s CIT-04
-and `entity-audit`'s ENT-09.
+and `entity-audit`'s ENT-09. When `audit-orchestrator` drives this skill as
+part of a full-site audit, this array has already been filtered to at most
+5 candidates total (across all sampled pages this run) by its own
+`select_judgement_items.py`, ranked by severity — see the orchestrator's
+SKILL.md step 5. Run standalone, resolve every entry with no such cap.
 
 ## Inputs
 
@@ -256,6 +260,11 @@ anchoring — see the reference for why).
 `agent_judgement_required` always carries four entries (RET-02/03/05/06),
 one shown above for brevity — resolve each per the Procedure above and
 remove this key entirely before the report reaches the entrypoint.
+
+**Length caps on agent-authored text** (`evidence`, `mechanism`,
+`suggested_action.summary`/`details`): 150 words each. Where evidence would
+otherwise quote a full passage or list pages, cap it — RET-06's own rubric
+gives the concrete limit for that case.
 
 ## Failure modes
 

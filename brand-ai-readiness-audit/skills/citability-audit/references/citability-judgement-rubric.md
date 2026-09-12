@@ -2,8 +2,8 @@
 
 Reference for `citability-audit`. CIT-01/02/06/07's rules and guards are
 documented first; CIT-04's and CIT-13's judgement rubrics (read before
-scoring, per SKILL.md's procedure) follow, in the same style as
-`engagement-audit`'s `engagement-judgement-rubric.md`.
+scoring, per SKILL.md's procedure) follow, each with the question, when it
+doesn't apply, calibration examples, and how to write the finding.
 
 ---
 

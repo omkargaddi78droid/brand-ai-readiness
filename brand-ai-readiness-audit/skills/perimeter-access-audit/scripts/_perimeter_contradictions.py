@@ -246,7 +246,8 @@ def _c1_sitemap_url_ai_disallowed(
         gate=1,
         confidence=confidence,
         structured_evidence={
-            "affected": [{"url": url, "tier": tier, "blocked_bots": bots} for url, tier, bots in affected],
+            "affected": [{"url": url, "tier": tier, "blocked_bots": bots} for url, tier, bots in shown],
+            "true_affected_count": len(affected),
         },
     )
 
@@ -324,7 +325,7 @@ def _c2_noindex_on_declared_url(
         ),
         gate=1,
         confidence="high",
-        structured_evidence={"affected": affected},
+        structured_evidence={"affected": shown, "true_affected_count": len(affected)},
     )
 
 
@@ -436,7 +437,7 @@ def _c4_header_meta_robots_disagree(page_results: list[dict]) -> Finding | None:
         ),
         gate=1,
         confidence="high",
-        structured_evidence={"affected": affected},
+        structured_evidence={"affected": shown, "true_affected_count": len(affected)},
     )
 
 

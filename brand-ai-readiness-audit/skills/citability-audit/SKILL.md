@@ -39,7 +39,12 @@ uncorroborated claim is genuinely *fragile* (CIT-13) is a judgement about
 what matters on this specific page, not a pattern a script can safely
 assert. **You must resolve `agent_judgement_required` yourself before this
 file's output reaches the entrypoint** — exactly the same procedure as
-`engagement-audit`'s EN-01/EN-03.
+`engagement-audit`'s EN-01/EN-03. When `audit-orchestrator` drives this
+skill as part of a full-site audit, this array has already been filtered to
+at most 5 candidates total (across all of citability-audit's invocations
+this run) by its own `select_judgement_items.py`, ranked by severity — see
+the orchestrator's SKILL.md step 5. Run standalone, resolve every entry
+with no such cap.
 
 **CIT-13 additionally needs you to supply the off-site URLs.** This script
 never searches the web itself — that is your own search step (the same
@@ -198,6 +203,11 @@ mode.
 One JSON object on stdout, same shape as the other page-level audit skills.
 `agent_judgement_required` must be empty (or removed) by the time this file
 reaches the entrypoint.
+
+**Length caps on agent-authored text** (`evidence`, `mechanism`,
+`suggested_action.summary`/`details`): 150 words each. Where evidence would
+otherwise list pages or URLs, quote at most 3-4 representative ones plus the
+true count — never every one.
 
 ## Failure modes
 

@@ -261,7 +261,7 @@ sys.path.insert(0, str(_REPO_ROOT / "shared"))
 from budget import StageBudget, coverage_manifest  # noqa: E402
 from report_shape import site_label, stamp_page as _stamp_page, unknown_output  # noqa: E402
 from skill_cli import add_page_arguments, resolve_page_html  # noqa: E402
-from finding_contract import Finding, SuggestedAction, UnknownCheck  # noqa: E402
+from finding_contract import Finding, SuggestedAction, UnknownCheck, cap_list  # noqa: E402
 from jsonld_graph import flatten  # noqa: E402
 from text_spans import (  # noqa: E402
     Block,
@@ -526,7 +526,7 @@ def find_token_survival_gaps(tokens: list[dict], visible_text: str) -> list[Find
             gate=3,
             confidence="high",
             structured_evidence={
-                "missing_tokens": [{"field": t["field"], "token": t["token"]} for t in missing],
+                "missing_tokens": [{"field": t["field"], "token": t["token"]} for t in examples],
                 "count": len(missing),
             },
         )
@@ -701,7 +701,8 @@ def find_keyword_stuffing(prose_text: str) -> list[Finding]:
             gate=3,
             confidence="medium",
             structured_evidence={
-                "repeated_phrases": [{"phrase": " ".join(gram), "count": count} for gram, count in stuffed],
+                "repeated_phrases": [{"phrase": " ".join(gram), "count": count} for gram, count in examples],
+                "repeated_phrase_count": len(stuffed),
                 "prose_word_count": total_words,
             },
         )
@@ -1092,20 +1093,24 @@ def build_agent_judgement_requests(
 # ---------------------------------------------------------------------------
 
 
+_RET08_MAX_EMPTY_HEADINGS = 8
+
+
 def find_empty_headings(headings: list[dict]) -> list[Finding]:
     empty = [h for h in headings if not h["text"]]
     if not empty:
         return []
 
-    levels = ", ".join(f"h{h['level']}" for h in empty[:8])
-    more = f" (+{len(empty) - 8} more)" if len(empty) > 8 else ""
+    shown, true_empty_count = cap_list(empty, _RET08_MAX_EMPTY_HEADINGS)
+    levels = ", ".join(f"h{h['level']}" for h in shown)
+    more = f" (+{true_empty_count - _RET08_MAX_EMPTY_HEADINGS} more)" if true_empty_count > _RET08_MAX_EMPTY_HEADINGS else ""
 
     return [
         Finding(
             id="RET-08-empty-heading",
             title="A heading element has no text content",
             severity="low",
-            evidence=f"{len(empty)} heading element(s) with no text content at all: {levels}{more}.",
+            evidence=f"{true_empty_count} heading element(s) with no text content at all: {levels}{more}.",
             suggested_action=SuggestedAction(
                 summary="Give the heading real, descriptive text, or remove the element if it was left over from a template.",
                 priority="low",
@@ -1120,7 +1125,10 @@ def find_empty_headings(headings: list[dict]) -> list[Finding]:
             ),
             gate=3,
             confidence="high",
-            structured_evidence={"empty_heading_levels": [h["level"] for h in empty], "count": len(empty)},
+            structured_evidence={
+                "empty_heading_levels": [h["level"] for h in shown],
+                "count": true_empty_count,
+            },
         )
     ]
 
@@ -1167,8 +1175,9 @@ def find_skipped_heading_levels(headings: list[dict]) -> list[Finding]:
             structured_evidence={
                 "skips": [
                     {"from_level": p["level"], "from_text": p["text"], "to_level": c["level"], "to_text": c["text"]}
-                    for p, c in skips
-                ]
+                    for p, c in examples
+                ],
+                "skip_count": len(skips),
             },
         )
     ]

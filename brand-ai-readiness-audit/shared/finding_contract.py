@@ -38,6 +38,18 @@ CONFIDENCES = ("high", "medium", "low")
 _SEVERITY_ORDER = {name: index for index, name in enumerate(SEVERITIES)}
 _CONFIDENCE_ORDER = {name: index for index, name in enumerate(("low", "medium", "high"))}
 
+_MERGE_MAX_PAGES = 10
+
+
+def cap_list(items: list, limit: int) -> tuple[list, int]:
+    """Truncate `items` to `limit` entries.
+
+    Returns `(truncated, true_total_count)` so a caller can show a capped
+    list in a report while still stating the true, uncapped scale (e.g.
+    "showing 10 of 37") instead of silently hiding it.
+    """
+    return items[:limit], len(items)
+
 
 @dataclasses.dataclass
 class SuggestedAction:
@@ -322,11 +334,17 @@ def merge_paginated_findings(findings: list[Finding]) -> list[Finding]:
             )
 
         group_sorted = sorted(group, key=lambda f: f.structured_evidence["page_url"])
-        lead_in = f"Found on {len(group_sorted)} pages:"
-        merged_evidence = lead_in + "\n" + "\n".join(f"- {f.evidence}" for f in group_sorted)
+        shown_pages, true_total = cap_list(
+            [dict(f.structured_evidence) for f in group_sorted], _MERGE_MAX_PAGES
+        )
+        lead_in = f"Found on {true_total} pages:"
+        bullets = "\n".join(f"- {f.evidence}" for f in group_sorted[:_MERGE_MAX_PAGES])
+        merged_evidence = lead_in + "\n" + bullets
+        if true_total > len(shown_pages):
+            merged_evidence += f"\n- (+{true_total - len(shown_pages)} more)"
         merged_structured_evidence = {
-            "pages": [dict(f.structured_evidence) for f in group_sorted],
-            "affected_page_count": len(group_sorted),
+            "pages": shown_pages,
+            "affected_page_count": true_total,
         }
         weakest_confidence = min(
             (f.confidence for f in group), key=lambda c: _CONFIDENCE_ORDER.get(c, len(_CONFIDENCE_ORDER))
