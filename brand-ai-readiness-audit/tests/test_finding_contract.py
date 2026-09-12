@@ -72,6 +72,16 @@ class ValidationTests(unittest.TestCase):
         report = build_report("example.com", [], audited_at=FIXED_TIMESTAMP)
         self.assertNotIn("coverage", report)
 
+    def test_build_report_attaches_total_elapsed_seconds_rounded(self):
+        report = build_report(
+            "example.com", [], audited_at=FIXED_TIMESTAMP, total_elapsed_seconds=142.567
+        )
+        self.assertEqual(report["total_elapsed_seconds"], 142.6)
+
+    def test_build_report_omits_total_elapsed_seconds_when_not_given(self):
+        report = build_report("example.com", [], audited_at=FIXED_TIMESTAMP)
+        self.assertNotIn("total_elapsed_seconds", report)
+
 
 class ReportShapeTests(unittest.TestCase):
     def setUp(self):

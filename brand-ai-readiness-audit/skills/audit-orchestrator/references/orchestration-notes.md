@@ -37,10 +37,10 @@ A fixed 25-page sample audited in whatever order the template-clustering
 allocation happened to emit meant two failure modes at once: a slow/large
 site could blow well past the runtime budget running every skill against
 every page, and a fast/small site that finished early got a shallower audit
-than it could have afforded. Raising the sample to 100 pages
-(`sample_pages.py --budget 100`) and letting the per-page loop in `SKILL.md`
+than it could have afforded. Raising the sample to 30 pages
+(`sample_pages.py --budget 30`) and letting the per-page loop in `SKILL.md`
 step 5 stop at a wall-clock deadline (280s) instead of a fixed page count
-fixes both — a fast host gets through more of the 100, a slow host still
+fixes both — a fast host gets through more of the 30, a slow host still
 gets through the pages that matter most, and neither ends the run with an
 arbitrary, order-of-emission-dependent partial sample.
 
@@ -50,7 +50,7 @@ by `page_priority` — the homepage and forced process pages first, then
 claim-bearing pages (pricing/specs/policies/how-to guides, the same
 categories `SKILL.md`'s own prose already named), then dated/announcement
 pages, then everything else — so a run cut short by the deadline check still
-audited the highest-value pages rather than whichever 25 or 100 the sampler
+audited the highest-value pages rather than whichever 25 or 30 the sampler
 happened to list first. This was designed once as a two-wave scheme (a
 fixed-size first pass plus a top-up second pass from leftover URLs, gated by
 an exclude-list) and then deliberately simplified to one ranked pass with one
@@ -66,6 +66,17 @@ Procedure is prose any `agentskills.io`-compliant agent can execute
 session across separate `bash` tool calls — a plain shell variable would
 silently not exist by the time a later step tries to read it. A file
 survives that regardless of which kind of harness runs this Skill.
+
+The 280s deadline check now also gates the six `--sample-file` bulk
+invocations, not just per-page ones — each self-caps internally at 90s via
+`StageBudget`, but that bounds one invocation's own cost, not how many of the
+six still run after the per-page loop already used most of the budget, so
+without the outer check the worst case was ~540s of extra, unmeasured time.
+`compose_report.py --start-epoch-file` also now reports
+`total_elapsed_seconds`, computed from the same `start_epoch` file, so any
+overrun still possible from agent-reasoning turns between calls (not
+measurable from inside a script) is at least visible in the report instead of
+silently absorbed.
 
 ## Why the multi-page skills fetch concurrently instead of one page at a time
 

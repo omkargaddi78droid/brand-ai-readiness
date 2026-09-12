@@ -41,6 +41,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(_REPO_ROOT / "shared"))
 
+from budget import run_elapsed_seconds  # noqa: E402
 from finding_contract import (  # noqa: E402
     Finding,
     UnknownCheck,
@@ -97,6 +98,7 @@ def compose(
     site: str,
     skill_outputs: list[tuple[str, str]],
     audited_at: str | None = None,
+    start_epoch_file: str | None = None,
 ) -> dict:
     findings: list[Finding] = []
     unknowns: list[UnknownCheck] = []
@@ -109,7 +111,15 @@ def compose(
 
     findings = merge_paginated_findings(findings)
     coverage = {"stages": stages} if stages else None
-    return build_report(site, assign_sequential_ids(findings), unknowns, audited_at=audited_at, coverage=coverage)
+    total_elapsed_seconds = run_elapsed_seconds(start_epoch_file) if start_epoch_file else None
+    return build_report(
+        site,
+        assign_sequential_ids(findings),
+        unknowns,
+        audited_at=audited_at,
+        coverage=coverage,
+        total_elapsed_seconds=total_elapsed_seconds,
+    )
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -125,13 +135,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--audited-at", help="ISO-8601 UTC timestamp; defaults to now")
     parser.add_argument(
+        "--start-epoch-file",
+        default="/tmp/audit/start_epoch",
+        help="File holding the run's start Unix epoch (SKILL.md step 1); used to compute "
+        "total_elapsed_seconds. Missing/unreadable file omits the field, no crash.",
+    )
+    parser.add_argument(
         "--floor-only",
         action="store_true",
         help="Emit the strict required schema instead of the full report",
     )
     args = parser.parse_args(argv)
 
-    report = compose(args.site, [(name, path) for name, path in args.skill], args.audited_at)
+    report = compose(
+        args.site,
+        [(name, path) for name, path in args.skill],
+        args.audited_at,
+        args.start_epoch_file,
+    )
 
     errors = validate_floor_shape(report)
     if errors:

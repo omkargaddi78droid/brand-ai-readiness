@@ -103,3 +103,19 @@ def coverage_manifest(budgets: list[StageBudget]) -> dict:
     reviewer reading the report can see which stages ran to completion and
     which were cut off, without cross-referencing `unknown_checks` reasons."""
     return {"stages": [b.manifest() for b in budgets]}
+
+
+def run_elapsed_seconds(epoch_file: str) -> float | None:
+    """Seconds since the integer Unix epoch written to `epoch_file` (SKILL.md
+    step 1), or `None` if the file is missing or unreadable.
+
+    Observability only, never a gate: unlike `StageBudget`, a bad or absent
+    file must not raise — it just means the run's true total elapsed time
+    can't be reported this time.
+    """
+    try:
+        with open(epoch_file) as f:
+            started_at = int(f.read().strip())
+    except (OSError, ValueError):
+        return None
+    return time.time() - started_at

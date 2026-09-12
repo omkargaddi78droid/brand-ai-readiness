@@ -74,7 +74,7 @@ or otherwise alters the audited site.
 
    ```bash
    python3 ../audit-orchestrator/scripts/sample_pages.py \
-       --url https://example.com --budget 100 > /tmp/audit/page-sample.json
+       --url https://example.com --budget 30 > /tmp/audit/page-sample.json
    ```
 
    If `sitemap.xml` is absent (`total_urls: 0`), fall back to picking pages by
@@ -99,17 +99,17 @@ or otherwise alters the audited site.
    writing its JSON to its own file. Skills are independent; a failure in one
    does not stop the others.
 
-   **Deadline check, before each per-page invocation** of
-   `content-quality-audit`, `entity-audit`, `engagement-audit`, and
-   `citability-audit` (their per-`--url` mode only — not their
-   `--sample-file`/`--sitemap-file`/off-site modes, which already self-cap
-   via `StageBudget`'s internal 90s fetch budget regardless of sample size):
+   **Deadline check, before every invocation** — each per-page `--url` call
+   to `content-quality-audit`, `entity-audit`, `engagement-audit`, and
+   `citability-audit`, and each of the six `--sample-file` bulk calls (their
+   own internal `StageBudget` 90s fetch cap bounds one invocation's cost, not
+   the run's total, so it's not a substitute for this check):
    `echo $(( $(date +%s) - $(cat /tmp/audit/start_epoch) ))`. Once elapsed
-   reaches 280s (4m40s), stop issuing further per-page invocations for **all
-   four** skills — they share the same priority-ordered `sample_urls` list
-   and budget, so a lower-priority page skipped by one shouldn't be reached
-   by another. A page never reached simply produces no output file for that
-   skill; `compose_report.py` composes it exactly like a smaller sample.
+   reaches 280s (4m40s), skip that invocation and every later one — the four
+   per-page skills share the same priority-ordered `sample_urls` list and
+   budget, so a lower-priority page skipped by one shouldn't be reached by
+   another. A skipped invocation simply produces no output file;
+   `compose_report.py` composes it exactly like a smaller sample.
 
    `content-quality-audit` runs per page, not per site, against pages drawn
    from the sample built above. Five of its per-page capabilities (CQ-01,
@@ -283,7 +283,7 @@ or otherwise alters the audited site.
    fetches the whole page-sample file concurrently in one process instead of
    spawning one sequential subprocess per page — see
    `references/orchestration-notes.md` for why sequential per-page fetching
-   made the 280s budget unrealistic on a full 100-page sample:
+   made the 280s budget unrealistic on a full 30-page sample:
 
    ```bash
    python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \
@@ -333,6 +333,7 @@ or otherwise alters the audited site.
        --skill citability-audit /tmp/audit/citability-guide.json \
        --skill retrieval-readiness-audit /tmp/audit/retrieval-sample.json \
        --skill static-extraction-audit /tmp/audit/static-extraction-sample.json \
+       --start-epoch-file /tmp/audit/start_epoch \
        > report/result_example.com.json
    ```
 

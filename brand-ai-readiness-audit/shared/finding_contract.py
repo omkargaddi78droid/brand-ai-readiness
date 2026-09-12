@@ -350,6 +350,7 @@ def build_report(
     unknown_checks: list[UnknownCheck] | None = None,
     audited_at: str | None = None,
     coverage: dict[str, Any] | None = None,
+    total_elapsed_seconds: float | None = None,
 ) -> dict[str, Any]:
     """Merge validated findings into the internal (superset) report.
 
@@ -361,6 +362,12 @@ def build_report(
     attached verbatim as `report["coverage"]` — an additive field the floor
     schema (`to_floor_schema`) does not project, so passing it never affects
     required-shape compliance.
+
+    `total_elapsed_seconds`, when given (see shared/budget.py's
+    `run_elapsed_seconds`), is attached as `report["total_elapsed_seconds"]`
+    rounded to 1 decimal place — the run's true wall-clock duration, distinct
+    from `coverage.stages`' per-script 90s-cap manifests and from
+    `audited_at`'s single instant.
     """
     errors = validate_findings(findings)
     for unknown in unknown_checks or []:
@@ -391,6 +398,8 @@ def build_report(
     }
     if coverage is not None:
         report["coverage"] = coverage
+    if total_elapsed_seconds is not None:
+        report["total_elapsed_seconds"] = round(total_elapsed_seconds, 1)
     return report
 
 

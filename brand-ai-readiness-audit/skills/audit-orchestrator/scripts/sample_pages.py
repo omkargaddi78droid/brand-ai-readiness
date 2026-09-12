@@ -22,8 +22,8 @@ recursion) falls back to `fallback_nav_footer_urls`: the homepage's own
 JS-only-navigation SPA can still yield nothing).
 
 Usage:
-    sample_pages.py --url https://example.com [--budget 100]
-    sample_pages.py --sitemap-file sitemap.xml [--budget 100]
+    sample_pages.py --url https://example.com [--budget 30]
+    sample_pages.py --sitemap-file sitemap.xml [--budget 30]
 
 Emits one JSON object on stdout: {"total_urls": ..., "budget": ...,
 "strata": [...], "sample_urls": [...], "forced_included": [...]}.
@@ -155,7 +155,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--url", help="Target site; fetches /sitemap.xml over the network")
     parser.add_argument("--sitemap-file", help="Read sitemap.xml from a local file instead of fetching")
     parser.add_argument(
-        "--budget", type=int, default=100, help="Maximum sampled pages before forced inclusions (default 100)"
+        "--budget", type=int, default=30, help="Maximum sampled pages before forced inclusions (default 30)"
     )
     args = parser.parse_args(argv)
 

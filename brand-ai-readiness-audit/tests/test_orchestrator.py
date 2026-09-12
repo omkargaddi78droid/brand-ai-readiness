@@ -17,6 +17,7 @@ import importlib.util
 import json
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -332,6 +333,51 @@ class CoverageManifestMergeTests(unittest.TestCase):
             report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
 
         self.assertNotIn("coverage", report)
+
+
+class TotalElapsedSecondsTests(unittest.TestCase):
+    """`--start-epoch-file` / `compose()`'s `start_epoch_file` param: the run's
+    true wall-clock duration, distinct from any skill's own coverage stages."""
+
+    def test_a_known_past_epoch_produces_the_expected_total_elapsed_seconds(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            epoch_file = Path(workdir) / "start_epoch"
+            epoch_file.write_text(str(int(time.time()) - 30))
+            report = orchestrator.compose(
+                "example.com", skills, audited_at=FIXED_TIMESTAMP, start_epoch_file=str(epoch_file)
+            )
+
+        self.assertIn("total_elapsed_seconds", report)
+        self.assertAlmostEqual(report["total_elapsed_seconds"], 30.0, delta=2.0)
+
+    def test_missing_epoch_file_omits_the_field_without_crashing(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            report = orchestrator.compose(
+                "example.com",
+                skills,
+                audited_at=FIXED_TIMESTAMP,
+                start_epoch_file=str(Path(workdir) / "does-not-exist"),
+            )
+
+        self.assertNotIn("total_elapsed_seconds", report)
+
+    def test_no_start_epoch_file_argument_omits_the_field(self):
+        entity_out = entity.audit_html("example.com", _ENTITY_HTML, page_url="https://example.com/")
+        del entity_out["agent_judgement_required"]
+
+        with tempfile.TemporaryDirectory() as workdir:
+            skills = [("entity-audit", _write(workdir, "entity.json", entity_out))]
+            report = orchestrator.compose("example.com", skills, audited_at=FIXED_TIMESTAMP)
+
+        self.assertNotIn("total_elapsed_seconds", report)
 
 
 _UNSIZED_IMAGES_HTML = (

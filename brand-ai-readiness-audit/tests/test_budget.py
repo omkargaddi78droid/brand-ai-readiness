@@ -6,13 +6,20 @@ tests must stay fast and deterministic.
 """
 
 import sys
+import tempfile
+import time
 import unittest
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "shared"))
 
-from budget import StageBudget, coverage_manifest, unreached_capability_unknowns  # noqa: E402
+from budget import (  # noqa: E402
+    StageBudget,
+    coverage_manifest,
+    run_elapsed_seconds,
+    unreached_capability_unknowns,
+)
 
 
 class _FakeClock:
@@ -133,6 +140,32 @@ class CoverageManifestTests(unittest.TestCase):
 
     def test_an_empty_budget_list_yields_an_empty_stages_list(self):
         self.assertEqual(coverage_manifest([]), {"stages": []})
+
+
+class RunElapsedSecondsTests(unittest.TestCase):
+    def test_valid_epoch_file_returns_roughly_the_true_elapsed_time(self):
+        started_at = int(time.time()) - 30
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write(str(started_at))
+            path = f.name
+        try:
+            elapsed = run_elapsed_seconds(path)
+            self.assertIsNotNone(elapsed)
+            self.assertAlmostEqual(elapsed, 30.0, delta=2.0)
+        finally:
+            Path(path).unlink()
+
+    def test_missing_file_returns_none(self):
+        self.assertIsNone(run_elapsed_seconds("/tmp/audit/does-not-exist-epoch-file"))
+
+    def test_malformed_content_returns_none(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False) as f:
+            f.write("not-an-epoch")
+            path = f.name
+        try:
+            self.assertIsNone(run_elapsed_seconds(path))
+        finally:
+            Path(path).unlink()
 
 
 if __name__ == "__main__":
