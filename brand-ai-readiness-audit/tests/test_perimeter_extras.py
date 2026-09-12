@@ -173,6 +173,28 @@ class SitemapDiscoverabilityTests(unittest.TestCase):
         self.assertEqual(findings, [])
 
 
+class ExtractSitemapUrlFromRobotsTests(unittest.TestCase):
+    def test_extracts_the_directives_url(self):
+        robots = "User-agent: *\nDisallow:\nSitemap: https://cdn.example.com/real-sitemap.xml\n"
+        self.assertEqual(per.extract_sitemap_url_from_robots(robots), "https://cdn.example.com/real-sitemap.xml")
+
+    def test_is_case_insensitive_and_at_line_start(self):
+        robots = "User-agent: *\nDisallow:\nSITEMAP:   https://example.com/s.xml\n"
+        self.assertEqual(per.extract_sitemap_url_from_robots(robots), "https://example.com/s.xml")
+
+    def test_no_directive_returns_none(self):
+        robots = "User-agent: *\nDisallow:\n"
+        self.assertIsNone(per.extract_sitemap_url_from_robots(robots))
+
+    def test_none_or_empty_robots_text_returns_none(self):
+        self.assertIsNone(per.extract_sitemap_url_from_robots(None))
+        self.assertIsNone(per.extract_sitemap_url_from_robots(""))
+
+    def test_only_the_first_directive_is_used(self):
+        robots = "Sitemap: https://example.com/one.xml\nSitemap: https://example.com/two.xml\n"
+        self.assertEqual(per.extract_sitemap_url_from_robots(robots), "https://example.com/one.xml")
+
+
 class LlmsSitemapAgreementTests(unittest.TestCase):
     """PER-08's second half: llms.txt is a curated subset (PER-04's own
     mechanism note), so the sitemap having URLs llms.txt omits is expected —

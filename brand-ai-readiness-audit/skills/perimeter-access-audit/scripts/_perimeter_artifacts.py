@@ -466,6 +466,23 @@ def evaluate_api_catalog(
 # ---------------------------------------------------------------------------
 
 _SITEMAP_DIRECTIVE_PATTERN = re.compile(r"(?im)^\s*sitemap\s*:", re.MULTILINE)
+_SITEMAP_DIRECTIVE_URL_PATTERN = re.compile(r"(?im)^\s*sitemap\s*:\s*(\S+)", re.MULTILINE)
+
+
+def extract_sitemap_url_from_robots(robots_text: str | None) -> str | None:
+    """The URL named by robots.txt's first `Sitemap:` directive, if any.
+
+    scribd.com live-testing false positive: the root `/sitemap.xml` is a
+    bogus stub (301s to an unrelated page) while the real sitemap lives at a
+    different, non-default location that robots.txt itself names — PER-06
+    only ever checked the hardcoded default path. This is PER-06's fallback
+    lookup, kept independent of `_SITEMAP_DIRECTIVE_PATTERN` (PER-08's
+    presence-only check) since PER-06 needs the URL itself, not just whether
+    a directive exists."""
+    if not robots_text:
+        return None
+    match = _SITEMAP_DIRECTIVE_URL_PATTERN.search(robots_text)
+    return match.group(1).strip() if match else None
 
 
 def evaluate_sitemap_discoverability(

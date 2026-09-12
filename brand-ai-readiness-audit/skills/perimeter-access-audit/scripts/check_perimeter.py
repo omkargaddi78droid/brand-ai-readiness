@@ -130,6 +130,8 @@ from _perimeter_artifacts import (  # noqa: E402
     evaluate_api_catalog,
     evaluate_sitemap_discoverability,
     evaluate_llms_sitemap_agreement,
+    extract_sitemap_url_from_robots,
+    _SITEMAP_ROOT_PATTERN,
 )
 from _perimeter_contradictions import (  # noqa: E402
     TIER_SEVERITY,
@@ -404,12 +406,32 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.sitemap_file:
         sitemap_text, sitemap_status = _read_file(args.sitemap_file)
+        sitemap_source_url = None
     elif args.sitemap_absent:
         sitemap_text, sitemap_status = None, "absent"
+        sitemap_source_url = None
     elif args.url:
-        sitemap_text, sitemap_status = fetch_text(base_url(args.url) + "/sitemap.xml")
+        default_sitemap_url = base_url(args.url) + "/sitemap.xml"
+        sitemap_text, sitemap_status = fetch_text(default_sitemap_url)
+        sitemap_source_url = default_sitemap_url
+        default_looks_valid = sitemap_status == "present" and _SITEMAP_ROOT_PATTERN.search(
+            (sitemap_text or "")[:2000]
+        )
+        if sitemap_status == "absent" or (sitemap_status == "present" and not default_looks_valid):
+            # scribd.com live-testing false positive: the default path is a
+            # bogus/absent stub, but robots.txt names the real location.
+            # One fallback fetch, only when the default path already failed
+            # PER-06's own root-element check, and only if it succeeds and
+            # is itself a valid sitemap — otherwise the original (failing)
+            # fetch result stands and PER-06 reports it exactly as before.
+            alt_url = extract_sitemap_url_from_robots(robots_text) if robots_status == "present" else None
+            if alt_url:
+                alt_text, alt_status = fetch_text(alt_url)
+                if alt_status == "present" and _SITEMAP_ROOT_PATTERN.search((alt_text or "")[:2000]):
+                    sitemap_text, sitemap_status, sitemap_source_url = alt_text, alt_status, alt_url
     else:
         sitemap_text, sitemap_status = None, "unavailable"
+        sitemap_source_url = None
 
     if args.md_file:
         md_text, md_status = _read_file(args.md_file)
@@ -490,6 +512,7 @@ def main(argv: list[str] | None = None) -> int:
         api_catalog_headers,
         api_catalog_status,
     )
+    output["sitemap_source_url"] = sitemap_source_url
 
     if not args.url:
         output["unknown_checks"].append(

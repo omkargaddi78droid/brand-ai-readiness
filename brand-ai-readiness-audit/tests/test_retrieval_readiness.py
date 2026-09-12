@@ -310,6 +310,46 @@ class ExtractProseTextTests(unittest.TestCase):
         text = ret.extract_prose_text("<p>Just ordinary prose.</p>")
         self.assertIn("Just ordinary prose.", text)
 
+    def test_a_repeated_short_div_card_is_excluded(self):
+        """bookmyshow live-testing false positive: a coupon-listing page's
+        legally-required disclaimer link repeats once per card, 57x on one
+        page — boilerplate UI structure, not manipulative repetition, even
+        though it's built from <div> cards rather than a <table>/<ul>."""
+        card = '<div class="offer-card">processing fee applicable, view details</div>'
+        html = card * 10 + "<p>Real prose here.</p>"
+        text = ret.extract_prose_text(html)
+        self.assertNotIn("processing fee applicable", text)
+        self.assertIn("Real prose here.", text)
+
+    def test_a_repeated_short_anchor_card_is_excluded(self):
+        card = '<a class="offer-link" href="/offer">processing fee applicable, view details</a>'
+        html = card * 10 + "<p>Real prose here.</p>"
+        text = ret.extract_prose_text(html)
+        self.assertNotIn("processing fee applicable", text)
+
+    def test_a_div_class_repeated_below_the_minimum_count_is_not_excluded(self):
+        card = '<div class="offer-card">processing fee applicable, view details</div>'
+        html = card * 3 + "<p>Real prose here.</p>"
+        text = ret.extract_prose_text(html)
+        self.assertIn("processing fee applicable", text)
+
+    def test_a_repeated_div_class_with_long_per_instance_text_is_not_excluded(self):
+        """The word cap limits the exemption's blast radius: a repeated
+        class whose instances carry real, substantial prose (not a short
+        card/control label) must still be counted."""
+        long_text = " ".join(["word"] * 20)
+        card = f'<div class="promo-block">{long_text}</div>'
+        html = card * 10
+        text = ret.extract_prose_text(html)
+        self.assertIn("word", text)
+        self.assertEqual(len(text.split()), 200)
+
+    def test_a_repeated_class_with_no_class_attribute_is_never_excluded(self):
+        card = "<div>processing fee applicable, view details</div>"
+        html = card * 10 + "<p>Real prose here.</p>"
+        text = ret.extract_prose_text(html)
+        self.assertIn("processing fee applicable", text)
+
 
 class KeywordStuffingTests(unittest.TestCase):
     _STUFFED_PROSE = (
@@ -376,6 +416,31 @@ class KeywordStuffingTests(unittest.TestCase):
         first = ret.find_keyword_stuffing(self._STUFFED_PROSE)
         second = ret.find_keyword_stuffing(self._STUFFED_PROSE)
         self.assertEqual([f.to_dict() for f in first], [f.to_dict() for f in second])
+
+    def test_carousel_control_labels_are_never_stuffing(self):
+        """bookmyshow live-testing false positive: "carousel go to
+        previous"/"go to next items" are accessibility labels for a
+        carousel component, not manipulative repetition."""
+        text = (
+            "carousel go to previous. go to next items. carousel go to previous. "
+            "go to next items. carousel go to previous. go to next items. "
+            + self._VARIED_PROSE
+        )
+        findings = ret.find_keyword_stuffing(text)
+        for finding in findings:
+            phrases = [p["phrase"] for p in finding.structured_evidence["repeated_phrases"]]
+            self.assertNotIn("go to previous", " ".join(phrases))
+            self.assertNotIn("go to next", " ".join(phrases))
+
+    def test_a_genuine_stuffed_phrase_alongside_carousel_labels_still_fires(self):
+        text = (
+            "carousel go to previous. go to next items. carousel go to previous. "
+            "go to next items. carousel go to previous. go to next items. "
+            + self._STUFFED_PROSE
+        )
+        findings = ret.find_keyword_stuffing(text)
+        self.assertEqual(len(findings), 1)
+        self.assertIn("cheap flights to paris", findings[0].evidence)
 
 
 class KeywordStuffingStructuredRegionExclusionTests(unittest.TestCase):
@@ -969,6 +1034,43 @@ class ChronologyGuardTests(unittest.TestCase):
         self.assertFalse(ret._is_chronology_page([]))
 
 
+class NarrativeHistoryPageTests(unittest.TestCase):
+    def test_heading_match_with_a_bare_year_is_a_narrative_history_page(self):
+        values = [{"value": "2015", "char_offset": 0, "kind": "year"}]
+        self.assertTrue(ret._is_narrative_history_page("Our Story", values))
+
+    def test_heading_match_without_any_bare_year_is_not_a_narrative_history_page(self):
+        values = [{"value": "$50", "char_offset": 0, "kind": "currency"}]
+        self.assertFalse(ret._is_narrative_history_page("Our Story", values))
+
+    def test_no_heading_match_is_not_a_narrative_history_page(self):
+        values = [{"value": "2015", "char_offset": 0, "kind": "year"}]
+        self.assertFalse(ret._is_narrative_history_page("Widget Specs", values))
+
+    def test_heading_match_is_case_insensitive_and_checks_title_and_h1_h2(self):
+        values = [{"value": "1998", "char_offset": 0, "kind": "year"}]
+        self.assertTrue(ret._is_narrative_history_page("ABOUT US\nCompany Milestones", values))
+
+
+class LocalContextWordCountTests(unittest.TestCase):
+    def test_counts_words_in_a_window_around_the_value(self):
+        prose = "word " * 20 + "70%" + " word" * 20
+        offset = prose.index("70%")
+        count = ret._local_context_word_count(prose, offset, len("70%"))
+        self.assertGreaterEqual(count, ret._RET09_MIN_LOCAL_CONTEXT_WORDS)
+
+    def test_a_short_isolated_value_has_a_low_word_count(self):
+        prose = "70% Market Share."
+        offset = prose.index("70%")
+        count = ret._local_context_word_count(prose, offset, len("70%"))
+        self.assertLess(count, ret._RET09_MIN_LOCAL_CONTEXT_WORDS)
+
+    def test_window_is_clamped_to_the_string_bounds(self):
+        prose = "70%"
+        count = ret._local_context_word_count(prose, 0, len("70%"))
+        self.assertEqual(count, 1)
+
+
 class MarginAnchorExtractionTests(unittest.TestCase):
     def test_title_text_is_extracted(self):
         title, _ = ret.extract_margin_anchor_text("<html><head><title>My Page $50</title></head></html>")
@@ -1065,6 +1167,26 @@ class InterredFactsGuardTests(unittest.TestCase):
         html = _long_page(table, word_target=850, title="Specs", h1="Specs")
         self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
 
+    def test_a_narrative_about_us_page_mixing_years_into_prose_does_not_fire(self):
+        # bookmyshow live-testing false positive: founding years mixed into
+        # real narrative sentences, not a >=70% bare-year ordered timeline —
+        # same buried values as the positive test below, but with a bare
+        # year present and a title/h1 naming the page as company history.
+        html = _long_page(
+            "<p>Founded in 2015, the price is $1,299, it lasts 18 hours, "
+            "improved 40%, and weighs 2.4 kg.</p>",
+            title="About Us",
+            h1="Our Story",
+        )
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
+    def test_a_bare_short_stat_badge_does_not_fire(self):
+        # bookmyshow live-testing false positive: a 2-3-word stat-strip
+        # callout isn't a sentence-embedded claim the way a real buried
+        # statistic is.
+        html = _long_page("<p>70% Market Share.</p>", title="Widget", h1="Widget")
+        self.assertEqual(ret.find_interred_facts(html, ret.extract_headings(html), []), [])
+
 
 class InterredFactsPositiveTests(unittest.TestCase):
     def test_buried_unrestated_values_fire(self):
@@ -1115,6 +1237,20 @@ class InterredFactsPositiveTests(unittest.TestCase):
         output = ret.audit_html("example.com", html)
         ids = [f["id"] for f in output["findings"]]
         self.assertIn("RET-09-facts-interred-mid-document", ids)
+
+    def test_the_local_context_floor_does_not_over_suppress_ordinary_buried_prose(self):
+        # Regression guard: the >=6-word local-context floor added for the
+        # bare-stat-badge false positive must not swallow a genuinely buried
+        # value that has ordinary sentence-level context around it.
+        html = _long_page(
+            "<p>Buried here: the price is $1,299, it lasts 18 hours, improved 40%, and weighs 2.4 kg.</p>",
+            title="Widget",
+            h1="Widget",
+        )
+        findings = ret.find_interred_facts(html, ret.extract_headings(html), [])
+        self.assertEqual(len(findings), 1)
+        values = [v["value"] for v in findings[0].structured_evidence["values"]]
+        self.assertIn("40%", values)
 
 
 def _ret10_block(sentence: str, filler_sentences: int = 2) -> str:

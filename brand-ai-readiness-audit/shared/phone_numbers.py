@@ -19,14 +19,18 @@ sys.path.insert(0, str(_REPO_ROOT / "third_party"))
 import phonenumbers  # noqa: E402
 
 
-def find_phone_numbers(text: str, default_region: str | None = None) -> list[str]:
-    """Return each distinct valid phone number found in `text`, formatted
-    E.164, in first-seen order. `default_region` (an ISO 3166-1 alpha-2 code,
-    e.g. "US") lets a national-format number with no country code resolve —
-    without it, only numbers already carrying a `+country_code` are found,
-    which is the safer default for a page whose country is unknown."""
+def find_phone_number_matches(text: str, default_region: str | None = None) -> list[dict]:
+    """Like `find_phone_numbers`, but returns each match's position alongside
+    its formatted number: `{"formatted": <E.164 str>, "start": <int>,
+    "raw_string": <str as it appears in `text`>}`, in first-seen order,
+    deduplicated by formatted number (keeping the first occurrence's
+    position — same convention as RET-09's `extract_load_bearing_values`).
+
+    Added for REN-10's tracking-context filter, which needs a match's offset
+    in the *script* text to check the characters immediately preceding it —
+    `find_phone_numbers`'s plain string list has nowhere to hang that."""
     seen: set[str] = set()
-    ordered: list[str] = []
+    ordered: list[dict] = []
     for match in phonenumbers.PhoneNumberMatcher(text, default_region or "ZZ"):
         if not phonenumbers.is_valid_number(match.number):
             continue
@@ -43,7 +47,17 @@ def find_phone_numbers(text: str, default_region: str | None = None) -> list[str
         ):
             continue
         formatted = phonenumbers.format_number(match.number, phonenumbers.PhoneNumberFormat.E164)
-        if formatted not in seen:
-            seen.add(formatted)
-            ordered.append(formatted)
+        if formatted in seen:
+            continue
+        seen.add(formatted)
+        ordered.append({"formatted": formatted, "start": match.start, "raw_string": match.raw_string})
     return ordered
+
+
+def find_phone_numbers(text: str, default_region: str | None = None) -> list[str]:
+    """Return each distinct valid phone number found in `text`, formatted
+    E.164, in first-seen order. `default_region` (an ISO 3166-1 alpha-2 code,
+    e.g. "US") lets a national-format number with no country code resolve —
+    without it, only numbers already carrying a `+country_code` are found,
+    which is the safer default for a page whose country is unknown."""
+    return [entry["formatted"] for entry in find_phone_number_matches(text, default_region)]

@@ -6,8 +6,10 @@ positive control, and false positives are named in the rubric, so they are not
 optional garnish.
 """
 
+import contextlib
 import http.server
 import importlib.util
+import io
 import json
 import sys
 import tempfile
@@ -296,6 +298,149 @@ class _HeaderLocalServer:
         self.httpd.shutdown()
         self.httpd.server_close()
         self.thread.join(timeout=2)
+
+
+class _RoutedHandler(http.server.BaseHTTPRequestHandler):
+    """Serves a per-path (status, body) map, 404 for anything unlisted."""
+
+    routes: dict[str, tuple[int, bytes]] = {}
+
+    def do_GET(self):  # noqa: N802 (stdlib method name)
+        status, body = self.routes.get(self.path, (404, b"not found"))
+        self.send_response(status)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, *args):
+        pass  # silence per-request stderr logging
+
+
+class _RoutedLocalServer:
+    """A single local server answering several paths at once — needed for
+    PER-06's robots.txt-fallback test, which must exercise a real fetch of
+    both /sitemap.xml and the alternate URL robots.txt names. `build_routes`
+    receives the server's own base URL (known once the socket is bound, before
+    the serving thread starts) so a route body can embed a same-server URL,
+    e.g. robots.txt's `Sitemap:` directive pointing elsewhere on this server."""
+
+    def __init__(self, build_routes):
+        handler = type("Handler", (_RoutedHandler,), {"routes": {}})
+        self.httpd = http.server.HTTPServer(("127.0.0.1", 0), handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_port}"
+        handler.routes = build_routes(self.url)
+        self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True)
+
+    def __enter__(self):
+        self.thread.start()
+        return self
+
+    def __exit__(self, *exc):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+        self.thread.join(timeout=2)
+
+
+_QUIET_ROUTES = {
+    "/llms.txt": (404, b"not found"),
+    "/llms-full.txt": (404, b"not found"),
+    "/index.md": (404, b"not found"),
+    "/.well-known/tdmrep.json": (404, b"not found"),
+    "/.well-known/api-catalog": (404, b"not found"),
+    "/": (200, b"<html><body>hi</body></html>"),
+}
+
+_VALID_SITEMAP_BODY = b"<urlset><url><loc>https://example.com/a</loc></url></urlset>"
+
+
+def _run_main_against(build_routes) -> dict:
+    with _RoutedLocalServer(build_routes) as server:
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            exit_code = perimeter.main(
+                ["--url", server.url, "--no-edge-probe", "--no-content-parity-probe"]
+            )
+    output = json.loads(stdout.getvalue())
+    output["_exit_code"] = exit_code
+    return output
+
+
+class SitemapRobotsFallbackTests(unittest.TestCase):
+    """PER-06: scribd.com live-testing false positive — the default
+    /sitemap.xml path is a bogus/absent stub, but robots.txt itself names
+    the real sitemap location. One fallback fetch of that URL, only when
+    the default path already failed PER-06's own check."""
+
+    def test_a_robots_declared_sitemap_is_used_when_the_default_path_is_absent(self):
+        def build_routes(base_url):
+            robots = f"User-agent: *\nDisallow:\nSitemap: {base_url}/real-sitemap.xml\n".encode()
+            return {
+                **_QUIET_ROUTES,
+                "/robots.txt": (200, robots),
+                "/sitemap.xml": (404, b"not found"),
+                "/real-sitemap.xml": (200, _VALID_SITEMAP_BODY),
+            }
+
+        output = _run_main_against(build_routes)
+        self.assertEqual(output["_exit_code"], 0)
+        self.assertTrue(output["sitemap_source_url"].endswith("/real-sitemap.xml"))
+        self.assertNotIn("PER-06-sitemap-missing", [f["id"] for f in output["findings"]])
+
+    def test_a_robots_declared_sitemap_is_used_when_the_default_path_is_malformed(self):
+        def build_routes(base_url):
+            robots = f"User-agent: *\nDisallow:\nSitemap: {base_url}/real-sitemap.xml\n".encode()
+            return {
+                **_QUIET_ROUTES,
+                "/robots.txt": (200, robots),
+                "/sitemap.xml": (200, b"<html>this is not a sitemap</html>"),
+                "/real-sitemap.xml": (200, _VALID_SITEMAP_BODY),
+            }
+
+        output = _run_main_against(build_routes)
+        self.assertTrue(output["sitemap_source_url"].endswith("/real-sitemap.xml"))
+        self.assertNotIn("PER-06-sitemap-malformed", [f["id"] for f in output["findings"]])
+
+    def test_no_fallback_is_attempted_when_the_default_path_is_already_valid(self):
+        def build_routes(base_url):
+            robots = f"User-agent: *\nDisallow:\nSitemap: {base_url}/real-sitemap.xml\n".encode()
+            return {
+                **_QUIET_ROUTES,
+                "/robots.txt": (200, robots),
+                "/sitemap.xml": (200, _VALID_SITEMAP_BODY),
+                "/real-sitemap.xml": (500, b"should never be fetched"),
+            }
+
+        output = _run_main_against(build_routes)
+        self.assertTrue(output["sitemap_source_url"].endswith("/sitemap.xml"))
+        self.assertFalse(output["sitemap_source_url"].endswith("/real-sitemap.xml"))
+        self.assertEqual([f["id"] for f in output["findings"] if f["capability_id"] == "PER-06"], [])
+
+    def test_a_falling_back_fetch_that_is_also_invalid_leaves_the_original_finding_intact(self):
+        def build_routes(base_url):
+            robots = f"User-agent: *\nDisallow:\nSitemap: {base_url}/real-sitemap.xml\n".encode()
+            return {
+                **_QUIET_ROUTES,
+                "/robots.txt": (200, robots),
+                "/sitemap.xml": (404, b"not found"),
+                "/real-sitemap.xml": (404, b"not found"),
+            }
+
+        output = _run_main_against(build_routes)
+        self.assertTrue(output["sitemap_source_url"].endswith("/sitemap.xml"))
+        self.assertIn("PER-06-sitemap-missing", [f["id"] for f in output["findings"]])
+
+    def test_no_fallback_when_robots_has_no_sitemap_directive(self):
+        def build_routes(base_url):
+            robots = b"User-agent: *\nDisallow:\n"
+            return {
+                **_QUIET_ROUTES,
+                "/robots.txt": (200, robots),
+                "/sitemap.xml": (404, b"not found"),
+            }
+
+        output = _run_main_against(build_routes)
+        self.assertTrue(output["sitemap_source_url"].endswith("/sitemap.xml"))
+        self.assertIn("PER-06-sitemap-missing", [f["id"] for f in output["findings"]])
 
 
 class FetchPageWithHeadersTests(unittest.TestCase):

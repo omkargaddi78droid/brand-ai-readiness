@@ -308,7 +308,21 @@ _REQUIRED_FIELDS = {
 }
 
 
-def find_schema_issues(nodes: list[dict], parse_errors: list[str]) -> tuple[list[Finding], list[UnknownCheck]]:
+_ENT01_HOMEPAGE_PATHS = ("", "/")
+
+
+def _is_homepage(page_url: str) -> bool:
+    """Scribd live-testing false positive: a content-detail page (document,
+    media object) legitimately carries only Product/MediaObject/BreadcrumbList
+    markup, with no Organization/WebSite node of its own — the identity node
+    belongs on the homepage, not on every page. Mirrors engagement-audit's
+    own `_is_homepage`."""
+    return urllib.parse.urlparse(page_url).path in _ENT01_HOMEPAGE_PATHS
+
+
+def find_schema_issues(
+    nodes: list[dict], parse_errors: list[str], page_url: str | None = None
+) -> tuple[list[Finding], list[UnknownCheck]]:
     findings: list[Finding] = []
 
     if parse_errors:
@@ -319,7 +333,8 @@ def find_schema_issues(nodes: list[dict], parse_errors: list[str]) -> tuple[list
         return findings, []
 
     if nodes and not any(_node_types(n) & set(_IDENTITY_TYPES) for n in nodes):
-        findings.append(_no_identity_type_finding(sorted({t for n in nodes for t in _node_types(n)})))
+        if page_url is None or _is_homepage(page_url):
+            findings.append(_no_identity_type_finding(sorted({t for n in nodes for t in _node_types(n)})))
 
     for node in nodes:
         types = _node_types(node) & set(_REQUIRED_FIELDS)
@@ -1346,7 +1361,7 @@ def build_agent_judgement_requests(nodes: list[dict], visible_text: str) -> list
 def audit_html(site: str, html: str, page_url: str | None = None) -> dict:
     nodes, parse_errors, canonical_hrefs, visible_text = parse_page(html)
 
-    schema_findings, schema_unknowns = find_schema_issues(nodes, parse_errors)
+    schema_findings, schema_unknowns = find_schema_issues(nodes, parse_errors, page_url)
     findings = (
         schema_findings
         + find_knowledge_graph_gaps(nodes)

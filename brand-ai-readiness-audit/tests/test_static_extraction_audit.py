@@ -470,6 +470,58 @@ class NapScriptOnlyPhoneTests(unittest.TestCase):
             sea.find_nap_script_only_phone(script_text, "Call +44 20 7946 0958 now."), []
         )
 
+    def test_a_number_right_after_client_id_is_suppressed(self):
+        """scribd.com live testing (2026-09-12): a 10-digit NANP-shaped
+        analytics/tracking ID sitting right next to a `clientId` key still
+        validates as a phone number; the tracking-context window filters it
+        out on the script side."""
+        script_text = 'clientId: "202-555-0173"'
+        self.assertEqual(sea.find_nap_script_only_phone(script_text, "No phone here."), [])
+
+    def test_a_number_far_from_any_tracking_keyword_still_fires(self):
+        """The window is narrow (30 chars) on purpose — a genuine phone
+        number well outside a tracking keyword's vicinity must still fire."""
+        script_text = "clientId" + (" " * 40) + "202-555-0173"
+        findings = sea.find_nap_script_only_phone(script_text, "No phone here.")
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0].id, "REN-10-phone-only-in-script")
+
+    def test_dataLayer_ga_and_click_id_contexts_are_all_suppressed(self):
+        for keyword in ("dataLayer.push({id:", "_ga=", "gclid=", "fbclid=", "utm_source=", "order_id:"):
+            with self.subTest(keyword=keyword):
+                script_text = f"{keyword} '202-555-0173'"
+                self.assertEqual(sea.find_nap_script_only_phone(script_text, "No phone here."), [])
+
+    def test_tracking_context_filter_does_not_apply_to_the_visible_text_side(self):
+        """The number here is NOT suppressed on the script side (no tracking
+        keyword nearby), so it is a normal script candidate; it is restated
+        in visible text right next to tracking-looking words. If the filter
+        were ever mistakenly applied to the visible side too, it would wrongly
+        discard that restatement and cause a false 'only in script' finding."""
+        script_text = "202-555-0173"
+        visible_text = 'clientId: "202-555-0173"'
+        self.assertEqual(sea.find_nap_script_only_phone(script_text, visible_text), [])
+
+
+class Ren10IsTrackingContextTests(unittest.TestCase):
+    def test_keyword_immediately_before_offset_is_detected(self):
+        text = "clientId: 12345"
+        offset = text.index("12345")
+        self.assertTrue(sea._ren10_is_tracking_context(text, offset))
+
+    def test_no_keyword_nearby_is_not_tracking_context(self):
+        text = "Call us at 12345"
+        offset = text.index("12345")
+        self.assertFalse(sea._ren10_is_tracking_context(text, offset))
+
+    def test_keyword_outside_the_window_is_not_detected(self):
+        text = "clientId" + (" " * 40) + "12345"
+        offset = text.index("12345")
+        self.assertFalse(sea._ren10_is_tracking_context(text, offset))
+
+    def test_offset_zero_does_not_crash_on_a_negative_window(self):
+        self.assertFalse(sea._ren10_is_tracking_context("12345", 0))
+
 
 class PdfRestatementSuggestionTests(unittest.TestCase):
     def test_a_pdf_link_produces_a_proactive_suggestion(self):

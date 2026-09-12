@@ -539,9 +539,76 @@ def find_token_survival_gaps(tokens: list[dict], visible_text: str) -> list[Find
 
 _STRUCTURED_TAGS = {"table", "dl", "ul", "ol", "select"}
 
+# bookmyshow live-testing false positives: a `<div>`-based coupon-card grid
+# (a legally-required disclaimer link repeated once per card, 57x on one
+# page) and a carousel's repeated prev/next control labels are structurally
+# invisible to `_STRUCTURED_TAGS`, since neither uses table/dl/ul/ol/select
+# markup. `_RET04_REPEATED_CARD_TAGS` generalizes the same
+# "exclude structured regions" mechanism from a fixed tag allowlist to
+# structural *repetition*: a `(tag, class)` signature repeated at least
+# `_RET04_REPEATED_SIBLING_MIN_COUNT` times, with each instance's own text
+# no longer than `_RET04_REPEATED_CARD_MAX_WORDS`, is a grid/carousel of
+# short repeated cards/controls, not hand-written prose that happens to
+# share a class name. The word cap is the deliberate limit on this
+# exemption's blast radius: a short, densely stuffed div-card repeated many
+# times (a real SEO-abuse pattern) can still slip through this guard — see
+# the cap's own docstring below for why a tighter cap isn't a full fix.
+_RET04_REPEATED_CARD_TAGS = {"div", "li", "a", "button"}
+_RET04_REPEATED_SIBLING_MIN_COUNT = 6
+_RET04_REPEATED_CARD_MAX_WORDS = 15
+
+
+class _RepeatedCardDetector(HTMLParser):
+    """First pass over the page: for every `(tag, class)` signature on a
+    div/li/a/button element, collect each instance's own text so
+    `_repeated_card_signatures` can decide which signatures are a repeated
+    short card/control rather than unrelated markup that merely shares a
+    class name. A stack of (tag, buffer) pairs, not a single aggregate
+    counter — unlike `_STRUCTURED_TAGS`'s "am I inside any of these tags"
+    question, this needs each individual instance's own text, since the
+    per-instance word count is exactly what gates the exemption."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self._stack: list[tuple[str, str, list[str]]] = []
+        self.texts_by_signature: dict[tuple[str, str], list[str]] = {}
+
+    def handle_starttag(self, tag, attrs):
+        if tag in _RET04_REPEATED_CARD_TAGS:
+            class_key = (dict(attrs).get("class") or "").strip()
+            if class_key:
+                self._stack.append((tag, class_key, []))
+
+    def handle_startendtag(self, tag, attrs):
+        self.handle_starttag(tag, attrs)
+        self.handle_endtag(tag)
+
+    def handle_endtag(self, tag):
+        if self._stack and self._stack[-1][0] == tag:
+            _, class_key, buffer = self._stack.pop()
+            text = " ".join("".join(buffer).split())
+            self.texts_by_signature.setdefault((tag, class_key), []).append(text)
+
+    def handle_data(self, data):
+        for _, _, buffer in self._stack:
+            buffer.append(data)
+
+
+def _repeated_card_signatures(html: str) -> set[tuple[str, str]]:
+    parser = _RepeatedCardDetector()
+    parser.feed(html)
+    parser.close()
+    return {
+        signature
+        for signature, texts in parser.texts_by_signature.items()
+        if len(texts) >= _RET04_REPEATED_SIBLING_MIN_COUNT
+        and all(len(t.split()) <= _RET04_REPEATED_CARD_MAX_WORDS for t in texts)
+    }
+
 
 class _ProseTextExtractor(HTMLParser):
-    """Visible text with `<table>`/`<dl>`/`<ul>`/`<ol>`/`<select>` regions
+    """Visible text with `<table>`/`<dl>`/`<ul>`/`<ol>`/`<select>` regions,
+    and any repeated-card/control region (`repeated_card_signatures`),
     excluded — RET-04's own capability-matrix risk note ("exclude structured
     regions before counting") applied directly during extraction rather than
     as a post-hoc filter. A single aggregate depth counter tracks "inside
@@ -549,20 +616,36 @@ class _ProseTextExtractor(HTMLParser):
     already uses elsewhere in this file: opens and closes of these tags pair
     up 1:1 in well-formed HTML regardless of which specific tag nests inside
     which, so an aggregate counter reflects the right boolean without
-    tracking each tag name separately."""
+    tracking each tag name separately. Repeated-card exclusion instead needs
+    a tag-name stack (matching engagement-audit/citability-audit's own
+    chrome-depth pattern), since it depends on a specific element's own
+    `(tag, class)` signature, not just its tag name."""
 
-    def __init__(self):
+    def __init__(self, repeated_card_signatures: set[tuple[str, str]] | None = None):
         super().__init__(convert_charrefs=True)
         self._skip_depth = 0
         self._structured_depth = 0
         self._text_chunks: list[str] = []
+        self._repeated_card_signatures = repeated_card_signatures or set()
+        self._repeated_card_depth = 0
+        self._repeated_card_tag_stack: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         if tag in _SKIP_TEXT_TAGS:
             self._skip_depth += 1
         if tag in _STRUCTURED_TAGS:
             self._structured_depth += 1
-        if tag in _BLOCK_TAGS and self._skip_depth == 0 and self._structured_depth == 0:
+        if tag in _RET04_REPEATED_CARD_TAGS:
+            class_key = (dict(attrs).get("class") or "").strip()
+            if (tag, class_key) in self._repeated_card_signatures:
+                self._repeated_card_depth += 1
+                self._repeated_card_tag_stack.append(tag)
+        if (
+            tag in _BLOCK_TAGS
+            and self._skip_depth == 0
+            and self._structured_depth == 0
+            and self._repeated_card_depth == 0
+        ):
             self._text_chunks.append("\n")
 
     def handle_startendtag(self, tag, attrs):
@@ -574,11 +657,19 @@ class _ProseTextExtractor(HTMLParser):
             self._skip_depth = max(0, self._skip_depth - 1)
         if tag in _STRUCTURED_TAGS:
             self._structured_depth = max(0, self._structured_depth - 1)
-        if tag in _BLOCK_TAGS and self._skip_depth == 0 and self._structured_depth == 0:
+        if (
+            tag in _BLOCK_TAGS
+            and self._skip_depth == 0
+            and self._structured_depth == 0
+            and self._repeated_card_depth == 0
+        ):
             self._text_chunks.append("\n")
+        if self._repeated_card_tag_stack and self._repeated_card_tag_stack[-1] == tag:
+            self._repeated_card_tag_stack.pop()
+            self._repeated_card_depth = max(0, self._repeated_card_depth - 1)
 
     def handle_data(self, data):
-        if self._skip_depth == 0 and self._structured_depth == 0:
+        if self._skip_depth == 0 and self._structured_depth == 0 and self._repeated_card_depth == 0:
             self._text_chunks.append(data)
 
     def prose_text(self) -> str:
@@ -588,8 +679,10 @@ class _ProseTextExtractor(HTMLParser):
 
 
 def extract_prose_text(html: str) -> str:
-    """Visible text with structured (table/list/glossary) regions excluded."""
-    parser = _ProseTextExtractor()
+    """Visible text with structured (table/list/glossary) regions, and any
+    repeated short card/control region, excluded."""
+    repeated_card_signatures = _repeated_card_signatures(html)
+    parser = _ProseTextExtractor(repeated_card_signatures)
     parser.feed(html)
     parser.close()
     return parser.prose_text()
@@ -616,6 +709,16 @@ _KEYWORD_STUFFING_NGRAM_LENGTH = 4
 _KEYWORD_STUFFING_MIN_OCCURRENCES = 5
 _KEYWORD_STUFFING_MIN_DENSITY = 0.08
 _KEYWORD_STUFFING_MIN_PROSE_WORDS = 80
+
+# bookmyshow live-testing false positive: a carousel's repeated prev/next
+# control labels ("carousel go to previous", "go to next items") are
+# accessibility text alternatives, not manipulative repetition — a closed,
+# specific vocabulary so a real marketing phrase that happens to contain
+# "next"/"previous" is never touched.
+_RET04_CAROUSEL_CONTROL_PATTERN = re.compile(
+    r"^(?:carousel\s+)?go\s+to\s+(?:previous|next)\b|^(?:previous|next)\s+(?:slide|item|items)\b",
+    re.IGNORECASE,
+)
 
 
 def _tokenize_words(text: str) -> list[str]:
@@ -667,6 +770,7 @@ def find_keyword_stuffing(prose_text: str) -> list[Finding]:
         for gram, count in counts.items()
         if count >= _KEYWORD_STUFFING_MIN_OCCURRENCES
         and (count * _KEYWORD_STUFFING_NGRAM_LENGTH) / total_words >= _KEYWORD_STUFFING_MIN_DENSITY
+        and not _RET04_CAROUSEL_CONTROL_PATTERN.search(" ".join(gram))
     ]
     if not stuffed:
         return []
@@ -1215,6 +1319,22 @@ _RET09_MARGIN_FRACTION = 0.15
 _RET09_MIDDLE_BAND_LOW = 0.25
 _RET09_MIDDLE_BAND_HIGH = 0.75
 _RET09_CHRONOLOGY_YEAR_RATIO = 0.70
+# bookmyshow live-testing false positives: an "About Us" company-history
+# page mixing founding years into real narrative prose (not a >=70% bare-year
+# timeline) and a business-stat pitch page ("6 years/50%/70%") both slipped
+# past `_is_chronology_page`'s ratio test. `_RET09_NARRATIVE_HISTORY_HEADING_RE`
+# exempts a page whose own title/h1/h2 names it as a history/journey page
+# outright (no ratio requirement) once at least one bare-year value is
+# present. `_RET09_MIN_LOCAL_CONTEXT_WORDS` addresses the second case
+# directly: a bare "70%" sitting in a 2-3-word stat-strip callout ("70%
+# Market Share") isn't a sentence-embedded claim the way a real buried
+# statistic is — it needs a minimum amount of surrounding prose to count as
+# "interred" at all.
+_RET09_NARRATIVE_HISTORY_HEADING_RE = re.compile(
+    r"our story|about us|company history|milestones|journey|timeline", re.IGNORECASE
+)
+_RET09_LOCAL_CONTEXT_WINDOW_CHARS = 60
+_RET09_MIN_LOCAL_CONTEXT_WORDS = 6
 _RET09_SUMMARY_HEADING_RE = re.compile(r"summary|tl;?dr|key takeaways|at a glance|overview", re.IGNORECASE)
 
 # Cycle 24 item 3.8: canonical month list, shared/text_spans.py — see that
@@ -1308,6 +1428,24 @@ def _is_chronology_page(values: list[dict]) -> bool:
         return False
     ordered = [int(v["value"]) for v in sorted(years, key=lambda v: v["char_offset"])]
     return ordered == sorted(ordered)
+
+
+def _is_narrative_history_page(anchor_text: str, values: list[dict]) -> bool:
+    """A page whose own title/h1/h2 identifies it as company-history/journey
+    narrative (About Us, Our Story, milestones, timeline), with at least one
+    bare-year value present, is exempted outright — no ratio requirement,
+    unlike `_is_chronology_page`. Narrative prose legitimately mixes
+    founding years into sentences rather than presenting an ordered
+    bare-year list, which is exactly what defeats the ratio test."""
+    if not _RET09_NARRATIVE_HISTORY_HEADING_RE.search(anchor_text):
+        return False
+    return any(v["kind"] == "year" for v in values)
+
+
+def _local_context_word_count(prose_stream: str, offset: int, value_length: int) -> int:
+    start = max(0, offset - _RET09_LOCAL_CONTEXT_WINDOW_CHARS)
+    end = min(len(prose_stream), offset + value_length + _RET09_LOCAL_CONTEXT_WINDOW_CHARS)
+    return len(prose_stream[start:end].split())
 
 
 class _RET09MarginAnchorExtractor(HTMLParser):
@@ -1420,6 +1558,9 @@ def find_interred_facts(html: str, headings: list[dict], json_ld_nodes: list[dic
 
     title_text, dt_dd_table_text = extract_margin_anchor_text(html)
     h1_h2_text = " ".join(h["text"] for h in headings if h["level"] in (1, 2) and h["text"])
+    if _is_narrative_history_page(f"{title_text}\n{h1_h2_text}", values):
+        return []
+
     margin_len = max(0, round(total_chars * _RET09_MARGIN_FRACTION))
     opening_text = prose_stream[:margin_len]
     closing_text = prose_stream[max(0, total_chars - margin_len):]
@@ -1439,6 +1580,8 @@ def find_interred_facts(html: str, headings: list[dict], json_ld_nodes: list[dic
         if entry["value"].lower() in anchor_blob:
             continue
         if _in_any_range(offset, summary_ranges):
+            continue
+        if _local_context_word_count(prose_stream, offset, len(entry["value"])) < _RET09_MIN_LOCAL_CONTEXT_WORDS:
             continue
         interred.append({"value": entry["value"], "normalized_position": round(position, 4), "restated_at": None})
 

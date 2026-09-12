@@ -127,6 +127,35 @@ class SchemaValidityTests(unittest.TestCase):
         findings, _ = ent.find_schema_issues(nodes, errors)
         self.assertNotIn("ENT-01-no-identity-type", [f.id for f in findings])
 
+    def test_only_product_type_on_a_known_non_homepage_url_suppresses_no_identity_type(self):
+        # scribd live-testing false positive: a content-detail page legitimately
+        # only carries Product/MediaObject markup — the Organization/WebSite
+        # node belongs on the homepage, not on every page.
+        nodes, errors, _, _ = ent.parse_page(ld('{"@type":"Product","name":"Widget"}'))
+        findings, _ = ent.find_schema_issues(nodes, errors, "https://example.com/docs/12345")
+        self.assertNotIn("ENT-01-no-identity-type", [f.id for f in findings])
+
+    def test_only_product_type_on_the_homepage_still_flags_no_identity_type(self):
+        nodes, errors, _, _ = ent.parse_page(ld('{"@type":"Product","name":"Widget"}'))
+        findings, _ = ent.find_schema_issues(nodes, errors, "https://example.com/")
+        self.assertIn("ENT-01-no-identity-type", [f.id for f in findings])
+
+    def test_only_product_type_with_unknown_page_url_keeps_conservative_behavior(self):
+        nodes, errors, _, _ = ent.parse_page(ld('{"@type":"Product","name":"Widget"}'))
+        findings, _ = ent.find_schema_issues(nodes, errors, None)
+        self.assertIn("ENT-01-no-identity-type", [f.id for f in findings])
+
+
+class Ent01IsHomepageTests(unittest.TestCase):
+    def test_root_path_is_homepage(self):
+        self.assertTrue(ent._is_homepage("https://example.com/"))
+
+    def test_empty_path_is_homepage(self):
+        self.assertTrue(ent._is_homepage("https://example.com"))
+
+    def test_non_root_path_is_not_homepage(self):
+        self.assertFalse(ent._is_homepage("https://example.com/docs/12345"))
+
 
 class KnowledgeGraphTests(unittest.TestCase):
     def test_no_organization_node_means_ent02_stays_silent(self):
@@ -296,7 +325,7 @@ class ContractComplianceTests(unittest.TestCase):
             + '<link rel="canonical" href="https://other.example/page">'
             + "<p>Rated 3.2 out of 5.</p>"
         )
-        out = ent.audit_html("example.com", html, page_url="https://example.com/page")
+        out = ent.audit_html("example.com", html, page_url="https://example.com/")
         self.assertGreaterEqual(len(out["findings"]), 3)
         for finding_dict in out["findings"]:
             restored = Finding.from_dict(finding_dict)

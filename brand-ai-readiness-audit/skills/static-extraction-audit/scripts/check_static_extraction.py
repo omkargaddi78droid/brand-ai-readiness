@@ -111,7 +111,7 @@ from page_fetch import (  # noqa: E402
     fetch_page_html,
     fetch_pages_concurrently,
 )
-from phone_numbers import find_phone_numbers  # noqa: E402
+from phone_numbers import find_phone_numbers, find_phone_number_matches  # noqa: E402
 from text_spans import VISIBLE_TEXT_BLOCK_TAGS, VISIBLE_TEXT_SKIP_TAGS  # noqa: E402
 
 OWNER_SKILL = "static-extraction-audit"
@@ -934,11 +934,45 @@ def find_missing_media_tracks(media_results: list[dict]) -> list[Finding]:
 # "+", which is exactly what the old regex always assumed implicitly.
 _REN10_DEFAULT_REGION = "US"
 
+# scribd.com live testing (2026-09-12): ~180 false-positive "phone numbers"
+# from analytics/tracking-pixel IDs in inline <script> blocks — a bare
+# 10/11-digit NANP-shaped run inside `"clientId":"12025550173"` or a
+# `dataLayer.push(...)` call still validates as a phone number; confirmed
+# stricter `phonenumbers` Leniency levels don't help, since they still accept
+# unformatted digit blocks. Denylist rather than an allowlist: the tracking
+# vocabulary here is closed and well-known (GA/GTM, ad-click IDs, generic
+# order/session/event correlation IDs), whereas a real NAP phone number's
+# surrounding context has no comparably closed vocabulary to require instead.
+_REN10_TRACKING_CONTEXT_PATTERN = re.compile(
+    r"client[_-]?id|_ga\b|dataLayer|(?:order|transaction|session|event|correlation)[_-]?id|"
+    r"gclid|fbclid|utm_",
+    re.IGNORECASE,
+)
+_REN10_TRACKING_CONTEXT_WINDOW_CHARS = 30
+
+
+def _ren10_is_tracking_context(script_text: str, offset: int) -> bool:
+    """True if a denylisted tracking keyword appears in the
+    `_REN10_TRACKING_CONTEXT_WINDOW_CHARS` immediately preceding `offset` in
+    `script_text`. Deliberately narrow (a small trailing window, not the
+    whole enclosing <script> tag) — a real phone number sitting within 30
+    characters of a tracking keyword in the same minified blob could still be
+    suppressed by this, a direct trade-off against the observed false-positive
+    volume."""
+    window = script_text[max(0, offset - _REN10_TRACKING_CONTEXT_WINDOW_CHARS) : offset]
+    return bool(_REN10_TRACKING_CONTEXT_PATTERN.search(window))
+
 
 def find_nap_script_only_phone(script_text: str, visible_text: str) -> list[Finding]:
-    script_phones = set(find_phone_numbers(script_text, default_region=_REN10_DEFAULT_REGION))
+    script_matches = find_phone_number_matches(script_text, default_region=_REN10_DEFAULT_REGION)
+    script_phones = {
+        m["formatted"] for m in script_matches if not _ren10_is_tracking_context(script_text, m["start"])
+    }
     if not script_phones:
         return []
+    # Only the script side is filtered above — a page's own visible text is
+    # never tracking-script noise, so it stays exactly as `find_phone_numbers`
+    # would have returned it.
     visible_phones = set(find_phone_numbers(visible_text, default_region=_REN10_DEFAULT_REGION))
     missing = sorted(script_phones - visible_phones)
     if not missing:
