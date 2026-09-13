@@ -1720,14 +1720,19 @@ _SAMPLE_FETCH_BUDGET_SECONDS = 90.0
 _SAMPLE_FETCH_CHUNK_SIZE = 10
 
 
-def audit_service_domains(site: str, page_urls: list[str], *, clock=None) -> dict:
-    """ENT-07 and ENT-08's shared multi-page mode — fetches every on-site
-    URL in `page_urls` (the orchestrator's own bounded page sample) once,
-    extracting both outbound links (ENT-07) and visible text (ENT-08) from
-    the same fetch pass, then runs each capability's own detector.
+def audit_sample(site: str, page_urls: list[str], *, clock=None) -> dict:
+    """Runs every entity-audit capability across a whole page sample in one
+    process — both the once-per-page checks `audit_html` otherwise runs one
+    `--url` subprocess per page for (ENT-01/02/03/04/11/12 script-decided,
+    ENT-09 agent-judged), and ENT-07's/ENT-08's own multi-page checks — off
+    a single shared concurrent fetch pass instead of fetching the sample
+    twice.
 
-    A separate, once-per-run mode from `audit_html`'s once-per-page mode,
-    the same relationship `audit_offsite` has to it for ENT-05/06.
+    Before this, the orchestrator's per-page checks meant one Python
+    subprocess spawn per sampled page — the dominant residual cost once
+    fetches themselves are cache-warm, since retrieval-readiness-audit and
+    static-extraction-audit had already moved to this same `--sample-file`
+    bulk shape for exactly that reason.
 
     The fetch loop is concurrent (Defect 2 follow-up to INF-10: sequential
     fetching made the 90s cap likely to fire on perfectly normal sites) —
@@ -1737,30 +1742,30 @@ def audit_service_domains(site: str, page_urls: list[str], *, clock=None) -> dic
     their own fetch timeout could otherwise run well past what one skill
     invocation should cost inside the audit's overall 5-minute budget. The
     check is still cooperative at batch granularity (an in-flight batch is
-    allowed to finish rather than aborted mid-flight), a deliberately
-    coarser version of the same tradeoff the old per-page check already
-    made. On expiry, fetching stops; already-fetched pages still get
-    findings computed over them (reduced coverage, not a failed
-    capability), and every remaining un-fetched page gets its own
-    `unknown_checks` entry naming the cap as the reason. The SAME `budget`
-    instance is then passed to `find_cross_domain_service_attribution`
-    (below), so its own off-site fetch pass shares this loop's time budget
-    rather than running afterward with no cap of its own — previously an
-    unbounded, uncounted second fetch pass this function's own budget said
-    nothing about. `coverage_manifest` is always attached to the output."""
+    allowed to finish rather than aborted mid-flight). On expiry, fetching
+    stops; already-fetched pages still get findings computed over them
+    (reduced coverage, not a failed capability), and every remaining
+    un-fetched page gets its own `unknown_checks` entry naming the cap as
+    the reason. The SAME `budget` instance is then passed to
+    `find_cross_domain_service_attribution` (below), so its own off-site
+    fetch pass shares this loop's time budget rather than running
+    afterward with no cap of its own. `coverage_manifest` is always
+    attached to the output."""
     clock_kwargs = {"clock": clock} if clock is not None else {}
     budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
     page_links: dict[str, list[str]] = {}
     page_addresses: dict[str, str] = {}
     all_page_texts: list[str] = []
+    per_page_findings: list[dict] = []
+    per_page_judgements: list[dict] = []
     index = 0
     while index < len(page_urls):
         if budget.expired():
             for skipped_url in page_urls[index:]:
                 unknowns.append(
                     UnknownCheck(
-                        "ENT-07",
+                        "*",
                         OWNER_SKILL,
                         f"{skipped_url} was not fetched: {budget.stage} budget of "
                         f"{budget.cap_seconds}s was exceeded",
@@ -1772,9 +1777,13 @@ def audit_service_domains(site: str, page_urls: list[str], *, clock=None) -> dic
         for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
             if status != "present" or html_or_error is None:
                 unknowns.append(
-                    UnknownCheck("ENT-07", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
+                    UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
                 )
                 continue
+            page_result = audit_html(site, html_or_error, page_url=page_url)
+            per_page_findings.extend(page_result["findings"])
+            per_page_judgements.extend(page_result["agent_judgement_required"])
+            unknowns.extend(UnknownCheck.from_dict(u) for u in page_result["unknown_checks"])
             page_links[page_url] = extract_outbound_links(html_or_error, page_url)
             _, _, _, visible_text = parse_page(html_or_error)
             all_page_texts.append(visible_text)
@@ -1783,16 +1792,16 @@ def audit_service_domains(site: str, page_urls: list[str], *, clock=None) -> dic
                 page_addresses[page_url] = address
 
     candidates = find_service_domain_candidates(site, page_links)
-    findings, fetch_unknowns = find_cross_domain_service_attribution(site, candidates, budget)
+    multi_page_findings, fetch_unknowns = find_cross_domain_service_attribution(site, candidates, budget)
     unknowns.extend(fetch_unknowns)
-    findings += find_address_inconsistencies(page_addresses, all_page_texts)
+    multi_page_findings += find_address_inconsistencies(page_addresses, all_page_texts)
 
     return {
         "owner_skill": OWNER_SKILL,
         "capability_ids": CAPABILITY_IDS,
         "site": site,
-        "findings": [f.to_dict() for f in findings],
-        "agent_judgement_required": [],
+        "findings": per_page_findings + [f.to_dict() for f in multi_page_findings],
+        "agent_judgement_required": per_page_judgements,
         "unknown_checks": [u.to_dict() for u in unknowns],
         "coverage": coverage_manifest([budget]),
     }
@@ -1892,12 +1901,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sample-file",
         help=(
-            "Run ENT-07's cross-domain service-attribution check and ENT-08's address/NAP "
-            "clustering check across a local file of on-site page URLs (one per line — the "
-            "sample_urls from audit-orchestrator's sample_pages.py) instead of auditing a single "
-            "page's HTML. Fetches each on-site page directly (same as --url), plus, for any "
-            "surviving ENT-07 candidate domain, that candidate's own third-party homepage "
-            "(robots.txt-checked, same as --offsite-url). Requires --site."
+            "Run every entity-audit capability — the once-per-page checks (ENT-01 through "
+            "ENT-04, ENT-09, ENT-11, ENT-12) plus ENT-07's cross-domain service-attribution check "
+            "and ENT-08's address/NAP clustering check — across a local file of on-site page URLs "
+            "(one per line — the sample_urls from audit-orchestrator's sample_pages.py), fetched "
+            "once concurrently instead of once per page, plus, for any surviving ENT-07 candidate "
+            "domain, that candidate's own third-party homepage (robots.txt-checked, same as "
+            "--offsite-url). Requires --site."
         ),
     )
     args = parser.parse_args(argv)
@@ -1911,7 +1921,7 @@ def main(argv: list[str] | None = None) -> int:
             for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
             if line.strip()
         ]
-        json.dump(audit_service_domains(site, page_urls), sys.stdout, indent=2)
+        json.dump(audit_sample(site, page_urls), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
 

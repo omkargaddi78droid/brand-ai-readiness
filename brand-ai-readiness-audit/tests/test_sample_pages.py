@@ -189,6 +189,108 @@ class CollectSitemapUrlsTests(unittest.TestCase):
     def test_malformed_xml_returns_empty_not_raises(self):
         self.assertEqual(sample_pages_cli.collect_sitemap_urls("not xml at all <<<"), [])
 
+    def test_one_oversized_leaf_sitemap_does_not_starve_its_siblings(self):
+        # live-tested against cleartrip.com: a sitemapindex listing separate
+        # flight/hotel/train sitemaps, whose /trains/* leaf alone lists 4993
+        # pages. The depth-first walk (stack.pop(), so whichever sub-sitemap
+        # is listed LAST is visited first) used to resolve that one huge
+        # leaf to the global cap and stop, returning zero pages from any
+        # sibling vertical — defeating template-stratified sampling entirely.
+        huge_leaf_locs = [f"https://example.com/trains/route-{i}" for i in range(4993)]
+        small_leaf_locs = ["https://example.com/flights/a", "https://example.com/flights/b"]
+        index_xml = _sitemapindex(
+            "https://example.com/sitemap/small-flights.xml",
+            "https://example.com/sitemap/huge-trains.xml",
+        )
+
+        def fake_fetch_text(url):
+            if url.endswith("huge-trains.xml"):
+                return _urlset(*huge_leaf_locs), "present"
+            if url.endswith("small-flights.xml"):
+                return _urlset(*small_leaf_locs), "present"
+            return "not found", "unavailable"
+
+        sample_pages_cli.fetch_text = fake_fetch_text
+
+        pages = sample_pages_cli.collect_sitemap_urls(index_xml)
+        self.assertIn("https://example.com/flights/a", pages)
+        self.assertIn("https://example.com/flights/b", pages)
+        self.assertTrue(any(p.startswith("https://example.com/trains/") for p in pages))
+        self.assertLessEqual(
+            sum(1 for p in pages if p.startswith("https://example.com/trains/")),
+            sample_pages_cli._MAX_URLS_PER_LEAF_SITEMAP,
+        )
+
+
+class ProbeForcedPagesTests(unittest.TestCase):
+    """`sample_pages()`'s own forced-inclusion only fires for a path already
+    present in the sitemap's URL list — `probe_forced_pages` covers the
+    common real-world case where the homepage (or another process page)
+    simply isn't listed there at all, live-tested against cleartrip.com's
+    ~4900-URL sitemap, which never mentions "/" itself."""
+
+    def setUp(self):
+        self._orig_fetch_page_html = sample_pages_cli.fetch_page_html
+        self._orig_fetch_text = sample_pages_cli.fetch_text
+        self.addCleanup(setattr, sample_pages_cli, "fetch_page_html", self._orig_fetch_page_html)
+        self.addCleanup(setattr, sample_pages_cli, "fetch_text", self._orig_fetch_text)
+
+    def test_homepage_absent_from_sitemap_is_still_probed_and_found(self):
+        def fake_fetch_page_html(url):
+            if url == "https://example.com":
+                return "<html>home</html>", "present"
+            return "not found", "unavailable"
+
+        sample_pages_cli.fetch_page_html = fake_fetch_page_html
+
+        found = sample_pages_cli.probe_forced_pages(
+            "https://example.com", ["https://example.com/trains/route-1"]
+        )
+        self.assertEqual(found, ["https://example.com"])
+
+    def test_a_path_already_in_the_sample_is_not_re_probed(self):
+        calls = []
+
+        def fake_fetch_page_html(url):
+            calls.append(url)
+            return "<html>x</html>", "present"
+
+        sample_pages_cli.fetch_page_html = fake_fetch_page_html
+
+        sample_pages_cli.probe_forced_pages(
+            "https://example.com", ["https://example.com/pricing"]
+        )
+        self.assertNotIn("https://example.com/pricing", calls)
+
+    def test_a_forced_page_that_404s_is_not_included(self):
+        sample_pages_cli.fetch_page_html = lambda url: ("not found", "unavailable")
+
+        found = sample_pages_cli.probe_forced_pages("https://example.com", [])
+        self.assertEqual(found, [])
+
+    def test_end_to_end_through_main_adds_homepage_missing_from_sitemap(self):
+        sitemap_xml = _urlset("https://example.com/trains/route-1")
+
+        def fake_fetch_text(url):
+            return sitemap_xml, "present"
+
+        def fake_fetch_page_html(url):
+            if url == "https://example.com":
+                return "<html>home</html>", "present"
+            return "not found", "unavailable"
+
+        sample_pages_cli.fetch_text = fake_fetch_text
+        sample_pages_cli.fetch_page_html = fake_fetch_page_html
+
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            exit_code = sample_pages_cli.main(["--url", "https://example.com"])
+
+        self.assertEqual(exit_code, 0)
+        result = json.loads(out.getvalue())
+        self.assertIn("https://example.com", result["sample_urls"])
+        self.assertIn("https://example.com", result["forced_included"])
+
 
 class FallbackNavFooterUrlsTests(unittest.TestCase):
     """The zero-sitemap fallback: sample_pages.py's own homepage-fetch +

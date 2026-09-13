@@ -51,6 +51,7 @@ from page_fetch import fetch_page_html, fetch_text  # noqa: E402
 from page_sample import (  # noqa: E402
     parse_sitemap_index_locs,
     parse_sitemap_urls,
+    rank_sample_urls,
     sample_pages,
     sitemap_root_kind,
 )
@@ -63,7 +64,22 @@ from page_sample import (  # noqa: E402
 # <sitemapindex> whose one sub-sitemap is a <urlset> of ~160 further
 # per-category sitemap.xml files, each itself a <sitemapindex> pointing at
 # one more <urlset> of real pages — four levels, mixed tags).
-_MAX_SUB_SITEMAPS = 30
+#
+# Raised from 30 to 80 (live-tested against cleartrip.com): the depth-first
+# walk fully resolves one top-level vertical's own nested index structure
+# (trains alone needed 7 fetches, tourism/routes another 9) before ever
+# returning to pop the NEXT top-level sibling off the stack, so a real
+# multi-vertical site (flights, hotels, trains, tourism, each with its own
+# sub-index) can exhaust a small total budget on just the first two or three
+# verticals depth-first happens to reach first, never even attempting the
+# rest — a real coverage gap, not just a per-leaf page-count one (see
+# _MAX_URLS_PER_LEAF_SITEMAP below for that half of the fix). Each fetch is
+# a small XML file already bounded by shared/page_fetch.py's own timeout and
+# retry, so raising this trades a modest amount of wall-clock time (well
+# inside the orchestrator's step budget, since sampling runs once per site
+# before any per-page skill's own 280s deadline starts counting) for
+# actually reaching every vertical a real e-commerce/travel site has.
+_MAX_SUB_SITEMAPS = 80
 
 # A single fetched sitemap document can list far more <loc> page entries than
 # any real budget will sample (a pathological or malicious sitemap could list
@@ -71,6 +87,21 @@ _MAX_SUB_SITEMAPS = 30
 # independently of _MAX_SUB_SITEMAPS, which only bounds sub-sitemap fetches.
 # sample_pages()'s own --budget still governs the final sample size.
 _MAX_URLS_PER_SITEMAP = 5000
+
+# Bounds how many page URLs a SINGLE leaf <urlset> fetch may contribute to
+# `pages`, independent of the _MAX_URLS_PER_SITEMAP total above. Without
+# this, a depth-first walk that happens to reach one huge leaf sitemap
+# first fills the entire total cap before the walk ever gets to pop a
+# sibling sitemapindex entry off the stack — live-tested against
+# cleartrip.com, whose sitemapindex lists separate flight/hotel/train
+# sitemaps but whose /trains/* leaf alone lists 4993 pages: the walk
+# resolved that one branch to the cap and stopped, so `total_urls` came
+# back as a single template with zero flights/hotels representation,
+# defeating the point of template-stratified sampling. 500 is generous
+# enough that an ordinary single-urlset site (a few hundred pages, the
+# common case) is unaffected, while still preventing one oversized leaf
+# from starving every sibling vertical of the shared budget.
+_MAX_URLS_PER_LEAF_SITEMAP = 500
 
 
 def base_url(url: str) -> str:
@@ -127,7 +158,8 @@ def collect_sitemap_urls(sitemap_text: str) -> list[str]:
         if len(pages) >= _MAX_URLS_PER_SITEMAP:
             return []
         leaf_urls = parse_sitemap_urls(text)
-        pages.extend(u for u in leaf_urls if not _looks_like_sitemap_file(u))
+        new_pages = [u for u in leaf_urls if not _looks_like_sitemap_file(u)]
+        pages.extend(new_pages[:_MAX_URLS_PER_LEAF_SITEMAP])
         del pages[_MAX_URLS_PER_SITEMAP:]
         return [u for u in leaf_urls if _looks_like_sitemap_file(u)]
 
@@ -162,6 +194,40 @@ def fallback_nav_footer_urls(target: str) -> list[str]:
     return extract_nav_footer_links(html, target)
 
 
+_FORCE_INCLUDE_SUFFIXES = ("", "/contact", "/checkout", "/search", "/pricing")
+
+
+def probe_forced_pages(target: str, existing_urls: list[str]) -> list[str]:
+    """Directly fetches each standard process-page path (homepage,
+    `/contact`, `/checkout`, `/search`, `/pricing`) against the live site
+    and returns whichever ones exist (HTTP 200) and aren't already covered
+    by `existing_urls` — matched by normalized path, not exact string, so
+    `https://example.com` and `https://example.com/` count as the same
+    homepage.
+
+    `shared/page_sample.py`'s own `_FORCE_INCLUDE_PATHS` only forces a page
+    that is already present in the sitemap's own URL list, which silently
+    drops the homepage on any site whose sitemap simply doesn't list it —
+    live-tested against cleartrip.com, whose ~4900-URL sitemap never
+    mentions "/" itself even though the homepage obviously exists and its
+    URL is already known from the `--url` argument. This makes forced
+    inclusion unconditional instead: try the path directly rather than
+    hoping the sitemap happened to list it."""
+    existing_paths = {
+        (urllib.parse.urlsplit(u).path.rstrip("/") or "/") for u in existing_urls
+    }
+    found: list[str] = []
+    for suffix in _FORCE_INCLUDE_SUFFIXES:
+        normalized_path = suffix or "/"
+        if normalized_path in existing_paths:
+            continue
+        candidate = target + suffix
+        html, status = fetch_page_html(candidate)
+        if status == "present" and html:
+            found.append(candidate)
+    return found
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--url", help="Target site; fetches /sitemap.xml over the network")
@@ -174,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.url and not args.sitemap_file:
         parser.error("one of --url or --sitemap-file is required")
 
+    target: str | None = None
     if args.sitemap_file:
         sitemap_text = Path(args.sitemap_file).read_text(encoding="utf-8", errors="replace")
         urls = collect_sitemap_urls(sitemap_text)
@@ -185,6 +252,19 @@ def main(argv: list[str] | None = None) -> int:
             urls = fallback_nav_footer_urls(target)
 
     result = sample_pages(urls, budget=args.budget)
+
+    if target is not None:
+        # sample_pages()'s own forced-inclusion only fires for a path
+        # already present in `urls`; probe the live site directly for
+        # whichever standard process pages the sitemap didn't happen to
+        # list (see probe_forced_pages's own docstring).
+        probed = probe_forced_pages(target, result["sample_urls"])
+        if probed:
+            result["forced_included"] = sorted(set(result["forced_included"]) | set(probed))
+            result["sample_urls"] = rank_sample_urls(
+                list(dict.fromkeys(result["sample_urls"] + probed))
+            )
+
     json.dump(result, sys.stdout, indent=2)
     sys.stdout.write("\n")
     return 0

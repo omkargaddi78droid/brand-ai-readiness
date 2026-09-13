@@ -37,17 +37,20 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
 1. **Normalise the target.** Strip the scheme, strip any path, lowercase the
    host. `https://Example.com/pricing` → `example.com`. Use this label for the
    report's `site` field and as the base for every skill invocation.
-
    Also start the run's wall-clock budget in a **file** (a later step's
    deadline check must survive a separate tool call, which a shell variable
-   won't): `mkdir -p /tmp/audit && date +%s > /tmp/audit/start_epoch`.
+   won't), and reset the run's fetch cache dir alongside it (same lifetime):
+   `mkdir -p /tmp/audit && date +%s > /tmp/audit/start_epoch && rm -rf
+   /tmp/audit/fetch-cache && mkdir -p /tmp/audit/fetch-cache`. Every invocation
+   below is prefixed `AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache` so a URL
+   is fetched once per run, not once per subprocess needing it.
 
 2. **Run gate 1 first.** Discovery is three sequential gates: the crawler is
    let in, then can read the page, then can pick out the fact. Gate 1 is
    perimeter access, and its result changes how everything else is reported.
 
    ```bash
-   python3 ../perimeter-access-audit/scripts/check_perimeter.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../perimeter-access-audit/scripts/check_perimeter.py \
        --url https://example.com > /tmp/audit/perimeter.json
    ```
 
@@ -70,7 +73,7 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    near-duplicate detection):
 
    ```bash
-   python3 ../audit-orchestrator/scripts/sample_pages.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../audit-orchestrator/scripts/sample_pages.py \
        --url https://example.com --budget 30 > /tmp/audit/page-sample.json
    ```
 
@@ -81,7 +84,6 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    pages, then claim-bearing pages like pricing/specs/policies/how-to guides,
    then dated/announcement pages, then everything else), so stopping partway
    at the step-5 deadline still audits the pages that matter most.
-
    Write `sample_urls` to a plain one-URL-per-line file too
    (`/tmp/audit/page-sample.txt`) — several multi-page checks below
    (`content-quality-audit`'s CQ-13/CQ-10, `entity-audit`'s ENT-07/ENT-08,
@@ -96,17 +98,25 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    writing its JSON to its own file. Skills are independent; a failure in one
    does not stop the others.
 
-   **Deadline check, before every invocation** — each per-page `--url` call
-   to `content-quality-audit`, `entity-audit`, `engagement-audit`, and
-   `citability-audit`, and each of the six `--sample-file` bulk calls (their
-   own internal `StageBudget` 90s fetch cap bounds one invocation's cost, not
-   the run's total, so it's not a substitute for this check):
+   All six run in `--sample-file` bulk mode now — each fetches the whole
+   page sample concurrently in one process instead of spawning one
+   subprocess per page (see `references/orchestration-notes.md` for the
+   original reasoning: sequential fetching made the 280s budget unrealistic
+   at a full sample; `content-quality-audit`, `entity-audit`,
+   `engagement-audit`, and `citability-audit` used to require a separate
+   per-page `--url` subprocess for their once-per-page capabilities on top
+   of their own `--sample-file` call for their multi-page capabilities —
+   both now run together off the same fetch pass inside one `--sample-file`
+   invocation). This collapses what used to be dozens of subprocess spawns
+   (one per page per skill) into six total invocations for the whole run.
+
+   **Deadline check, before every invocation** (each skill's own internal
+   `StageBudget` 90s fetch cap bounds one invocation's cost, not the run's
+   total, so it's not a substitute for this check):
    `echo $(( $(date +%s) - $(cat /tmp/audit/start_epoch) ))`. Once elapsed
-   reaches 280s (4m40s), skip that invocation and every later one — the four
-   per-page skills share the same priority-ordered `sample_urls` list and
-   budget, so a lower-priority page skipped by one shouldn't be reached by
-   another. A skipped invocation simply produces no output file;
-   `compose_report.py` composes it exactly like a smaller sample.
+   reaches 280s (4m40s), skip that invocation and every later one — a
+   skipped invocation produces no output file; `compose_report.py` composes
+   it like a smaller sample.
 
    **Judgement cap (per skill, item-based, 5 skills × 5 items = 25 max):**
    do not resolve `agent_judgement_required` per invocation as you go — run
@@ -114,48 +124,30 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    that skill's candidates by severity in one pass. See **"Judgement
    resolution"** at the end of this step for the exact procedure.
 
-   `content-quality-audit` runs per page, not per site, against pages drawn
-   from the sample built above. Five of its per-page capabilities (CQ-01,
-   CQ-02, CQ-04, CQ-09, CQ-12) are judgement calls the script deliberately
-   does not resolve, the same pattern as `engagement-audit` and
-   `citability-audit` below. The same `--url` invocation also runs CQ-10's
-   freshness half (script-decided, no judgement needed) off the same fetch,
-   comparing the page's own claimed update date against its HTTP
-   `Last-Modified` header:
+   `content-quality-audit` runs every once-per-page capability (CQ-03,
+   CQ-05, CQ-07, CQ-08, CQ-11, CQ-10's freshness half — script-decided;
+   CQ-01, CQ-02, CQ-04, CQ-09, CQ-12 — agent-judged) plus its multi-page
+   capabilities (CQ-13 near-duplicate detection, CQ-10's cross-page fact
+   collision) in one call against the whole page-sample file built in step
+   4:
 
    ```bash
-   python3 ../content-quality-audit/scripts/check_content_quality.py \
-       --url https://example.com/pricing > /tmp/audit/content-pricing.json
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../content-quality-audit/scripts/check_content_quality.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/content-sample.json
    ```
 
-   Leave `agent_judgement_required` as-is — resolved together with every
-   other content-quality-audit invocation in "Judgement resolution" below.
-   Run it again per page in the sample; each invocation's findings carry
-   that page's URL, so composing several runs keeps every finding
-   attributable to the page it came from.
+   CQ-13's findings are final (script-decided). Leave
+   `agent_judgement_required` as-is — resolved in "Judgement resolution"
+   below.
 
-   Also run `content-quality-audit`'s multi-page mode (CQ-13 near-duplicate
-   detection + CQ-10 cross-page fact collision) once per site, against the
-   whole page-sample file built in step 4:
-
-   ```bash
-   python3 ../content-quality-audit/scripts/check_content_quality.py \
-       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/content-near-dup.json
-   ```
-
-   CQ-13's findings are final (script-decided); CQ-10's here join the rest
-   of content-quality-audit's candidates in "Judgement resolution" below.
-
-   `entity-audit` runs the same way, per page — homepage/About page for
-   Organization markup and canonical hygiene, product or review pages for
-   rating agreement, category/breadcrumbed pages for taxonomy consistency.
-   One of its capabilities (ENT-09) is a judgement call the script
-   deliberately does not resolve — leave `agent_judgement_required` as-is;
-   it joins ENT-05/ENT-06 in "Judgement resolution" below:
+   `entity-audit` runs the same way — every once-per-page capability
+   (ENT-01/02/03/04/11/12 script-decided, ENT-09 agent-judged) plus its
+   multi-page capabilities (ENT-07 cross-domain service attribution, ENT-08
+   address clustering) in one call:
 
    ```bash
-   python3 ../entity-audit/scripts/check_entity.py \
-       --url https://example.com/ > /tmp/audit/entity-home.json
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../entity-audit/scripts/check_entity.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/entity-sample.json
    ```
 
    If perimeter-access-audit's gate-1 run found a real sitemap, also run
@@ -165,17 +157,8 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    sitemap.xml into a file, one per line:
 
    ```bash
-   python3 ../entity-audit/scripts/check_entity.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../entity-audit/scripts/check_entity.py \
        --site example.com --sitemap-file /tmp/audit/sitemap-urls.txt > /tmp/audit/entity-sitemap.json
-   ```
-
-   Also run `entity-audit`'s multi-page mode (ENT-07 cross-domain service
-   attribution + ENT-08 address clustering) once per site, against the same
-   page-sample file used for CQ-13/CQ-10 above:
-
-   ```bash
-   python3 ../entity-audit/scripts/check_entity.py \
-       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/entity-service-domains.json
    ```
 
    **Optional, off-site brand-visibility (ENT-05/ENT-06):** if checking for
@@ -188,7 +171,7 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    off-site mode once per site:
 
    ```bash
-   python3 ../entity-audit/scripts/check_entity.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../entity-audit/scripts/check_entity.py \
        --site example.com --brand-name "Acme Widgets" \
        --offsite-url https://forum.example/t/acme-widgets-review-123 \
        --offsite-url https://acme-w1dgets.com/ > /tmp/audit/entity-offsite.json
@@ -199,83 +182,64 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    candidates were found or worth checking — ENT-05/06 are not reported
    `unknown` for being omitted.
 
-   `engagement-audit` runs the same way, per page — but its output is not
-   final on its own. Two of its four capabilities (EN-01, EN-03) are
-   judgement calls the script deliberately does not resolve:
+   `engagement-audit` runs the same way — every once-per-page capability
+   (EN-05/06/07/09 script-decided, EN-01/03 agent-judged) plus its
+   multi-page capabilities (C1's information-scent check, EN-11 + the EN-08
+   slice; B1+B8's dead-end/orphan detection, EN-04) in one call:
 
    ```bash
-   python3 ../engagement-audit/scripts/check_engagement.py \
-       --url https://example.com/ > /tmp/audit/engagement-home.json
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../engagement-audit/scripts/check_engagement.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/engagement-sample.json
    ```
 
-   Leave `agent_judgement_required` as-is — it joins EN-08/EN-11 and every
-   other engagement-audit invocation in "Judgement resolution" below.
-
-   Also run `engagement-audit`'s multi-page mode (C1's information-scent
-   check, EN-11 + the EN-08 slice; and B1+B8's dead-end/orphan detection,
-   EN-04) once per site, against the same page-sample file used for
-   CQ-13/CQ-10/ENT-07/ENT-08 above:
-
-   ```bash
-   python3 ../engagement-audit/scripts/check_engagement.py \
-       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/engagement-multi-page.json
-   ```
-
-   EN-04's findings are final (script-decided, same rule as EN-05/06/07/09);
-   EN-08/EN-11's here join the rest of engagement-audit's candidates in
+   EN-04's findings are final (script-decided, same rule as EN-05/06/07/09).
+   Leave `agent_judgement_required` as-is — it joins EN-08/EN-11 in
    "Judgement resolution" below.
 
-   `citability-audit` runs the same way, per page. It also has an
-   agent-judged capability (CIT-04) — leave `agent_judgement_required`
-   as-is; resolved in "Judgement resolution" below:
+   `citability-audit` runs the same way — every once-per-page capability
+   (CIT-01/02/06/07 script-decided, CIT-04 agent-judged) plus its multi-page
+   capabilities (CIT-08 hub/authority link-graph structure, CIT-09
+   comparison-content gap) in one call:
 
    ```bash
-   python3 ../citability-audit/scripts/check_citability.py \
-       --url https://example.com/guide > /tmp/audit/citability-guide.json
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../citability-audit/scripts/check_citability.py \
+       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/citability-sample.json
    ```
 
-   **Optional, off-site corroboration (CIT-13):** if this page makes a
+   CIT-08's/CIT-09's findings here are final (script-decided). CIT-09's
+   finding, if present, carries `"track": "proactive"` — a suggestion, not
+   a defect. Leave `agent_judgement_required` (CIT-04) as-is — resolved in
+   "Judgement resolution" below.
+
+   **Optional, off-site corroboration (CIT-13):** if a specific page makes a
    striking or competitively significant numeric claim worth checking
    off-site, add the same kind of agent-supplied `--offsite-url` candidates
-   used for ENT-05/06 above — one call per page, alongside its normal
-   citability audit:
+   used for ENT-05/06 above via a one-off `--url` call for that page
+   (`--sample-file` mode has no `--offsite-url` support, since CIT-13 is
+   inherently about one specific claim on one specific page, not the whole
+   sample):
 
    ```bash
-   python3 ../citability-audit/scripts/check_citability.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../citability-audit/scripts/check_citability.py \
        --url https://example.com/guide \
        --offsite-url https://forum.example/t/does-this-claim-check-out \
-       > /tmp/audit/citability-guide.json
+       > /tmp/audit/citability-guide-offsite.json
    ```
 
    Leave CIT-13's entry as-is — resolved with CIT-04 in "Judgement
-   resolution" below. Omit `--offsite-url` when nothing is worth off-site
-   checking — CIT-13 simply does not run, not reported `unknown`.
+   resolution" below. Omit this call entirely when nothing is worth
+   off-site checking — CIT-13 simply does not run, not reported `unknown`.
 
-   Also run `citability-audit`'s hub/authority mode (CIT-08 link-graph
-   structure + CIT-09 comparison-content gap) once per site, against the
-   same page-sample file used for CQ-13/CQ-10/ENT-07/ENT-08 above:
-
-   ```bash
-   python3 ../citability-audit/scripts/check_citability.py \
-       --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/citability-link-graph.json
-   ```
-
-   Both capabilities' findings here are final (script-decided). CIT-09's
-   finding, if present, carries `"track": "proactive"` — a suggestion, not
-   a defect.
-
-   `retrieval-readiness-audit` and `static-extraction-audit` are unlike the
-   other four: every capability is inherently per-page, so **prefer their
-   `--sample-file` bulk mode over one `--url` invocation per page** — it
-   fetches the whole sample concurrently in one process instead of spawning
-   one subprocess per page (see `references/orchestration-notes.md` for why
-   sequential fetching made the 280s budget unrealistic at a full sample):
+   `retrieval-readiness-audit` and `static-extraction-audit` run the same
+   `--sample-file` bulk mode they always have — every capability is
+   inherently per-page, so there was never a separate per-page call to fold
+   in:
 
    ```bash
-   python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../retrieval-readiness-audit/scripts/check_retrieval_readiness.py \
        --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/retrieval-sample.json
 
-   python3 ../static-extraction-audit/scripts/check_static_extraction.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../static-extraction-audit/scripts/check_static_extraction.py \
        --site example.com --sample-file /tmp/audit/page-sample.txt > /tmp/audit/static-extraction-sample.json
    ```
 
@@ -291,7 +255,7 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    include):
 
    ```bash
-   python3 ../static-extraction-audit/scripts/check_static_extraction.py \
+   AUDIT_FETCH_CACHE_DIR=/tmp/audit/fetch-cache python3 ../static-extraction-audit/scripts/check_static_extraction.py \
        --url https://example.com/product/widget > /tmp/audit/static-extraction-widget.json
    ```
 
@@ -300,29 +264,37 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
    `retrieval-readiness-audit`, not `static-extraction-audit` — after every
    one of that skill's invocations above has run): call
    `select_judgement_items.py --skill NAME` with every JSON file that skill
-   produced this run as `--input`, in `sample_urls` priority order. It
-   gathers every file's `agent_judgement_required` candidates, ranks them by
+   produced this run as `--input` — normally just its one `--sample-file`
+   output, plus any optional off-site/sitemap-scoped file that also carries
+   `agent_judgement_required` (e.g. entity-audit's `--offsite-url` output for
+   ENT-05/06, citability-audit's CIT-13 `--url` output). It gathers every
+   file's `agent_judgement_required` candidates, ranks them by
    rubric-declared severity, and returns at most 5 — the rest are dropped,
    never resolved:
 
    ```bash
    python3 ../audit-orchestrator/scripts/select_judgement_items.py \
        --skill content-quality-audit \
-       --input /tmp/audit/content-pricing.json \
-       --input /tmp/audit/content-checkout.json \
-       --input /tmp/audit/content-near-dup.json \
+       --input /tmp/audit/content-sample.json \
        > /tmp/audit/content-judgement-selection.json
    ```
 
    Read `.selected` (tagged `_source_file`/`_source_index`) and group by
    `_source_file`. For every `--input` file, whether or not it won a
    candidate, judge only its selected ones against that skill's own rubric
-   (`references/*-judgement-rubric.md`), author a `Finding` per real defect,
+   (`references/*-judgement-rubric.md`), author a `Finding` per real defect
+   — give each authored finding's `id` a page-specific slug when the same
+   underlying issue could recur on more than one page (e.g.
+   `CIT-04-unsourced-claim-fortune1000-pricing` vs. `...-compare-plans`),
+   since `compose_report.py` merges same-id findings across pages and
+   requires their `title` to match and their `page_url`s to be distinct —
    then strip `agent_judgement_required` from that file via
    `shared/judgement_merge.py --report FILE --judgements JUDGEMENTS.json
    --out FILE` (pass `[]` where nothing was selected or worth a Finding).
    Sum every skill's `.items_resolved`/`.items_total` for step 6's
-   `--judgement-items-resolved`/`--judgement-items-total`.
+   `--judgement-items-resolved`/`--judgement-items-total`. Re-check elapsed
+   time after this step too (advisory, can't be deadline-gated like a fetch)
+   and note the total in the report/reply if unusually large.
 
 6. **Compose one report and write it to `report/`.** The marketplace root
    has a standing `report/` directory for exactly this — every audit's
@@ -334,14 +306,11 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
 
    python3 scripts/compose_report.py --site example.com \
        --skill perimeter-access-audit /tmp/audit/perimeter.json \
-       --skill content-quality-audit /tmp/audit/content-pricing.json \
-       --skill content-quality-audit /tmp/audit/content-checkout.json \
-       --skill content-quality-audit /tmp/audit/content-near-dup.json \
-       --skill entity-audit /tmp/audit/entity-home.json \
-       --skill entity-audit /tmp/audit/entity-service-domains.json \
+       --skill content-quality-audit /tmp/audit/content-sample.json \
+       --skill entity-audit /tmp/audit/entity-sample.json \
        --skill entity-audit /tmp/audit/entity-offsite.json \
-       --skill engagement-audit /tmp/audit/engagement-home.json \
-       --skill citability-audit /tmp/audit/citability-guide.json \
+       --skill engagement-audit /tmp/audit/engagement-sample.json \
+       --skill citability-audit /tmp/audit/citability-sample.json \
        --skill retrieval-readiness-audit /tmp/audit/retrieval-sample.json \
        --skill static-extraction-audit /tmp/audit/static-extraction-sample.json \
        --start-epoch-file /tmp/audit/start_epoch \
@@ -349,9 +318,10 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
        > report/result_example.com.json
    ```
 
-   Repeat `--skill NAME PATH` once per invocation that ran, including once per
-   page for skills like `content-quality-audit` that run per page rather than
-   per site — the same skill name may appear more than once. Add
+   Repeat `--skill NAME PATH` once per invocation that ran — the same skill
+   name may appear more than once when an optional extra call ran too (e.g.
+   entity-audit's off-site or sitemap-scoped modes, citability-audit's CIT-13
+   one-off). Add
    `--floor-only` for the minimal required schema instead of the full report.
    `--judgement-items-resolved`/`--judgement-items-total` are the sum, across
    the five agent-judged skills, of each skill's own
@@ -375,15 +345,16 @@ Recommend-only. Nothing in this marketplace writes to, authenticates against, or
 
 8. **If a skill produced nothing usable**, the composer records it as an
    `unknown_checks` entry naming that skill, and the report is still emitted
-   from whatever did run. Reduced coverage is reported, never hidden. The
-   six `--sample-file` skills (`entity-audit`, `content-quality-audit`,
-   `citability-audit`, `engagement-audit`, `retrieval-readiness-audit`,
-   `static-extraction-audit`) each fetch their page sample concurrently and
-   cap the whole fetch loop at 90s via `shared/budget.StageBudget` — if that
-   cap is hit mid-run, `compose_report.py` merges each skill's own
-   `coverage.stages` entry into the final report's `coverage.stages`, so a
-   partially-covered sample is visible in the report itself, not just
-   inferrable from a shorter-than-expected findings list.
+   from whatever did run. Reduced coverage is reported, never hidden. All
+   six skills (`entity-audit`, `content-quality-audit`, `citability-audit`,
+   `engagement-audit`, `retrieval-readiness-audit`,
+   `static-extraction-audit`) run in `--sample-file` bulk mode, each
+   fetching their page sample concurrently and capping the whole fetch loop
+   at 90s via `shared/budget.StageBudget` — if that cap is hit mid-run,
+   `compose_report.py` merges each skill's own `coverage.stages` entry into
+   the final report's `coverage.stages`, so a partially-covered sample is
+   visible in the report itself, not just inferrable from a
+   shorter-than-expected findings list.
 
 ## Skill registry
 
@@ -394,10 +365,10 @@ composition bug.
 | Skill | Owns | Gate | Runs |
 |---|---|---|---|
 | `perimeter-access-audit` | PER-01 AI-crawler access by tier · PER-02 blanket block · PER-03 CDN/edge blocking · PER-04 llms.txt presence and validity · PER-05 llms-full.txt · PER-06 sitemap discovery · PER-07 Markdown negotiation · PER-08 sitemap discoverability (robots.txt reference + llms.txt/sitemap URL-set agreement) · PER-09 cross-layer access-signal contradiction (robots.txt/`X-Robots-Tag`/meta-robots/TDMRep/llms.txt/sitemap.xml agreement) | 1 | Once per site |
-| `content-quality-audit` | CQ-03 template leakage · CQ-05 relative-date anchors · CQ-07 scope-ambiguous numerics · CQ-08 computed-stat integrity · CQ-10 freshness self-contradiction (`--url` mode) · CQ-11 fluency/readability · CQ-13 near-duplicate/template dilution (multi-page) · CQ-01 answer extractability (agent-judged) · CQ-02 non-answer templates (agent-judged) · CQ-04 granularity mismatch (agent-judged) · CQ-09 marketing/procedure interleaving (agent-judged) · CQ-10 cross-page fact collision (agent-judged, multi-page) · CQ-12 signal-to-filler ratio (agent-judged) | 3 | Once per sampled page (CQ-10 freshness half included), plus once per site for CQ-13/CQ-10 fact-collision's `--sample-file` mode |
-| `entity-audit` | ENT-01 schema.org/JSON-LD validity · ENT-02 knowledge-graph grounding · ENT-03 markup/text agreement · ENT-04 canonicalisation (single-page + sitemap-scoped fork detection) · ENT-07 cross-domain service attribution + ENT-08 address/NAP clustering (multi-page) · ENT-11 JSON-LD graph referential integrity (dangling/cross-page @id references, orphan identity nodes) · ENT-12 JSON-LD entity-graph fragmentation · ENT-09 taxonomy consistency (agent-judged) · ENT-05 brand-name collision + ENT-06 lookalike-domain impersonation (agent-judged, optional off-site mode) | 3 | Once per sampled page, plus once per site for ENT-04's sitemap-scoped half, ENT-07/08's `--sample-file` mode, and (optional) ENT-05/06's off-site mode |
-| `engagement-audit` | EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (agent-judged) · EN-05 mobile usability · EN-06 interstitial/consent-wall friction · EN-07 perceived-performance friction · EN-09 autonomous-agent usability · EN-04 dead-end/orphan pages (multi-page) · EN-11 content-to-action coherence (multi-page, agent-judged) · EN-08 findability link-scent slice (multi-page, agent-judged) | none — engagement, not gated | Once per sampled page, plus once per site for the `--sample-file` multi-page mode |
-| `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-08 hub/authority link-graph structure + CIT-09 comparison-content gap (multi-page, proactive) · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per sampled page, plus once per site for CIT-08/09's `--sample-file` mode |
+| `content-quality-audit` | CQ-03 template leakage · CQ-05 relative-date anchors · CQ-07 scope-ambiguous numerics · CQ-08 computed-stat integrity · CQ-10 freshness self-contradiction · CQ-11 fluency/readability · CQ-13 near-duplicate/template dilution (multi-page) · CQ-01 answer extractability (agent-judged) · CQ-02 non-answer templates (agent-judged) · CQ-04 granularity mismatch (agent-judged) · CQ-09 marketing/procedure interleaving (agent-judged) · CQ-10 cross-page fact collision (agent-judged, multi-page) · CQ-12 signal-to-filler ratio (agent-judged) | 3 | Once per site via `--sample-file` (every once-per-page and multi-page capability together, preferred), or once per page via `--url` for a one-off page |
+| `entity-audit` | ENT-01 schema.org/JSON-LD validity · ENT-02 knowledge-graph grounding · ENT-03 markup/text agreement · ENT-04 canonicalisation (single-page + sitemap-scoped fork detection) · ENT-07 cross-domain service attribution + ENT-08 address/NAP clustering (multi-page) · ENT-11 JSON-LD graph referential integrity (dangling/cross-page @id references, orphan identity nodes) · ENT-12 JSON-LD entity-graph fragmentation · ENT-09 taxonomy consistency (agent-judged) · ENT-05 brand-name collision + ENT-06 lookalike-domain impersonation (agent-judged, optional off-site mode) | 3 | Once per site via `--sample-file` (every once-per-page and multi-page capability together, preferred), plus once per site for ENT-04's sitemap-scoped half and (optional) ENT-05/06's off-site mode, or once per page via `--url` for a one-off page |
+| `engagement-audit` | EN-01 visitor orientation (agent-judged) · EN-03 conversion-path friction (agent-judged) · EN-05 mobile usability · EN-06 interstitial/consent-wall friction · EN-07 perceived-performance friction · EN-09 autonomous-agent usability · EN-04 dead-end/orphan pages (multi-page) · EN-11 content-to-action coherence (multi-page, agent-judged) · EN-08 findability link-scent slice (multi-page, agent-judged) | none — engagement, not gated | Once per site via `--sample-file` (every once-per-page and multi-page capability together, preferred), or once per page via `--url` for a one-off page |
+| `citability-audit` | CIT-01 trust-signal authority · CIT-02 source attribution · CIT-06 statistics density · CIT-07 citation-position weighting · CIT-08 hub/authority link-graph structure + CIT-09 comparison-content gap (multi-page, proactive) · CIT-04 citation recall (agent-judged) · CIT-13 off-site corroboration (agent-judged, optional) | 3 | Once per site via `--sample-file` (every once-per-page and multi-page capability together, preferred), plus (optional) a one-off `--url` call with `--offsite-url` for CIT-13, or once per page via `--url` for a one-off page |
 | `retrieval-readiness-audit` | RET-01/04/07/08/09/10 (script), RET-02/03/05/06 (agent-judged) | 3 | Once per site via `--sample-file` (preferred), or once per page via `--url` for a one-off page |
 | `static-extraction-audit` | REN-02 hydration-state coverage · REN-04 price-render gating · REN-05 availability freshness · REN-06 semantic HTML5 boundary · REN-07 content ratio · REN-08 multimodal accessibility · REN-10 NAP render asymmetry (phone) · REN-11 PDF-only fact lock (proactive) · REN-12 concealed agent-directed instruction scanner — all script-decided, no headless browser | 2 | Once per site via `--sample-file` (preferred), or once per page via `--url` for a one-off page |
 

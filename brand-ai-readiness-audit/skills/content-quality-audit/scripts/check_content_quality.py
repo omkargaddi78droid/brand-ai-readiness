@@ -160,6 +160,7 @@ from page_fetch import (  # noqa: E402
     fetch_page_html,
     fetch_page,
     fetch_pages_concurrently,
+    fetch_page_bundles_concurrently,
 )
 from budget import StageBudget, coverage_manifest  # noqa: E402
 from html_extract import extract_labeled_pairs, extract_main_content_text  # noqa: E402
@@ -424,6 +425,13 @@ def _span_gap(a: tuple[int, int], b: tuple[int, int]) -> int:
 
 
 _CQ05_MAX_MATCHES = 5
+# scribd live-testing false positive: "Recently Added" is a UI sort/filter
+# label, not a sentence describing a change — a functional interface
+# element, not body prose. A short-fragment floor (mirroring CIT-06's own
+# `len(s) < 20` convention) filters it out the same way "Best Sellers" is
+# already excluded from CIT-06's superlative check.
+_CQ05_MIN_SENTENCE_CHARS = 20
+_CQ05_MIN_SENTENCE_WORDS = 4
 
 
 def find_relative_date_anchors(text: str) -> list[Finding]:
@@ -431,6 +439,8 @@ def find_relative_date_anchors(text: str) -> list[Finding]:
     for sentence in _split_sentences(text):
         s = sentence.strip()
         if not s or len(s) > 400:
+            continue
+        if len(s) < _CQ05_MIN_SENTENCE_CHARS or len(s.split()) < _CQ05_MIN_SENTENCE_WORDS:
             continue
         lowered = s.lower()
         phrase_match = _RELATIVE_TIME_PATTERN.search(lowered)
@@ -744,6 +754,37 @@ _MIN_WORDS_FOR_READABILITY = 300
 # limitation this does not try to fully solve.
 _FLESCH_DIFFICULT_THRESHOLD = 30.0
 
+# paytm/scribd live-testing false positives: a page whose extracted "text"
+# is really a punctuation-free run of concatenated nav/footer links or
+# scraped partner-entity names produced impossible negative scores (-10.3,
+# -35.6) — not because the page's actual prose is hard to read, but because
+# the crude sentence splitter treated that whole run as one giant
+# "sentence" (inflating avg_sentence_length) or one giant unspaced "word"
+# (inflating avg_syllables_per_word via a bogus vowel-group count). None of
+# these are a defense against every such page; each narrows one concrete
+# failure mode this project's live testing actually observed.
+_CQ11_MIN_SENTENCE_COUNT = 5
+_CQ11_MAX_SENTENCE_WORDS = 60
+_CQ11_MAX_WORD_LENGTH_CHARS = 30
+# Generalizes `_strip_chrome_lines` (cross-page repetition) to intra-page
+# repetition: a line repeated verbatim within one page's own text (e.g. a
+# mobile+desktop nav duplicating the same links, or a footer sitemap column
+# repeating the header's own link text) is boilerplate, not prose, even
+# though there is no second page to compare it against.
+_CQ11_INTRA_PAGE_REPEAT_MIN_COUNT = 3
+
+
+def _strip_intra_page_repeated_lines(text: str, min_repeat_count: int = _CQ11_INTRA_PAGE_REPEAT_MIN_COUNT) -> str:
+    lines = text.split("\n")
+    counts: dict[str, int] = {}
+    for line in lines:
+        stripped = line.strip()
+        if len(stripped) < _CQ13_CHROME_LINE_MIN_CHARS:
+            continue
+        counts[stripped] = counts.get(stripped, 0) + 1
+    repeated = {line for line, count in counts.items() if count >= min_repeat_count}
+    return "\n".join(line for line in lines if line.strip() not in repeated)
+
 
 def _count_syllables(word: str) -> int:
     """Vowel-group heuristic, not a dictionary lookup — cheap and stdlib-only,
@@ -787,12 +828,33 @@ def measure_readability(text: str) -> Finding | None:
     page's visible text, `_MIN_WORDS_FOR_READABILITY`-gated so a short
     excerpt cannot produce a noisy score, and thresholded at the strictest
     published band so a page has to be genuinely dense to fire rather than
-    merely no longer easy."""
-    words = _WORD_PATTERN.findall(text)
+    merely no longer easy.
+
+    Words and sentences are built from the same retained-sentence set (not
+    two independently derived pools from raw text) so an excluded
+    non-prose run — an intra-page-repeated boilerplate line, an
+    unbroken nav/footer dump exceeding `_CQ11_MAX_SENTENCE_WORDS`, or a
+    single glued-together unspaced "word" exceeding
+    `_CQ11_MAX_WORD_LENGTH_CHARS` — cannot inflate one metric's numerator
+    while a different filter shrinks the other's denominator."""
+    text = _strip_intra_page_repeated_lines(text)
+    raw_sentences = [s.strip() for s in _split_sentences(text) if _WORD_PATTERN.search(s)]
+
+    sentences: list[str] = []
+    words: list[str] = []
+    for s in raw_sentences:
+        sentence_words = _WORD_PATTERN.findall(s)
+        if len(sentence_words) > _CQ11_MAX_SENTENCE_WORDS:
+            continue
+        filtered_words = [w for w in sentence_words if len(w) <= _CQ11_MAX_WORD_LENGTH_CHARS]
+        if not filtered_words:
+            continue
+        sentences.append(s)
+        words.extend(filtered_words)
+
     if len(words) < _MIN_WORDS_FOR_READABILITY:
         return None
-    sentences = [s.strip() for s in _split_sentences(text) if _WORD_PATTERN.search(s)]
-    if not sentences:
+    if len(sentences) < _CQ11_MIN_SENTENCE_COUNT:
         return None
 
     syllables = sum(_count_syllables(w) for w in words)
@@ -1520,43 +1582,52 @@ _SAMPLE_FETCH_BUDGET_SECONDS = 90.0
 _SAMPLE_FETCH_CHUNK_SIZE = 10
 
 
-def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dict:
-    """CQ-13's and CQ-10's shared multi-page mode — fetches every on-site
-    URL in `page_urls` (the orchestrator's own bounded page sample) once and
-    runs both capabilities off that fetch pass. CQ-13's near-duplicate
-    clustering is entirely script-decided; CQ-10 only narrows candidates
-    into `agent_judgement_required` for the calling agent to resolve.
+def audit_sample(site: str, page_urls: list[str], *, clock=None) -> dict:
+    """Runs every content-quality-audit capability across a whole page
+    sample in one process — both the once-per-page checks `audit_text`
+    otherwise runs one `--url` subprocess per page for (CQ-03/05/07/08/11
+    script-decided, CQ-01/02/04/09/12 agent-judged, plus CQ-10's freshness
+    half), and CQ-13's/CQ-10's own multi-page checks — off a single shared
+    concurrent fetch pass instead of fetching the sample twice (once per
+    page for the per-page checks, once more for CQ-13/CQ-10).
 
-    A separate, once-per-run mode from `audit_text`'s once-per-page mode.
+    Before this, the orchestrator's per-page checks meant one Python
+    subprocess spawn per sampled page (30 pages -> 30 spawns just for this
+    skill, times four more skills with the same shape) — the dominant
+    residual cost once fetches themselves are cache-warm, since retrieval-
+    readiness-audit and static-extraction-audit had already moved to this
+    same `--sample-file` bulk shape for exactly that reason.
+
+    Uses `shared/page_fetch.fetch_page_bundles_concurrently` rather than
+    `fetch_pages_concurrently`, since CQ-10's freshness half needs the HTTP
+    response headers (`Last-Modified`) a page's content alone doesn't carry.
 
     The fetch loop is concurrent (Defect 2 follow-up to INF-10: sequential
     fetching made the 90s cap likely to fire on perfectly normal sites) —
-    `shared/page_fetch.fetch_pages_concurrently` fetches pages in bounded,
-    order-preserving batches of `_SAMPLE_FETCH_CHUNK_SIZE`, with
-    `shared/budget.StageBudget` (`_SAMPLE_FETCH_BUDGET_SECONDS`) checked
-    between batches — a sample of unresponsive pages each burning their own
-    fetch timeout could otherwise run well past what one skill invocation
-    should cost inside the audit's overall 5-minute budget. The check is
+    fetches pages in bounded, order-preserving batches of
+    `_SAMPLE_FETCH_CHUNK_SIZE`, with `shared/budget.StageBudget`
+    (`_SAMPLE_FETCH_BUDGET_SECONDS`) checked between batches. The check is
     still cooperative at batch granularity (an in-flight batch is allowed to
-    finish rather than aborted mid-flight), a deliberately coarser version
-    of the same tradeoff the old per-page check already made. On expiry the
-    loop stops fetching further pages — already-fetched pages still get
-    findings computed over them, this is reduced coverage, not a failed
-    capability — and the remaining, un-fetched pages each get their own
-    `unknown_checks` entry naming the cap as the reason. `coverage_manifest`
-    is always attached so a reduced-coverage run is visible in the report
-    rather than looking identical to a full one that simply found less."""
+    finish rather than aborted mid-flight). On expiry the loop stops
+    fetching further pages — already-fetched pages still get findings
+    computed over them, this is reduced coverage, not a failed capability —
+    and the remaining, un-fetched pages each get their own `unknown_checks`
+    entry naming the cap as the reason. `coverage_manifest` is always
+    attached so a reduced-coverage run is visible in the report rather than
+    looking identical to a full one that simply found less."""
     clock_kwargs = {"clock": clock} if clock is not None else {}
     budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
     page_texts: dict[str, str] = {}
+    per_page_findings: list[dict] = []
+    per_page_judgements: list[dict] = []
     index = 0
     while index < len(page_urls):
         if budget.expired():
             for skipped_url in page_urls[index:]:
                 unknowns.append(
                     UnknownCheck(
-                        "CQ-13",
+                        "*",
                         OWNER_SKILL,
                         f"{skipped_url} was not fetched: {budget.stage} budget of "
                         f"{budget.cap_seconds}s was exceeded",
@@ -1565,22 +1636,29 @@ def audit_near_duplicates(site: str, page_urls: list[str], *, clock=None) -> dic
             break
         chunk = page_urls[index : index + _SAMPLE_FETCH_CHUNK_SIZE]
         index += len(chunk)
-        for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
-            if status != "present" or html_or_error is None:
+        for page_url, bundle in fetch_page_bundles_concurrently(chunk):
+            if bundle.status != "present" or bundle.html is None:
                 unknowns.append(
-                    UnknownCheck("CQ-13", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
+                    UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {bundle.error}")
                 )
                 continue
-            page_texts[page_url] = extract_visible_text(html_or_error)
+            html = bundle.html
+            text = extract_visible_text(html)
+            page_texts[page_url] = text
+            page_result = audit_text(
+                site, text, page_url=page_url, h1_text=extract_h1(html), html=html, headers=bundle.headers
+            )
+            per_page_findings.extend(page_result["findings"])
+            per_page_judgements.extend(page_result["agent_judgement_required"])
 
-    findings = find_near_duplicate_clusters(page_texts)
-    judgement_requests = build_fact_collision_judgement_requests(find_fact_collision_candidates(page_texts))
+    near_dup_findings = find_near_duplicate_clusters(page_texts)
+    fact_collision_judgements = build_fact_collision_judgement_requests(find_fact_collision_candidates(page_texts))
     return {
         "owner_skill": OWNER_SKILL,
         "capability_ids": CAPABILITY_IDS,
         "site": site,
-        "findings": [f.to_dict() for f in findings],
-        "agent_judgement_required": judgement_requests,
+        "findings": per_page_findings + [f.to_dict() for f in near_dup_findings],
+        "agent_judgement_required": per_page_judgements + fact_collision_judgements,
         "unknown_checks": [u.to_dict() for u in unknowns],
         "coverage": coverage_manifest([budget]),
     }
@@ -1604,10 +1682,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--sample-file",
         help=(
-            "Run CQ-13's near-duplicate/template-dilution check and CQ-10's cross-page "
-            "fact-collision check across a local file of on-site page URLs (one per line — the "
-            "sample_urls from audit-orchestrator's sample_pages.py) instead of auditing a single "
-            "page's text. Fetches each page itself (same as --url). Requires --site."
+            "Run every content-quality-audit capability — the once-per-page checks (CQ-01 through "
+            "CQ-09, CQ-11, CQ-12, and CQ-10's freshness half) plus CQ-13's near-duplicate/"
+            "template-dilution check and CQ-10's cross-page fact-collision check — across a local "
+            "file of on-site page URLs (one per line — the sample_urls from audit-orchestrator's "
+            "sample_pages.py), fetched once concurrently instead of once per page. Requires --site."
         ),
     )
     args = parser.parse_args(argv)
@@ -1621,7 +1700,7 @@ def main(argv: list[str] | None = None) -> int:
             for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
             if line.strip()
         ]
-        json.dump(audit_near_duplicates(site, page_urls), sys.stdout, indent=2)
+        json.dump(audit_sample(site, page_urls), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
 

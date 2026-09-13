@@ -210,6 +210,37 @@ class UnverifiableSuperlativeTests(unittest.TestCase):
         self.assertEqual(len(findings[0].structured_evidence["matches"]), 1)
         self.assertIn("pursue the best outcome", findings[0].structured_evidence["matches"][0]["sentence"])
 
+    def test_a_rhetorical_question_does_not_fire(self):
+        text = "Why settle for anything but the best experience on the market today?"
+        self.assertEqual(cit.find_unverifiable_superlatives(text), [])
+
+    def test_a_heading_tagline_does_not_fire(self):
+        """bookmyshow live-testing false positive: a homepage category
+        banner/tagline is marketing copy, not a factual claim anyone would
+        try to verify or cite."""
+        html = "<h1>The Best Of Live Events In Your City</h1><p>Browse now.</p>"
+        text = "The Best Of Live Events In Your City\nBrowse now."
+        self.assertEqual(cit.find_unverifiable_superlatives(text, html), [])
+
+    def test_the_same_text_without_html_still_fires(self):
+        """The heading exemption is opportunistic — it only applies when
+        `html` is supplied; a text-only call site keeps today's behaviour."""
+        text = "The Best Of Live Events In Your City For Everyone Involved"
+        findings = cit.find_unverifiable_superlatives(text)
+        self.assertEqual([f.id for f in findings], ["CIT-06-unverifiable-superlatives"])
+
+    def test_a_single_quoted_first_person_testimonial_does_not_fire(self):
+        text = "'I use Scribd because it is the best place to find any book I need.'"
+        self.assertEqual(cit.find_unverifiable_superlatives(text), [])
+
+    def test_a_single_quoted_brand_tagline_without_first_person_still_fires(self):
+        """The single-quote exemption requires a first-person marker — a
+        brand's own single-quoted tagline is not exempted just for being
+        quoted."""
+        text = "'The best streaming service on the market today.'"
+        findings = cit.find_unverifiable_superlatives(text)
+        self.assertEqual([f.id for f in findings], ["CIT-06-unverifiable-superlatives"])
+
 
 class LateCitationTests(unittest.TestCase):
     """CIT-07: reuses CIT-02's own external-link definition — the new
@@ -222,35 +253,73 @@ class LateCitationTests(unittest.TestCase):
         return f'<p>{before}</p><p><a href="{href}">source</a></p><p>{after}</p>'
 
     def _positions_and_text(self, html: str):
-        positions, total_length = cit.parse_page_with_anchor_positions(html)
+        positions, total_length, anchor_in_chrome = cit.parse_page_with_anchor_positions(html)
         _anchor_hrefs, _all_hrefs, text = cit.parse_page(html)
-        return positions, total_length, text
+        return positions, total_length, text, anchor_in_chrome
 
     def test_a_citation_buried_in_the_last_stretch_of_a_long_page_fires(self):
         html = self._page(900, "https://other.example/study", 10)
-        positions, total_length, text = self._positions_and_text(html)
-        findings = cit.find_late_citations(positions, total_length, text, "example.com")
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        findings = cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome)
         self.assertEqual([f.id for f in findings], ["CIT-07-late-citation"])
 
     def test_a_citation_reachable_early_does_not_fire(self):
         html = self._page(10, "https://other.example/study", 900)
-        positions, total_length, text = self._positions_and_text(html)
-        self.assertEqual(cit.find_late_citations(positions, total_length, text, "example.com"), [])
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
+
+    def test_a_citation_inside_the_footer_is_excluded_from_buried_scoring(self):
+        """scribd live-testing false positive: an ordinary footer legal/nav
+        link always lands in the last stretch of the page by construction —
+        it should not count toward "every citation is buried"."""
+        before = " ".join(["word"] * 900)
+        html = f'<p>{before}</p><footer><a href="https://other.example/terms">Terms</a></footer>'
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
+
+    def test_a_citation_inside_nav_is_excluded_from_buried_scoring(self):
+        before = " ".join(["word"] * 900)
+        html = f'<p>{before}</p><nav><a href="https://other.example/blog">Blog</a></nav>'
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
+
+    def test_a_genuinely_buried_body_citation_still_fires_alongside_a_footer_link(self):
+        before = " ".join(["word"] * 850)
+        html = (
+            f'<p>{before}</p>'
+            '<p><a href="https://other.example/study">source</a></p>'
+            '<footer><a href="https://other.example/terms">Terms</a></footer>'
+        )
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        findings = cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome)
+        self.assertEqual([f.id for f in findings], ["CIT-07-late-citation"])
 
     def test_no_external_citations_at_all_is_cit02s_job_not_this_ones(self):
         html = self._page(900, "/internal-page", 10)
-        positions, total_length, text = self._positions_and_text(html)
-        self.assertEqual(cit.find_late_citations(positions, total_length, text, "example.com"), [])
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
 
     def test_a_short_page_is_never_flagged_regardless_of_position(self):
         html = self._page(2, "https://other.example/study", 1)
-        positions, total_length, text = self._positions_and_text(html)
-        self.assertEqual(cit.find_late_citations(positions, total_length, text, "example.com"), [])
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
 
     def test_a_www_prefixed_link_to_the_same_site_is_not_a_citation(self):
         html = self._page(900, "https://www.example.com/report", 10)
-        positions, total_length, text = self._positions_and_text(html)
-        self.assertEqual(cit.find_late_citations(positions, total_length, text, "example.com"), [])
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
 
     def test_one_early_and_one_late_external_citation_does_not_fire(self):
         before = " ".join(["word"] * 400)
@@ -260,8 +329,10 @@ class LateCitationTests(unittest.TestCase):
             f'<p><a href="https://other.example/early">early source</a></p><p>{before}</p>'
             f'<p>{middle}</p><p><a href="https://other.example/late">late source</a></p><p>{after}</p>'
         )
-        positions, total_length, text = self._positions_and_text(html)
-        self.assertEqual(cit.find_late_citations(positions, total_length, text, "example.com"), [])
+        positions, total_length, text, anchor_in_chrome = self._positions_and_text(html)
+        self.assertEqual(
+            cit.find_late_citations(positions, total_length, text, "example.com", anchor_in_chrome), []
+        )
 
 
 class CitationRecallExtractionTests(unittest.TestCase):
@@ -292,6 +363,20 @@ class CitationRecallExtractionTests(unittest.TestCase):
         requests = cit.build_agent_judgement_requests("<p>Hi.</p>", "Hi.")
         self.assertEqual(requests[0]["capability_id"], "CIT-04")
         self.assertIn("references/citability-judgement-rubric.md", requests[0]["instructions"])
+
+    def test_page_has_general_disclaimer_is_false_by_default(self):
+        requests = cit.build_agent_judgement_requests("<p>Hi.</p>", "Hi.")
+        self.assertFalse(requests[0]["observations"]["page_has_general_disclaimer"])
+
+    def test_page_has_general_disclaimer_true_when_disclaimer_phrase_present(self):
+        """paytm live-testing false positive: a load-bearing rate claim was
+        flagged unsourced when a page-wide disclaimer link existed
+        elsewhere on the page ("For detailed disclaimer please visit:
+        ..."). This is a signal handed to the agent, not a script-side
+        suppression."""
+        text = "MTF at 7.99%* p.a. For detailed disclaimer please visit: https://example.com/terms"
+        requests = cit.build_agent_judgement_requests(f"<p>{text}</p>", text)
+        self.assertTrue(requests[0]["observations"]["page_has_general_disclaimer"])
 
 
 class ContractComplianceTests(unittest.TestCase):
@@ -490,24 +575,24 @@ class FindLinkAuthorityStarvedPagesTests(unittest.TestCase):
 
 class AuditLinkGraphTests(unittest.TestCase):
     def test_an_unreachable_page_becomes_one_unknown_check(self):
-        out = cit.audit_link_graph("acme.com", ["https://this-host-does-not-exist.invalid/page"])
+        out = cit.audit_sample("acme.com", ["https://this-host-does-not-exist.invalid/page"])
         self.assertEqual(out["findings"], [])
         self.assertEqual(len(out["unknown_checks"]), 1)
         self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
 
     def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
-        out = cit.audit_link_graph("acme.com", [])
+        out = cit.audit_sample("acme.com", [])
         self.assertEqual(out["findings"], [])
         self.assertEqual(out["unknown_checks"], [])
 
     def test_output_always_carries_the_capability_ids(self):
-        out = cit.audit_link_graph("acme.com", [])
+        out = cit.audit_sample("acme.com", [])
         self.assertEqual(out["capability_ids"], cit.CAPABILITY_IDS)
         self.assertIn("CIT-08", out["capability_ids"])
         self.assertIn("CIT-09", out["capability_ids"])
 
     def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
-        out = cit.audit_link_graph("acme.com", [])
+        out = cit.audit_sample("acme.com", [])
         self.assertEqual(len(out["coverage"]["stages"]), 1)
         self.assertFalse(out["coverage"]["stages"][0]["expired"])
 
@@ -519,10 +604,10 @@ class AuditLinkGraphTests(unittest.TestCase):
             return 0.0 if calls["n"] == 1 else 1000.0
 
         page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
-        out = cit.audit_link_graph("acme.com", page_urls, clock=fake_clock)
+        out = cit.audit_sample("acme.com", page_urls, clock=fake_clock)
         self.assertEqual(len(out["unknown_checks"]), 2)
         for unknown in out["unknown_checks"]:
-            self.assertEqual(unknown["capability_id"], "CIT-08")
+            self.assertEqual(unknown["capability_id"], "*")
             self.assertIn("budget", unknown["reason"])
         self.assertTrue(out["coverage"]["stages"][0]["expired"])
 

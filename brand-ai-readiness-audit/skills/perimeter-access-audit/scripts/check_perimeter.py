@@ -97,7 +97,7 @@ from _perimeter_constants import (  # noqa: E402
     REPRESENTATIVE_AGENTS,
 )
 from _perimeter_encoding import decode_content_encoding, _best_effort_decode_content_encoding  # noqa: E402
-from _perimeter_fetch import fetch_text  # noqa: E402
+from _perimeter_fetch import fetch_text, circuit_is_open, record_connection_result  # noqa: E402
 from _perimeter_access_rules import (  # noqa: E402
     BOT_TIERS,
     _baseline_bot_taxonomy,
@@ -175,7 +175,24 @@ def fetch_page_with_headers(url: str) -> tuple[str | None, dict[str, str], str]:
     challenge-interstitial 200 is named as a CDN/edge decision in the
     returned text instead of a bare HTTP code indistinguishable from a
     transient error.
+
+    Gated by the same fail-fast circuit breaker `_perimeter_fetch.fetch_text`
+    uses (shared by host, process-lifetime, R5/S2) — this is a separate raw
+    fetch path (no disk cache, unlike `fetch_text`) used for the root page
+    (PER-09) and `.well-known/api-catalog` (PER-10), so it needs its own
+    circuit check to stay fail-fast on a host that's already proven
+    unreachable earlier in the same run.
     """
+    tripped_by = circuit_is_open(url)
+    if tripped_by is not None:
+        host = urllib.parse.urlsplit(url).netloc
+        return (
+            f"{url} skipped: {host} has been unreachable ({tripped_by}) on every recent attempt "
+            "this run, so no further fetches to this host are attempted",
+            {},
+            "unavailable",
+        )
+
     request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT}, method="GET")
     try:
         with urllib.request.urlopen(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
@@ -183,8 +200,10 @@ def fetch_page_with_headers(url: str) -> tuple[str | None, dict[str, str], str]:
             content_encoding = response.headers.get("Content-Encoding", "")
             headers = {key.lower(): value for key, value in response.headers.items()}
         raw = decode_content_encoding(raw, content_encoding)
+        record_connection_result(url, failed=False)
         return raw.decode("utf-8", errors="replace"), headers, "present"
     except urllib.error.HTTPError as error:
+        record_connection_result(url, failed=False)
         code = error.code
         error_headers = {key.lower(): value for key, value in error.headers.items()} if error.headers else {}
         if code in (404, 410):
@@ -211,7 +230,9 @@ def fetch_page_with_headers(url: str) -> tuple[str | None, dict[str, str], str]:
             text = f"{url} returned HTTP {code}"
         return text, error_headers, "unavailable"
     except Exception as error:  # timeout, DNS, TLS, redirect loop
-        return f"{url} could not be fetched: {type(error).__name__}: {error}", {}, "unavailable"
+        text = f"{url} could not be fetched: {type(error).__name__}: {error}"
+        record_connection_result(url, failed=True, error_text=text)
+        return text, {}, "unavailable"
 
 
 def base_url(url_or_domain: str) -> str:

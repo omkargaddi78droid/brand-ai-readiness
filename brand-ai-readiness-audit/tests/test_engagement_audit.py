@@ -107,6 +107,31 @@ class FormLabelingTests(unittest.TestCase):
         self.assertEqual(len(parser.fields), 2)
         self.assertFalse(any(f["labeled"] for f in parser.fields))
 
+    def test_a_disabled_field_is_excluded(self):
+        parser = eng.parse_page('<input type="text" disabled>')
+        self.assertEqual(parser.fields, [])
+
+    def test_a_readonly_range_is_excluded(self):
+        """paytm live-testing false positive: a readonly range input is a
+        decorative gauge/progress display, never a real interactive
+        slider — a native range input cannot be dragged when readonly."""
+        parser = eng.parse_page('<input type="range" readonly value="70">')
+        self.assertEqual(parser.fields, [])
+
+    def test_a_real_interactive_range_is_still_checked(self):
+        """Real interactive range sliders (price filters, volume controls)
+        must still be caught — only readonly/disabled ranges are exempt."""
+        parser = eng.parse_page('<input type="range" min="0" max="100">')
+        self.assertEqual(len(parser.fields), 1)
+        self.assertFalse(parser.fields[0]["labeled"])
+
+    def test_a_readonly_text_field_is_not_excluded(self):
+        """readonly is exempted only for type="range" — a readonly
+        text/number field can still carry information (e.g. a computed
+        total) that needs a name."""
+        parser = eng.parse_page('<input type="text" readonly value="42">')
+        self.assertEqual(len(parser.fields), 1)
+
 
 class UnlabelledFieldFindingTests(unittest.TestCase):
     def test_all_labeled_produces_nothing(self):
@@ -519,6 +544,39 @@ class PrimaryCtaTests(unittest.TestCase):
         parser = eng.parse_page("<button>Accept All Cookies</button><button>Cookie settings</button>")
         self.assertIsNone(eng._primary_cta(parser))
 
+    def test_a_nav_link_before_the_real_cta_is_skipped(self):
+        """paytm live-testing false positive: a global header/nav utility
+        link ("Mobile Recharge") preceded the page's real hero CTA in
+        document order and was picked as the "primary CTA" instead."""
+        html = (
+            '<header><a href="/recharge">Mobile Recharge</a></header>'
+            '<main><h1>Pay Loan EMI</h1><a href="/pay">Pay Loan EMI</a></main>'
+        )
+        parser = eng.parse_page(html)
+        self.assertEqual(eng._primary_cta(parser), "Pay Loan EMI")
+
+    def test_a_link_inside_nav_is_skipped(self):
+        html = '<nav><a href="/home">Home</a></nav><a href="/start">Start free trial</a>'
+        parser = eng.parse_page(html)
+        self.assertEqual(eng._primary_cta(parser), "Start free trial")
+
+    def test_a_link_inside_role_navigation_is_skipped(self):
+        html = (
+            '<div role="navigation"><a href="/home">Home</a></div>'
+            '<a href="/start">Start free trial</a>'
+        )
+        parser = eng.parse_page(html)
+        self.assertEqual(eng._primary_cta(parser), "Start free trial")
+
+    def test_only_chrome_ctas_returns_none(self):
+        parser = eng.parse_page('<header><a href="/recharge">Mobile Recharge</a></header>')
+        self.assertIsNone(eng._primary_cta(parser))
+
+    def test_a_cta_in_the_main_content_is_still_picked_when_no_chrome_precedes_it(self):
+        html = '<main><a href="/start">Start free trial</a></main><footer><a href="/about">About</a></footer>'
+        parser = eng.parse_page(html)
+        self.assertEqual(eng._primary_cta(parser), "Start free trial")
+
 
 class CtaCoherenceCandidateTests(unittest.TestCase):
     def test_a_cta_sharing_no_vocabulary_with_the_h1_is_a_candidate(self):
@@ -679,12 +737,29 @@ class DeadEndPageTests(unittest.TestCase):
         self.assertEqual(findings[0].id, findings[1].id)
 
 
+def _filler_links(count: int) -> list["eng.LinkRef"]:
+    """Outbound links (add to the homepage's own link list) pointing at
+    `_filler_pages(count)` so those pages aren't themselves orphans."""
+    return [eng.LinkRef(url=f"https://acme.com/filler-{i}", anchor_text=f"Filler {i}") for i in range(count)]
+
+
+def _filler_pages(count: int) -> dict[str, list["eng.LinkRef"]]:
+    """Non-orphan padding pages so a test sample can reach
+    `_EN04_MIN_SAMPLE_SIZE_FOR_ORPHAN` without introducing unrelated
+    orphan/inbound-link noise into the case under test. Must be paired with
+    `_filler_links(count)` added to some other page's outbound links, or
+    these pages will themselves register as orphans."""
+    return {f"https://acme.com/filler-{i}": [] for i in range(count)}
+
+
 class OrphanPageTests(unittest.TestCase):
     def test_a_page_with_no_inbound_internal_link_is_flagged(self):
         raw_internal_links = {
-            "https://acme.com/": [eng.LinkRef(url="https://acme.com/about", anchor_text="About")],
+            "https://acme.com/": [eng.LinkRef(url="https://acme.com/about", anchor_text="About")]
+            + _filler_links(2),
             "https://acme.com/about": [],
             "https://acme.com/orphan": [],
+            **_filler_pages(2),
         }
         findings = eng.find_orphan_pages(raw_internal_links)
         self.assertEqual(len(findings), 1)
@@ -694,27 +769,66 @@ class OrphanPageTests(unittest.TestCase):
     def test_the_homepage_is_never_flagged_as_an_orphan(self):
         """Dominant false positive: a site's homepage is expected to have
         few or no inbound *internal* links — visitors arrive at it from
-        outside the site, not by following an internal link. Isolated as a
-        single-page sample so the homepage's own 0 in-degree is the only
-        thing under test — without the exemption this would be flagged."""
-        raw_internal_links = {"https://acme.com/": []}
+        outside the site, not by following an internal link. Padded to
+        clear the minimum-sample-size gate so the homepage's own 0
+        in-degree is the only thing under test — without the exemption
+        this would be flagged."""
+        raw_internal_links = {"https://acme.com/": _filler_links(4), **_filler_pages(4)}
         self.assertEqual(eng.find_orphan_pages(raw_internal_links), [])
 
     def test_a_page_linked_from_another_sampled_page_is_not_an_orphan(self):
         raw_internal_links = {
-            "https://acme.com/": [eng.LinkRef(url="https://acme.com/pricing", anchor_text="Pricing")],
+            "https://acme.com/": [eng.LinkRef(url="https://acme.com/pricing", anchor_text="Pricing")]
+            + _filler_links(3),
             "https://acme.com/pricing": [],
+            **_filler_pages(3),
         }
         self.assertEqual(eng.find_orphan_pages(raw_internal_links), [])
 
-    def test_evidence_states_its_own_sample_size_never_site_wide_scope(self):
+    def test_below_minimum_sample_size_emits_nothing(self):
+        """Scribd live-testing false positive: a thin sample (e.g. 9 pages
+        against a 170M-document platform) should not produce a
+        site-scale-blind orphan claim at all when the sample is even
+        thinner than this floor."""
         raw_internal_links = {"https://acme.com/": [], "https://acme.com/orphan": []}
+        self.assertEqual(eng.find_orphan_pages(raw_internal_links), [])
+
+    def test_confidence_is_low_below_the_low_confidence_sample_size(self):
+        raw_internal_links = {
+            "https://acme.com/": _filler_links(3),
+            "https://acme.com/orphan": [],
+            **_filler_pages(3),
+        }
         finding = eng.find_orphan_pages(raw_internal_links)[0]
-        self.assertIn("2 pages sampled", finding.evidence)
+        self.assertEqual(finding.confidence, "low")
+        self.assertIn("weak signal", finding.evidence)
+
+    def test_confidence_is_medium_at_or_above_the_low_confidence_sample_size(self):
+        raw_internal_links = {
+            "https://acme.com/": _filler_links(18),
+            "https://acme.com/orphan": [],
+            **_filler_pages(18),
+        }
+        finding = eng.find_orphan_pages(raw_internal_links)[0]
+        self.assertEqual(finding.confidence, "medium")
+        self.assertNotIn("weak signal", finding.evidence)
+
+    def test_evidence_states_its_own_sample_size_never_site_wide_scope(self):
+        raw_internal_links = {
+            "https://acme.com/": _filler_links(3),
+            "https://acme.com/orphan": [],
+            **_filler_pages(3),
+        }
+        finding = eng.find_orphan_pages(raw_internal_links)[0]
+        self.assertIn("5 pages sampled", finding.evidence)
         self.assertIn("does not prove site-wide orphan status", finding.evidence)
 
     def test_finding_validates_against_the_shared_contract(self):
-        raw_internal_links = {"https://acme.com/": [], "https://acme.com/orphan": []}
+        raw_internal_links = {
+            "https://acme.com/": _filler_links(3),
+            "https://acme.com/orphan": [],
+            **_filler_pages(3),
+        }
         finding = eng.find_orphan_pages(raw_internal_links)[0]
         self.assertEqual(finding.validate(), [])
 
@@ -722,9 +836,10 @@ class OrphanPageTests(unittest.TestCase):
         """Regression: a per-URL id defeats merge_paginated_findings, which
         groups by exact id — every orphan finding must share one id."""
         raw_internal_links = {
-            "https://acme.com/": [],
+            "https://acme.com/": _filler_links(2),
             "https://acme.com/orphan-a": [],
             "https://acme.com/orphan-b": [],
+            **_filler_pages(2),
         }
         findings = eng.find_orphan_pages(raw_internal_links)
         self.assertEqual(len(findings), 2)
@@ -749,10 +864,11 @@ class OrphanAndDeadEndMergeIntegrationTests(unittest.TestCase):
 
     def test_orphan_findings_across_pages_merge_into_one(self):
         raw_internal_links = {
-            "https://acme.com/": [],
+            "https://acme.com/": _filler_links(1),
             "https://acme.com/orphan-a": [],
             "https://acme.com/orphan-b": [],
             "https://acme.com/orphan-c": [],
+            **_filler_pages(1),
         }
         findings = eng.find_orphan_pages(raw_internal_links)
         self.assertEqual(len(findings), 3)

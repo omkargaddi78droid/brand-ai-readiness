@@ -15,7 +15,9 @@ import sys
 import tempfile
 import threading
 import unittest
+import urllib.error
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).resolve().parent / "fixtures"
@@ -643,6 +645,112 @@ class BotTaxonomyAccelerationTests(unittest.TestCase):
         resolved = perimeter.resolve_bot_tiers()
         for tier in perimeter.BOT_TIERS:
             self.assertGreater(len(resolved[tier]), len(perimeter.BOT_TIERS[tier]))
+
+
+class FetchTextCircuitBreakerTests(unittest.TestCase):
+    """R5/S2: on a host that is unreachable outright (TLS completes, then
+    every request silently times out — live-tested against goindigo.in,
+    fronted by Akamai), `fetch_text` used to pay the full
+    FETCH_TIMEOUT_SECONDS on EVERY well-known-file fetch in sequence. After
+    `_CIRCUIT_FAILURE_THRESHOLD` consecutive raw connection failures to the
+    same host, further fetches to it must return immediately without a
+    network attempt — while a classified HTTP response (even a 403/429
+    block) must never trip it, since that proves the host IS reachable."""
+
+    def setUp(self):
+        perimeter_fetch.reset_circuit_breaker()
+        self.addCleanup(perimeter_fetch.reset_circuit_breaker)
+
+    def test_consecutive_timeouts_trip_the_breaker_for_that_host(self):
+        host = "https://circuit-breaker-timeout.invalid"
+        calls = {"n": 0}
+
+        def fake_urlopen(request, timeout=None):
+            calls["n"] += 1
+            raise TimeoutError("timed out")
+
+        with patch.object(perimeter_fetch.urllib.request, "urlopen", side_effect=fake_urlopen):
+            perimeter_fetch.fetch_text(f"{host}/robots.txt")
+            perimeter_fetch.fetch_text(f"{host}/llms.txt")
+            self.assertEqual(calls["n"], 2, "the two threshold-reaching calls must both hit the network")
+
+            text, status = perimeter_fetch.fetch_text(f"{host}/llms-full.txt")
+
+        self.assertEqual(status, "unavailable")
+        self.assertIn("skipped", text)
+        self.assertEqual(calls["n"], 2, "a call after the breaker trips must not attempt the network")
+
+    def test_a_different_host_is_unaffected_by_another_hosts_open_circuit(self):
+        broken_host = "https://circuit-breaker-broken.invalid"
+        healthy_host = "https://circuit-breaker-healthy.invalid"
+
+        def fake_urlopen(request, timeout=None):
+            if broken_host in request.full_url:
+                raise TimeoutError("timed out")
+            raise urllib.error.HTTPError(request.full_url, 404, "Not Found", {}, io.BytesIO(b""))
+
+        with patch.object(perimeter_fetch.urllib.request, "urlopen", side_effect=fake_urlopen):
+            perimeter_fetch.fetch_text(f"{broken_host}/a")
+            perimeter_fetch.fetch_text(f"{broken_host}/b")
+            self.assertIsNotNone(perimeter_fetch.circuit_is_open(f"{broken_host}/c"))
+
+            text, status = perimeter_fetch.fetch_text(f"{healthy_host}/robots.txt")
+
+        self.assertEqual(status, "absent")
+        self.assertIsNone(perimeter_fetch.circuit_is_open(f"{healthy_host}/anything"))
+
+    def test_a_classified_block_never_trips_the_breaker(self):
+        """A WAF that legitimately answers every request with 403 is a real,
+        reachable response — not the outage this breaker exists to skip."""
+        host = "https://circuit-breaker-blocked.invalid"
+
+        def fake_urlopen(request, timeout=None):
+            raise urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, io.BytesIO(b"Forbidden"))
+
+        with patch.object(perimeter_fetch.urllib.request, "urlopen", side_effect=fake_urlopen):
+            for path in ("/robots.txt", "/llms.txt", "/llms-full.txt", "/sitemap.xml"):
+                text, status = perimeter_fetch.fetch_text(f"{host}{path}")
+                self.assertEqual(status, "unavailable")
+                self.assertNotIn("skipped", text)
+
+        self.assertIsNone(perimeter_fetch.circuit_is_open(f"{host}/anything"))
+
+    def test_a_success_after_failures_resets_the_counter(self):
+        host = "https://circuit-breaker-recovers.invalid"
+        responses = iter([TimeoutError("timed out"), None])
+
+        def fake_urlopen(request, timeout=None):
+            outcome = next(responses)
+            if outcome is not None:
+                raise outcome
+            return _FakeResponse(b"User-agent: *\nAllow: /\n")
+
+        with patch.object(perimeter_fetch.urllib.request, "urlopen", side_effect=fake_urlopen):
+            perimeter_fetch.fetch_text(f"{host}/robots.txt")  # 1 failure
+            perimeter_fetch.fetch_text(f"{host}/llms.txt")  # success resets the count
+
+        self.assertIsNone(
+            perimeter_fetch.circuit_is_open(f"{host}/llms-full.txt"),
+            "one failure followed by a success must not leave the breaker primed to trip on the next single failure",
+        )
+
+
+class _FakeResponse:
+    """Minimal `urlopen`-result stand-in: a context manager whose `.read()`
+    returns fixed bytes and whose `.headers` has no Content-Encoding."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+        self.headers = {}
+
+    def read(self, _n=None):
+        return self._body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
 
 
 if __name__ == "__main__":

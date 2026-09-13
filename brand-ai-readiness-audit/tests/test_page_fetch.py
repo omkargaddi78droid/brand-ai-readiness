@@ -8,8 +8,11 @@ unavailable status paths, and the PageBundle cache.
 """
 
 import gzip
+import hashlib
 import http.server
+import os
 import sys
+import tempfile
 import threading
 import time as time_module
 import unittest
@@ -273,6 +276,100 @@ class PageBundleCacheTests(unittest.TestCase):
         self.assertIn("Content-Type", bundle.headers)
 
 
+class DiskCacheTests(unittest.TestCase):
+    """AUDIT_FETCH_CACHE_DIR (Part A of the redundant-fetch fix): an opt-in,
+    disk-backed cache so a URL fetched by one orchestrator subprocess isn't
+    refetched by the next. `clear_cache()` between calls simulates a fresh
+    subprocess — only the disk cache, never the in-memory one, should be able
+    to serve the second call."""
+
+    def setUp(self):
+        page_fetch.clear_cache()
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._env_patch = patch.dict(os.environ, {"AUDIT_FETCH_CACHE_DIR": self._tmpdir.name})
+        self._env_patch.start()
+
+    def tearDown(self):
+        self._env_patch.stop()
+        self._tmpdir.cleanup()
+        page_fetch.clear_cache()
+
+    def test_a_disk_cache_hit_across_a_simulated_subprocess_avoids_a_second_network_call(self):
+        calls = []
+        real_urlopen = page_fetch.urllib.request.urlopen
+
+        def counting_urlopen(*args, **kwargs):
+            calls.append(1)
+            return real_urlopen(*args, **kwargs)
+
+        with _LocalServer(_HtmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True), \
+                patch.object(page_fetch.urllib.request, "urlopen", side_effect=counting_urlopen):
+            first = page_fetch.fetch_page(server.url)
+            page_fetch.clear_cache()  # simulate a fresh subprocess: in-memory cache is gone
+            calls_after_first = len(calls)
+            second = page_fetch.fetch_page(server.url)
+
+        self.assertEqual(len(calls), calls_after_first, "a disk cache hit must not make any new HTTP calls")
+        self.assertEqual(first.status, "present")
+        self.assertEqual(first.html, second.html)
+
+    def test_fetch_page_html_disk_cache_hit_across_a_simulated_subprocess(self):
+        calls = []
+        real_urlopen = page_fetch.urllib.request.urlopen
+
+        def counting_urlopen(*args, **kwargs):
+            calls.append(1)
+            return real_urlopen(*args, **kwargs)
+
+        with _LocalServer(_HtmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True), \
+                patch.object(page_fetch.urllib.request, "urlopen", side_effect=counting_urlopen):
+            first_html, first_status = page_fetch.fetch_page_html(server.url)
+            page_fetch.clear_cache()
+            calls_after_first = len(calls)
+            second_html, second_status = page_fetch.fetch_page_html(server.url)
+
+        self.assertEqual(len(calls), calls_after_first)
+        self.assertEqual(first_status, "present")
+        self.assertEqual(first_html, second_html)
+        self.assertEqual(second_status, "present")
+
+    def test_a_corrupt_cache_file_degrades_to_a_live_fetch(self):
+        with _LocalServer(_HtmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            digest = hashlib.sha256(server.url.encode("utf-8")).hexdigest()
+            cache_path = Path(self._tmpdir.name) / f"html-{digest}.json"
+            cache_path.write_text("{not valid json", encoding="utf-8")
+            html, status = page_fetch.fetch_page_html(server.url)
+
+        self.assertEqual(status, "present")
+        self.assertIn("Example Corp", html)
+
+    def test_env_var_unset_falls_through_to_a_live_fetch_every_time(self):
+        self._env_patch.stop()
+        os.environ.pop("AUDIT_FETCH_CACHE_DIR", None)
+        calls = []
+        real_urlopen = page_fetch.urllib.request.urlopen
+
+        def counting_urlopen(*args, **kwargs):
+            calls.append(1)
+            return real_urlopen(*args, **kwargs)
+
+        with _LocalServer(_HtmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True), \
+                patch.object(page_fetch.urllib.request, "urlopen", side_effect=counting_urlopen):
+            page_fetch.fetch_page_html(server.url)
+            page_fetch.fetch_page_html(server.url)
+
+        self.assertEqual(len(calls), 2, "with no cache dir set, every call must hit the network")
+        self._env_patch.start()  # tearDown expects the patcher to still be active
+
+
 class _RobotsHandler(http.server.BaseHTTPRequestHandler):
     """Serves a fixed robots.txt body at /robots.txt and HTML everywhere
     else, so the disallow test proves the gate actually reads the response
@@ -347,7 +444,7 @@ class RetryTests(unittest.TestCase):
             if "robots.txt" in request.full_url:
                 raise urllib.error.URLError("no robots server")
             attempts["count"] += 1
-            if attempts["count"] < 3:
+            if attempts["count"] < 2:
                 raise urllib.error.HTTPError(request.full_url, 503, "Service Unavailable", {}, None)
             return real_urlopen(request, *args, **kwargs)
 
@@ -358,7 +455,7 @@ class RetryTests(unittest.TestCase):
             html, status = page_fetch.fetch_page_html(server.url)
 
         self.assertEqual(status, "present")
-        self.assertEqual(attempts["count"], 3)
+        self.assertEqual(attempts["count"], 2)
 
     def test_a_permanent_404_is_not_retried(self):
         attempts = {"count": 0}
@@ -604,6 +701,46 @@ class FetchPagesConcurrentlyTests(unittest.TestCase):
         for url, content, status in results:
             self.assertEqual(status, "present")
             self.assertIn("Example Corp", content)
+
+
+class FetchPageBundlesConcurrentlyTests(unittest.TestCase):
+    """`fetch_page_bundles_concurrently` — same concurrency machinery as
+    `fetch_pages_concurrently`, but returning the full `PageBundle` (headers
+    included) per URL for a caller that needs HTTP headers a page's content
+    alone doesn't carry (content-quality-audit's CQ-10 freshness check)."""
+
+    def test_empty_list_returns_empty_without_calling_fetch(self):
+        with patch.object(page_fetch, "fetch_page") as fetch_mock:
+            result = page_fetch.fetch_page_bundles_concurrently([])
+        self.assertEqual(result, [])
+        fetch_mock.assert_not_called()
+
+    def test_results_are_returned_in_input_order_with_headers_intact(self):
+        urls = [f"https://example.com/page-{i}" for i in range(3)]
+
+        def fake_fetch(url):
+            return page_fetch.PageBundle(
+                url=url, status="present", html=f"<html>{url}</html>", error=None,
+                final_url=url, headers={"Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT"},
+            )
+
+        with patch.object(page_fetch, "fetch_page", side_effect=fake_fetch):
+            results = page_fetch.fetch_page_bundles_concurrently(urls, max_concurrency=3)
+
+        self.assertEqual([r[0] for r in results], urls)
+        for url, bundle in results:
+            self.assertEqual(bundle.status, "present")
+            self.assertEqual(bundle.headers["Last-Modified"], "Mon, 01 Jan 2024 00:00:00 GMT")
+
+    def test_the_real_fetch_page_is_used_end_to_end(self):
+        with _LocalServer(_HtmlHandler) as server, \
+                patch.object(page_fetch, "is_public_host", return_value=True), \
+                patch.object(page_fetch, "robots_allows_fetch", return_value=True):
+            results = page_fetch.fetch_page_bundles_concurrently([server.url])
+        self.assertEqual(len(results), 1)
+        url, bundle = results[0]
+        self.assertEqual(bundle.status, "present")
+        self.assertIn("Example Corp", bundle.html)
 
 
 class DecodeContentEncodingTests(unittest.TestCase):

@@ -50,7 +50,10 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import hashlib
 import ipaddress
+import json
+import os
 import socket
 import time
 import urllib.error
@@ -58,6 +61,7 @@ import urllib.parse
 import urllib.request
 import urllib.robotparser
 import zlib
+from pathlib import Path
 
 USER_AGENT = "brand-ai-readiness-audit/0.1 (+read-only site audit; robots-respecting)"
 # Standard, benign headers beyond User-Agent — some WAFs/CDNs reject a
@@ -74,10 +78,10 @@ _REQUEST_HEADERS = {
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
-FETCH_TIMEOUT_SECONDS = 10
+FETCH_TIMEOUT_SECONDS = 6
 MAX_PAGE_BYTES = 5_000_000
 _MAX_DECOMPRESSED_BYTES = 20_000_000
-_RETRY_ATTEMPTS = 3
+_RETRY_ATTEMPTS = 2
 _RETRY_DELAY_SECONDS = 1.0
 
 
@@ -99,6 +103,56 @@ def is_public_host(hostname: str) -> bool:
 
 
 _robots_cache: dict[str, bool | None] = {}
+
+
+# ---------------------------------------------------------------------------
+# Disk-backed cross-process fetch cache (opt-in via AUDIT_FETCH_CACHE_DIR)
+# ---------------------------------------------------------------------------
+#
+# The orchestrator runs each skill as its own subprocess, so the in-memory
+# `_page_cache`/`_robots_cache` above (process lifetime only) never prevents
+# the same URL being fetched again by the next skill's subprocess. This layer
+# adds a one-JSON-file-per-URL disk cache, gated entirely behind an env var
+# read at call time so it is invisible — and behaviorally identical to today
+# — unless the orchestrator sets it. Fails open on any disk error: a cache
+# miss (missing dir, missing file, corrupt JSON, permission error) always
+# just falls through to a live fetch, never raises.
+
+
+def _cache_dir() -> Path | None:
+    raw = os.environ.get("AUDIT_FETCH_CACHE_DIR")
+    return Path(raw) if raw else None
+
+
+def _disk_cache_path(namespace: str, key: str) -> Path | None:
+    directory = _cache_dir()
+    if directory is None:
+        return None
+    digest = hashlib.sha256(key.encode("utf-8")).hexdigest()
+    return directory / f"{namespace}-{digest}.json"
+
+
+def _disk_cache_read(namespace: str, key: str) -> dict | None:
+    path = _disk_cache_path(namespace, key)
+    if path is None:
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def _disk_cache_write(namespace: str, key: str, payload: dict) -> None:
+    path = _disk_cache_path(namespace, key)
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = path.with_suffix(f"{path.suffix}.{os.getpid()}.tmp")
+        tmp_path.write_text(json.dumps(payload), encoding="utf-8")
+        os.replace(tmp_path, path)
+    except OSError:
+        pass
 
 
 def _encode_url_for_request(url: str) -> str:
@@ -180,13 +234,26 @@ def robots_allows_fetch(url: str) -> bool:
     scheme = parsed.scheme or "https"
 
     if cache_key not in _robots_cache:
-        raw = _raw_get(f"{scheme}://{parsed.netloc}/robots.txt", timeout=FETCH_TIMEOUT_SECONDS)
-        if raw is None:
-            _robots_cache[cache_key] = None  # unreachable: allow-all, nothing to cache but "tried"
+        disk_hit = _disk_cache_read("robots", cache_key)
+        if disk_hit is not None:
+            raw_text = disk_hit.get("text")
+            if raw_text is None:
+                _robots_cache[cache_key] = None
+            else:
+                parser = urllib.robotparser.RobotFileParser()
+                parser.parse(raw_text.splitlines())
+                _robots_cache[cache_key] = parser
         else:
-            parser = urllib.robotparser.RobotFileParser()
-            parser.parse(raw.decode("utf-8", errors="replace").splitlines())
-            _robots_cache[cache_key] = parser
+            raw = _raw_get(f"{scheme}://{parsed.netloc}/robots.txt", timeout=FETCH_TIMEOUT_SECONDS)
+            if raw is None:
+                _robots_cache[cache_key] = None  # unreachable: allow-all, nothing to cache but "tried"
+                _disk_cache_write("robots", cache_key, {"text": None})
+            else:
+                text = raw.decode("utf-8", errors="replace")
+                parser = urllib.robotparser.RobotFileParser()
+                parser.parse(text.splitlines())
+                _robots_cache[cache_key] = parser
+                _disk_cache_write("robots", cache_key, {"text": text})
 
     cached = _robots_cache[cache_key]
     if cached is None:
@@ -298,6 +365,10 @@ def fetch_text(url: str) -> tuple[str | None, str]:
     status is one of "present", "unavailable". On any failure the first
     element is a human-readable message, never None.
     """
+    disk_hit = _disk_cache_read("text", url)
+    if disk_hit is not None:
+        return disk_hit.get("text"), disk_hit.get("status", "unavailable")
+
     hostname = urllib.parse.urlparse(url).hostname
     if not hostname or not is_public_host(hostname):
         return f"{url} does not resolve to a public address", "unavailable"
@@ -311,13 +382,19 @@ def fetch_text(url: str) -> tuple[str | None, str]:
             content_encoding = response.headers.get("Content-Encoding", "")
             headers = response.headers
         raw = decode_content_encoding(raw, content_encoding)
-        return _decode_body(raw, headers), "present"
+        text, status = _decode_body(raw, headers), "present"
+        _disk_cache_write("text", url, {"text": text, "status": status})
+        return text, status
     except urllib.error.HTTPError as error:
         code = error.code
         error.close()
-        return f"{url} returned HTTP {code}", "unavailable"
+        text, status = f"{url} returned HTTP {code}", "unavailable"
+        _disk_cache_write("text", url, {"text": text, "status": status})
+        return text, status
     except Exception as error:
-        return f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
+        text, status = f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
+        _disk_cache_write("text", url, {"text": text, "status": status})
+        return text, status
 
 
 def fetch_page_html(url: str) -> tuple[str | None, str]:
@@ -329,6 +406,10 @@ def fetch_page_html(url: str) -> tuple[str | None, str]:
     a non-"present" status as "no HTML content", not as a promise the first
     element is ever actually None.
     """
+    disk_hit = _disk_cache_read("html", url)
+    if disk_hit is not None:
+        return disk_hit.get("text"), disk_hit.get("status", "unavailable")
+
     hostname = urllib.parse.urlparse(url).hostname
     if not hostname or not is_public_host(hostname):
         return f"{url} does not resolve to a public address", "unavailable"
@@ -340,18 +421,26 @@ def fetch_page_html(url: str) -> tuple[str | None, str]:
         with _urlopen_with_retry(request, timeout=FETCH_TIMEOUT_SECONDS) as response:
             content_type = response.headers.get("Content-Type", "")
             if content_type and not _is_page_content_type(content_type):
-                return f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
+                text, status = f"{url} returned Content-Type {content_type!r}, not HTML/text", "not_html"
+                _disk_cache_write("html", url, {"text": text, "status": status})
+                return text, status
             raw = response.read(MAX_PAGE_BYTES)
             content_encoding = response.headers.get("Content-Encoding", "")
             headers = response.headers
         raw = decode_content_encoding(raw, content_encoding)
-        return _decode_body(raw, headers), "present"
+        text, status = _decode_body(raw, headers), "present"
+        _disk_cache_write("html", url, {"text": text, "status": status})
+        return text, status
     except urllib.error.HTTPError as error:
         code = error.code
         error.close()
-        return f"{url} returned HTTP {code}", "unavailable"
+        text, status = f"{url} returned HTTP {code}", "unavailable"
+        _disk_cache_write("html", url, {"text": text, "status": status})
+        return text, status
     except Exception as error:
-        return f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
+        text, status = f"{url} could not be fetched: {type(error).__name__}: {error}", "unavailable"
+        _disk_cache_write("html", url, {"text": text, "status": status})
+        return text, status
 
 
 @dataclasses.dataclass(frozen=True)
@@ -386,25 +475,47 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
     if use_cache and url in _page_cache:
         return _page_cache[url]
 
+    if use_cache:
+        disk_hit = _disk_cache_read("page", url)
+        if disk_hit is not None:
+            bundle = PageBundle(
+                url=disk_hit["url"],
+                status=disk_hit["status"],
+                html=disk_hit["html"],
+                error=disk_hit["error"],
+                final_url=disk_hit["final_url"],
+                headers=disk_hit["headers"],
+            )
+            if bundle.status == "present":
+                _page_cache[url] = bundle
+            return bundle
+
+    def _finish(bundle: PageBundle) -> PageBundle:
+        if use_cache:
+            _disk_cache_write("page", url, dataclasses.asdict(bundle))
+            if bundle.status == "present":
+                _page_cache[url] = bundle
+        return bundle
+
     hostname = urllib.parse.urlparse(url).hostname
     if not hostname or not is_public_host(hostname):
-        return PageBundle(
+        return _finish(PageBundle(
             url=url,
             status="unavailable",
             html=None,
             error=f"{url} does not resolve to a public address",
             final_url=url,
             headers={},
-        )
+        ))
     if not robots_allows_fetch(url):
-        return PageBundle(
+        return _finish(PageBundle(
             url=url,
             status="unavailable",
             html=None,
             error=f"{url} disallowed by robots.txt",
             final_url=url,
             headers={},
-        )
+        ))
 
     request = urllib.request.Request(_encode_url_for_request(url), headers=_REQUEST_HEADERS, method="GET")
     try:
@@ -414,14 +525,14 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
             final_url = response.geturl()
             content_type = response_headers.get("Content-Type", "")
             if content_type and not _is_page_content_type(content_type):
-                return PageBundle(
+                return _finish(PageBundle(
                     url=url,
                     status="not_html",
                     html=None,
                     error=f"{url} returned Content-Type {content_type!r}, not HTML/text",
                     final_url=final_url,
                     headers=headers,
-                )
+                ))
             raw = response.read(MAX_PAGE_BYTES)
             content_encoding = response_headers.get("Content-Encoding", "")
         raw = decode_content_encoding(raw, content_encoding)
@@ -436,20 +547,18 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
     except urllib.error.HTTPError as error:
         code = error.code
         error.close()
-        return PageBundle(
+        return _finish(PageBundle(
             url=url, status="unavailable", html=None,
             error=f"{url} returned HTTP {code}", final_url=url, headers={},
-        )
+        ))
     except Exception as error:
-        return PageBundle(
+        return _finish(PageBundle(
             url=url, status="unavailable", html=None,
             error=f"{url} could not be fetched: {type(error).__name__}: {error}",
             final_url=url, headers={},
-        )
+        ))
 
-    if use_cache:
-        _page_cache[url] = bundle
-    return bundle
+    return _finish(bundle)
 
 
 # ---------------------------------------------------------------------------
@@ -474,15 +583,17 @@ def fetch_page(url: str, *, use_cache: bool = True) -> PageBundle:
 # its source URL, downstream per-page processing loops need no change to
 # stay result-order-stable; only wall-clock time changes, never output order.
 
-_MAX_CONCURRENT_FETCHES = 5
+_MAX_CONCURRENT_FETCHES = 3
 # A politeness cap distinct from the global concurrency cap above: without
 # it, a sample where every URL shares one host (the common case — one
 # skill's page sample is almost always all-on-site) would let the global
-# cap alone drive up to 5 simultaneous requests at a single slow host,
+# cap alone drive up to 2 simultaneous requests at a single slow host,
 # which is a mini-DoS against exactly the site this project is auditing,
 # not a third party. Entity-audit's off-site service-domain pass is the one
 # case that legitimately spans several distinct hosts; this cap still
-# applies per host there too.
+# applies per host there too. (Global cap of 2 already sits below this
+# per-host cap for the common single-host case, so this constant only
+# matters for the multi-host pass.)
 _MAX_CONCURRENT_FETCHES_PER_HOST = 3
 
 
@@ -524,6 +635,40 @@ def fetch_pages_concurrently(
     if not urls:
         return []
     return asyncio.run(_fetch_all_concurrent(urls, max_concurrency))
+
+
+async def _fetch_one_concurrent_bundle(
+    url: str, global_semaphore: asyncio.Semaphore, host_semaphores: dict[str, asyncio.Semaphore]
+) -> tuple[str, PageBundle]:
+    hostname = (urllib.parse.urlparse(url).hostname or "").lower()
+    host_semaphore = host_semaphores[hostname]
+    async with global_semaphore, host_semaphore:
+        bundle = await asyncio.to_thread(fetch_page, url)
+    return url, bundle
+
+
+async def _fetch_all_concurrent_bundles(urls: list[str], max_concurrency: int) -> list[tuple[str, PageBundle]]:
+    global_semaphore = asyncio.Semaphore(max_concurrency)
+    hostnames = {(urllib.parse.urlparse(u).hostname or "").lower() for u in urls}
+    host_semaphores = {host: asyncio.Semaphore(_MAX_CONCURRENT_FETCHES_PER_HOST) for host in hostnames}
+    tasks = [asyncio.create_task(_fetch_one_concurrent_bundle(u, global_semaphore, host_semaphores)) for u in urls]
+    return await asyncio.gather(*tasks)
+
+
+def fetch_page_bundles_concurrently(
+    urls: list[str], *, max_concurrency: int = _MAX_CONCURRENT_FETCHES
+) -> list[tuple[str, PageBundle]]:
+    """Same as `fetch_pages_concurrently` but returns the full `PageBundle`
+    (headers, final_url, etc.) per URL instead of just `(content, status)` —
+    for a bulk-mode caller that needs HTTP headers a page's raw content
+    alone doesn't carry (e.g. content-quality-audit's CQ-10 freshness check,
+    which compares a page's own claimed update date against its
+    `Last-Modified` response header). Same order-preservation and
+    concurrency bounds as `fetch_pages_concurrently`; each fetch is the
+    existing, unmodified `fetch_page`."""
+    if not urls:
+        return []
+    return asyncio.run(_fetch_all_concurrent_bundles(urls, max_concurrency))
 
 
 def clear_cache() -> None:

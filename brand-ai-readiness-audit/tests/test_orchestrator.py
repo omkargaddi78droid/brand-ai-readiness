@@ -298,7 +298,7 @@ class CoverageManifestMergeTests(unittest.TestCase):
     shorter-than-expected findings list."""
 
     def test_a_single_skills_coverage_stage_is_merged_into_the_report(self):
-        service_out = entity.audit_service_domains("example.com", [])
+        service_out = entity.audit_sample("example.com", [])
         del service_out["agent_judgement_required"]
 
         with tempfile.TemporaryDirectory() as workdir:
@@ -310,8 +310,8 @@ class CoverageManifestMergeTests(unittest.TestCase):
         self.assertEqual(report["coverage"]["stages"][0]["stage"], "entity-audit-sample-fetch")
 
     def test_coverage_stages_from_several_skills_are_all_present(self):
-        service_out = entity.audit_service_domains("example.com", [])
-        near_dup_out = content_quality.audit_near_duplicates("example.com", [])
+        service_out = entity.audit_sample("example.com", [])
+        near_dup_out = content_quality.audit_sample("example.com", [])
         del service_out["agent_judgement_required"]
 
         with tempfile.TemporaryDirectory() as workdir:

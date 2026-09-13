@@ -132,6 +132,13 @@ _SKIP_TAGS = VISIBLE_TEXT_SKIP_TAGS
 _BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
 _LABELABLE_INPUT_TYPES_EXCLUDED = {"hidden", "submit", "button", "reset", "image"}
 _CTA_TAGS = {"button", "a"}
+# BUG (paytm live testing): EN-11's primary-CTA selection read raw document
+# order with zero DOM-region scoping, so a global header/nav utility link
+# (e.g. "Mobile Recharge") outranked the page's real hero CTA whenever it
+# happened to appear first in source order. `<nav>`/`<header>`, or any
+# element explicitly marked `role="navigation"`, is site-wide chrome, not a
+# content-shaped primary action.
+_CHROME_CONTAINER_TAGS = frozenset({"nav", "header"})
 _WEBMCP_FORM_ATTRS = ("toolname", "data-toolname")
 _WEBMCP_SCRIPT_PATTERN = re.compile(r"navigator\.modelContext\.registerTool", re.IGNORECASE)
 
@@ -144,13 +151,19 @@ _HIDDEN_CLASS_TOKENS = {"hidden", "d-none"}
 _DISPLAY_NONE_PATTERN = re.compile(r"display\s*:\s*none\b", re.IGNORECASE)
 
 
-def _is_non_interactive_field(attr_dict: dict) -> bool:
+def _is_non_interactive_field(attr_dict: dict, field_type: str | None = None) -> bool:
     """True when a field's own attributes already mark it not rendered/not
     interactive by a mechanism other than `type="hidden"`: the `hidden`
     boolean attribute, `aria-hidden="true"`, a hidden-convention `class`
-    token, or an inline `style="display:none"`. A field marked this way is a
-    JS widget's internal bookkeeping input (never shown, never tabbed into,
-    never meant to carry a name) — not a real accessibility gap.
+    token, an inline `style="display:none"`, the `disabled` attribute (out
+    of the tab order and never submitted — same exclusion axe-core's `label`
+    rule already applies), or a `readonly` `type="range"` (a native range
+    input cannot be dragged when readonly, so it is always a decorative
+    gauge/progress display, never a real interactive slider — a paytm
+    live-testing false positive). `readonly` is deliberately NOT excluded
+    for other field types: a readonly text/number field can still carry
+    information (e.g. a computed total) a screen reader or agent needs
+    named.
 
     Deliberately narrow: this checks only the field's own attributes, not a
     wrapping ancestor marked hidden. Ancestor-level hiding needs a
@@ -158,6 +171,10 @@ def _is_non_interactive_field(attr_dict: dict) -> bool:
     `_close_tag` pass doesn't keep; the same class of narrowing EN-05
     already documents for the CSS cascade resolution it doesn't attempt."""
     if "hidden" in attr_dict:
+        return True
+    if "disabled" in attr_dict:
+        return True
+    if field_type == "range" and "readonly" in attr_dict:
         return True
     if (attr_dict.get("aria-hidden") or "").strip().lower() == "true":
         return True
@@ -193,6 +210,9 @@ class _PageParser(HTMLParser):
         self.cta_texts: list[str] = []
         self._cta_depth = 0
         self._cta_buffer: list[str] = []
+        self.cta_in_chrome: list[bool] = []  # one bool per cta_texts entry
+        self._chrome_depth = 0
+        self._chrome_tag_stack: list[str] = []
 
         self.form_count = 0
         self._form_depth = 0
@@ -227,6 +247,12 @@ class _PageParser(HTMLParser):
         self._close_tag(tag)
 
     def _open_tag(self, tag, attr_dict):
+        is_chrome_container = tag in _CHROME_CONTAINER_TAGS or (
+            (attr_dict.get("role") or "").strip().lower() == "navigation"
+        )
+        if is_chrome_container:
+            self._chrome_depth += 1
+            self._chrome_tag_stack.append(tag)
         if tag == "script":
             script_type = (attr_dict.get("type") or "").strip().lower()
             if script_type == "application/ld+json":
@@ -255,7 +281,7 @@ class _PageParser(HTMLParser):
                 self._current_form_has_password = True
             if field_type in _LABELABLE_INPUT_TYPES_EXCLUDED:
                 return
-            if _is_non_interactive_field(attr_dict):
+            if _is_non_interactive_field(attr_dict, field_type):
                 return
             aria_label = (attr_dict.get("aria-label") or "").strip()
             labelled_by = attr_dict.get("aria-labelledby")
@@ -320,8 +346,13 @@ class _PageParser(HTMLParser):
                 text = " ".join("".join(self._cta_buffer).split())
                 if text:
                     self.cta_texts.append(text)
+                    self.cta_in_chrome.append(self._chrome_depth > 0)
         elif self._cta_depth:
             self._cta_depth -= 1
+
+        if self._chrome_tag_stack and self._chrome_tag_stack[-1] == tag:
+            self._chrome_tag_stack.pop()
+            self._chrome_depth = max(0, self._chrome_depth - 1)
 
         if tag in _SKIP_TAGS:
             self._skip_depth = max(0, self._skip_depth - 1)
@@ -1092,8 +1123,13 @@ def _primary_cta(parser: _PageParser) -> str | None:
     action a page foregrounds, not every clickable element on it.
     Cookie-consent banner buttons (BUG-001) are skipped: a banner injected
     early in document order is not the page's real primary action, whatever
-    position it happens to render at."""
-    for text in parser.cta_texts:
+    position it happens to render at. A CTA sitting inside `<nav>`/`<header>`
+    (or `role="navigation"`) is skipped too — global site chrome, not this
+    page's real primary action (paytm live-testing false positive: a
+    "Mobile Recharge" header link outranking the page's actual hero CTA)."""
+    for text, in_chrome in zip(parser.cta_texts, parser.cta_in_chrome):
+        if in_chrome:
+            continue
         if not _is_cookie_banner_text(text):
             return text
     return None
@@ -1215,7 +1251,18 @@ def find_dead_end_pages(
     ]
 
 
-def _orphan_finding(page_url: str, sample_size: int) -> Finding:
+_EN04_MIN_SAMPLE_SIZE_FOR_ORPHAN = 5
+_EN04_LOW_CONFIDENCE_SAMPLE_SIZE = 20
+
+
+def _orphan_finding(page_url: str, sample_size: int, confidence: str) -> Finding:
+    thin_sample_note = (
+        " Given how small this sample is, treat this as a weak signal rather than a "
+        "confirmed orphan — a much larger crawl could easily find an inbound link this "
+        "sample never saw."
+        if confidence == "low"
+        else ""
+    )
     return Finding(
         id="EN-04-orphan-in-sample",
         title="No internal link to this page found within the sampled pages",
@@ -1223,7 +1270,7 @@ def _orphan_finding(page_url: str, sample_size: int) -> Finding:
         evidence=(
             f"Within the {sample_size} pages sampled for this audit, no internal link pointed to "
             f"{page_url} — this does not prove site-wide orphan status, only that no link path to "
-            "it was found within the sampled subset."
+            f"it was found within the sampled subset.{thin_sample_note}"
         ),
         suggested_action=SuggestedAction(
             summary=(
@@ -1245,22 +1292,34 @@ def _orphan_finding(page_url: str, sample_size: int) -> Finding:
             "severity and states its own sample size rather than claiming site-wide scope."
         ),
         gate=None,
-        confidence="medium",
-        structured_evidence={"page_url": page_url, "sample_size": sample_size},
+        confidence=confidence,
+        structured_evidence={"page_url": page_url, "sample_size": sample_size, "confidence": confidence},
     )
 
 
 def find_orphan_pages(raw_internal_links: dict[str, list[LinkRef]]) -> list[Finding]:
     """B1: a sampled page (other than the homepage) with zero inbound
-    internal links from any other page in the same sample."""
+    internal links from any other page in the same sample.
+
+    Scribd live-testing false positive: a 9-page sample against a
+    170M-document platform produced an orphan finding at the same
+    "medium" confidence a well-sampled site would get. Below
+    `_EN04_MIN_SAMPLE_SIZE_FOR_ORPHAN`, the sample is too thin to support
+    even a sample-scoped claim (mirrors citability-audit's own
+    `_MIN_SAMPLE_SIZE_FOR_PAGERANK` gate) and nothing is emitted at all;
+    below `_EN04_LOW_CONFIDENCE_SAMPLE_SIZE`, findings still fire but at
+    "low" confidence rather than a flat "medium" regardless of scale."""
     sample_size = len(raw_internal_links)
+    if sample_size < _EN04_MIN_SAMPLE_SIZE_FOR_ORPHAN:
+        return []
+    confidence = "low" if sample_size < _EN04_LOW_CONFIDENCE_SAMPLE_SIZE else "medium"
     in_degree = {page_url: 0 for page_url in raw_internal_links}
     for links in raw_internal_links.values():
         for link in links:
             if link.url in in_degree:
                 in_degree[link.url] += 1
     return [
-        _orphan_finding(page_url, sample_size)
+        _orphan_finding(page_url, sample_size, confidence)
         for page_url, count in in_degree.items()
         if count == 0 and not _is_homepage(page_url)
     ]
@@ -1276,16 +1335,28 @@ _SAMPLE_FETCH_CHUNK_SIZE = 10
 def _gather_sample_pages(
     site: str, page_urls: list[str], *, clock=None
 ) -> tuple[
-    dict[str, str], dict[str, str], dict[str, list[LinkRef]], dict[str, list[LinkRef]], list[UnknownCheck], StageBudget
+    dict[str, str],
+    dict[str, str],
+    dict[str, list[LinkRef]],
+    dict[str, list[LinkRef]],
+    list[UnknownCheck],
+    StageBudget,
+    list[dict],
+    list[dict],
 ]:
-    """One fetch pass over `page_urls`, shared by C1 (EN-08/EN-11) and B1+B8
-    (EN-04) so the sample is only ever fetched once per script invocation.
+    """One fetch pass over `page_urls`, shared by C1 (EN-08/EN-11), B1+B8
+    (EN-04), and every once-per-page check `audit_html` otherwise runs one
+    `--url` subprocess per page for (EN-01/03 agent-judged, EN-05/06/07/09
+    script-decided) — before this, the orchestrator's per-page checks meant
+    one Python subprocess spawn per sampled page, the dominant residual
+    cost once fetches themselves are cache-warm.
+
     Returns (page_h1, page_cta, raw_internal_links, scent_internal_links,
-    unknowns, budget) — `raw_internal_links` keeps every internal link
-    (EN-04's dead-end/orphan checks need to know a link exists at all,
-    including a plain "Home" link); `scent_internal_links` drops
-    navigational chrome (EN-08's information-scent check needs only
-    content-shaped links).
+    unknowns, budget, per_page_findings, per_page_judgements) —
+    `raw_internal_links` keeps every internal link (EN-04's dead-end/orphan
+    checks need to know a link exists at all, including a plain "Home"
+    link); `scent_internal_links` drops navigational chrome (EN-08's
+    information-scent check needs only content-shaped links).
 
     The fetch loop is concurrent (Defect 2 follow-up to INF-10: sequential
     fetching made the 90s cap likely to fire on perfectly normal sites) —
@@ -1310,6 +1381,8 @@ def _gather_sample_pages(
     page_cta: dict[str, str] = {}
     raw_internal_links: dict[str, list[LinkRef]] = {}
     scent_internal_links: dict[str, list[LinkRef]] = {}
+    per_page_findings: list[dict] = []
+    per_page_judgements: list[dict] = []
 
     index = 0
     while index < len(page_urls):
@@ -1342,22 +1415,27 @@ def _gather_sample_pages(
             scent_internal_links[page_url] = [
                 link for link in internal if link.anchor_text.lower() not in _NAV_CHROME_ANCHOR_TEXTS
             ]
+            page_result = audit_html(site, html_or_error, page_url=page_url)
+            per_page_findings.extend(page_result["findings"])
+            per_page_judgements.extend(page_result["agent_judgement_required"])
 
-    return page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns, budget
+    return (
+        page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns, budget,
+        per_page_findings, per_page_judgements,
+    )
 
 
 def audit_sampled_pages(site: str, page_urls: list[str], *, clock=None) -> dict:
     """The combined multi-page mode — fetches every on-site URL in
     `page_urls` (the orchestrator's own bounded page sample) once, then runs
-    two independent capability clusters over that one fetch: C1's
-    information-scent narrowing (EN-11, the EN-08 slice — agent-judged) and
-    B1+B8's dead-end/orphan detection (EN-04 — script-decided). A separate,
-    once-per-run mode from `audit_html`'s once-per-page mode, the same
-    relationship ENT-07's `audit_service_domains` has to `audit_html` in
-    entity-audit."""
-    page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns, budget = _gather_sample_pages(
-        site, page_urls, clock=clock
-    )
+    every engagement-audit capability over that one fetch: the once-per-page
+    checks `audit_html` normally runs per `--url` subprocess, C1's
+    information-scent narrowing (EN-11, the EN-08 slice — agent-judged), and
+    B1+B8's dead-end/orphan detection (EN-04 — script-decided)."""
+    (
+        page_h1, page_cta, raw_internal_links, scent_internal_links, unknowns, budget,
+        per_page_findings, per_page_judgements,
+    ) = _gather_sample_pages(site, page_urls, clock=clock)
 
     findings = find_dead_end_pages(raw_internal_links, page_cta)
     findings += find_orphan_pages(raw_internal_links)
@@ -1411,8 +1489,8 @@ def audit_sampled_pages(site: str, page_urls: list[str], *, clock=None) -> dict:
         "owner_skill": OWNER_SKILL,
         "capability_ids": CAPABILITY_IDS,
         "site": site,
-        "findings": [f.to_dict() for f in findings],
-        "agent_judgement_required": judgement_requests,
+        "findings": per_page_findings + [f.to_dict() for f in findings],
+        "agent_judgement_required": per_page_judgements + judgement_requests,
         "unknown_checks": [u.to_dict() for u in unknowns],
         "coverage": coverage_manifest([budget]),
     }
@@ -1470,11 +1548,12 @@ def main(argv: list[str] | None = None) -> int:
     parser_.add_argument(
         "--sample-file",
         help=(
-            "Run only the multi-page checks (C1's information-scent, EN-11 + the EN-08 slice; "
-            "and B1+B8's dead-end/orphan detection, EN-04) across a local file of on-site page "
-            "URLs (one per line — the sample_urls from audit-orchestrator's sample_pages.py) "
-            "instead of auditing a single page. Fetches each page itself (same as --url). "
-            "Requires --site."
+            "Run every engagement-audit capability — the once-per-page checks (EN-01, EN-03 "
+            "agent-judged; EN-05, EN-06, EN-07, EN-09 script-decided) plus the multi-page checks "
+            "(C1's information-scent, EN-11 + the EN-08 slice; and B1+B8's dead-end/orphan "
+            "detection, EN-04) — across a local file of on-site page URLs (one per line — the "
+            "sample_urls from audit-orchestrator's sample_pages.py), fetched once concurrently "
+            "instead of once per page. Requires --site."
         ),
     )
     args = parser_.parse_args(argv)

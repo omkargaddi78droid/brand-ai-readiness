@@ -169,6 +169,11 @@ MIN_SUBSTANTIAL_WORD_COUNT = 500
 # Cycle 24 item 2.5: canonical set, shared/text_spans.py — see that module.
 _SKIP_TAGS = VISIBLE_TEXT_SKIP_TAGS
 _BLOCK_TAGS = VISIBLE_TEXT_BLOCK_TAGS
+# CIT-07 only: boilerplate site chrome an anchor can sit inside — excluded
+# from "buried past 80%" scoring so a legitimate footer/nav link doesn't
+# count as a "late citation" alongside a real buried body citation.
+_CHROME_CONTAINER_TAGS = frozenset({"nav", "footer", "header"})
+_CHROME_ROLES = frozenset({"navigation", "contentinfo"})
 
 _ABOUT_PATH_SEGMENTS = {
     "about", "about-us", "our-story", "company", "our-team",
@@ -236,6 +241,13 @@ class _PageParser(HTMLParser):
         # fields rather than changing `parse_page`'s stable 3-value return
         # that 22 existing tests and every other capability already unpack.
         self.anchor_offsets: list[int] = []
+        # CIT-07 only (scribd live-testing false positive): whether each
+        # anchor sits inside `<nav>`/`<footer>`/`<header>` or
+        # `role="navigation"|"contentinfo"` — boilerplate site chrome, not a
+        # body citation. One entry per `anchor_hrefs` entry, same order.
+        self.anchor_in_chrome: list[bool] = []
+        self._chrome_depth = 0
+        self._chrome_tag_stack: list[str] = []
 
     def handle_starttag(self, tag, attrs):
         self._open_tag(tag, dict(attrs))
@@ -248,11 +260,15 @@ class _PageParser(HTMLParser):
         self._close_tag(tag)
 
     def _open_tag(self, tag, attr_dict):
+        if tag in _CHROME_CONTAINER_TAGS or (attr_dict.get("role") or "").strip().lower() in _CHROME_ROLES:
+            self._chrome_depth += 1
+            self._chrome_tag_stack.append(tag)
         href = attr_dict.get("href")
         if tag == "a" and href:
             self.anchor_hrefs.append(href.strip())
             self.all_hrefs.append(href.strip())
             self.anchor_offsets.append(len("".join(self._text_chunks)))
+            self.anchor_in_chrome.append(self._chrome_depth > 0)
         elif tag == "link" and href:
             self.all_hrefs.append(href.strip())
         if tag in _SKIP_TAGS:
@@ -265,6 +281,9 @@ class _PageParser(HTMLParser):
             self._skip_depth = max(0, self._skip_depth - 1)
         elif tag in _BLOCK_TAGS:
             self._text_chunks.append("\n")
+        if self._chrome_tag_stack and self._chrome_tag_stack[-1] == tag:
+            self._chrome_tag_stack.pop()
+            self._chrome_depth = max(0, self._chrome_depth - 1)
 
     def handle_data(self, data):
         if self._skip_depth == 0:
@@ -279,14 +298,15 @@ class _PageParser(HTMLParser):
         return len("".join(self._text_chunks))
 
 
-def parse_page_with_anchor_positions(html: str) -> tuple[list[tuple[str, int]], int]:
-    """CIT-07 only: (href, offset) pairs in document order, plus the raw
-    text length they're offsets into. A separate entrypoint from
+def parse_page_with_anchor_positions(html: str) -> tuple[list[tuple[str, int]], int, list[bool]]:
+    """CIT-07 only: (href, offset) pairs in document order, the raw text
+    length they're offsets into, and one bool per pair for whether that
+    anchor sits inside nav/footer/header chrome. A separate entrypoint from
     `parse_page` for the same reason `anchor_offsets` is a separate field —
     no existing caller's return-value shape changes."""
     parser = _PageParser()
     parser.feed(html)
-    return list(zip(parser.anchor_hrefs, parser.anchor_offsets)), parser.raw_length()
+    return list(zip(parser.anchor_hrefs, parser.anchor_offsets)), parser.raw_length(), parser.anchor_in_chrome
 
 
 def parse_page(html: str) -> tuple[list[str], list[str], str]:
@@ -412,7 +432,11 @@ _CIT07_MAX_FRACTIONS = 10
 
 
 def find_late_citations(
-    anchor_positions: list[tuple[str, int]], total_length: int, visible_text: str, site: str | None
+    anchor_positions: list[tuple[str, int]],
+    total_length: int,
+    visible_text: str,
+    site: str | None,
+    anchor_in_chrome: list[bool] | None = None,
 ) -> list[Finding]:
     """CIT-07. Reuses CIT-02's own external-link definition — an outbound,
     off-domain `<a href>` is a citation the same way CIT-02 counts it. The
@@ -422,16 +446,24 @@ def find_late_citations(
     page reads and weights early tokens far more heavily than late ones; a
     citation only reachable in the last stretch of a long page may as well
     not exist for that reader.
+
+    `anchor_in_chrome`, when given, excludes anchors sitting inside
+    nav/footer/header chrome from the "buried" fractions (scribd
+    live-testing false positive: a page's ordinary footer legal/nav links,
+    which always land in the last stretch of the page by construction, were
+    indistinguishable from a genuinely buried body citation).
     """
     word_count = len(visible_text.split())
     if word_count < MIN_SUBSTANTIAL_WORD_COUNT or total_length <= 0:
         return []
 
+    if anchor_in_chrome is None:
+        anchor_in_chrome = [False] * len(anchor_positions)
     current_host = _strip_www(site) if site else None
     fractions = [
         offset / total_length
-        for href, offset in anchor_positions
-        if _is_external_link(href, current_host)
+        for (href, offset), in_chrome in zip(anchor_positions, anchor_in_chrome)
+        if not in_chrome and _is_external_link(href, current_host)
     ]
     if not fractions or min(fractions) < _LATE_CITATION_THRESHOLD:
         return []
@@ -503,15 +535,51 @@ def _quoted_spans(text: str) -> list[str]:
     return _QUOTED_SPAN_PATTERN.findall(text)
 
 
+# bookmyshow live-testing false positive: a homepage category banner/tagline
+# ("The Best Of Live Events") is marketing copy, not a factual claim anyone
+# would try to verify or cite — heading text is excluded the same way a
+# quoted testimonial already is.
+_HEADING_TAG_PATTERN = re.compile(r"<h[1-6]\b[^>]*>(.*?)</h[1-6]>", re.IGNORECASE | re.DOTALL)
+_TAG_STRIP_PATTERN = re.compile(r"<[^>]+>")
+
+
+def _extract_heading_texts(html: str) -> list[str]:
+    texts = []
+    for match in _HEADING_TAG_PATTERN.finditer(html):
+        text = " ".join(_TAG_STRIP_PATTERN.sub("", match.group(1)).split())
+        if text:
+            texts.append(text.lower())
+    return texts
+
+
+# A single-quoted, first-person span ("'I use Scribd because it's the best
+# place...'") is a user testimonial, not the brand's own claim. Deliberately
+# requires a first-person marker, not just quote-wrapping — a brand's own
+# stylistic single-quoted tagline should not be exempted just for being
+# quoted (see _QUOTED_SPAN_PATTERN's own comment on why single quotes/
+# apostrophes are otherwise too collision-prone to use as a signal alone).
+_SINGLE_QUOTE_CHARS = ("'", "‘", "’")
+_FIRST_PERSON_SINGULAR_PATTERN = re.compile(r"\b(?:I|I'm|I've|I'd|my|me)\b", re.IGNORECASE)
+
+
+def _is_first_person_single_quoted_testimonial(s: str) -> bool:
+    if len(s) < 2 or s[0] not in _SINGLE_QUOTE_CHARS or s[-1] not in _SINGLE_QUOTE_CHARS:
+        return False
+    return bool(_FIRST_PERSON_SINGULAR_PATTERN.search(s))
+
+
 _CIT06_MAX_MATCHES = 5
 
 
-def find_unverifiable_superlatives(visible_text: str) -> list[Finding]:
+def find_unverifiable_superlatives(visible_text: str, html: str | None = None) -> list[Finding]:
     quoted_spans = _quoted_spans(visible_text)
+    heading_texts = _extract_heading_texts(html) if html else []
     matches: list[tuple[str, str]] = []
     for sentence in _split_sentences(visible_text):
         s = sentence.strip()
         if len(s) < 20 or len(s) > 400:
+            continue
+        if s.endswith("?"):
             continue
         match = _SUPERLATIVE_PATTERN.search(s)
         if not match:
@@ -519,6 +587,10 @@ def find_unverifiable_superlatives(visible_text: str) -> list[Finding]:
         if _HAS_NUMBER.search(s):
             continue
         if any(s in span for span in quoted_spans):
+            continue
+        if s.lower() in heading_texts:
+            continue
+        if _is_first_person_single_quoted_testimonial(s):
             continue
         matches.append((match.group(0), s))
 
@@ -574,6 +646,26 @@ _LINK_MARKER = "\x00LINK\x00"  # placeholder injected where <a> tags were, so a
 # sentence's own text can be checked for a nearby link without needing full
 # DOM position tracking
 
+# paytm live-testing false positive: a load-bearing rate claim ("Margin
+# Trading Facility (MTF) at 7.99%* p.a.") was flagged unsourced because the
+# check only looks for a link in the SAME sentence — it missed a page-wide
+# disclaimer/footnote elsewhere on the page ("For detailed disclaimer please
+# visit: ..."). This is only a signal handed to the agent alongside the
+# candidates, not a script-side suppression — a curated phrase list, not a
+# bare "disclaimer" keyword, so the rubric can weigh whether the disclaimer
+# plausibly covers a given candidate's topic rather than waving off every
+# claim on the page.
+_DISCLAIMER_PHRASES = (
+    "for detailed disclaimer", "please read the disclaimer", "read the disclaimer",
+    "terms and conditions apply", "*terms apply", "terms apply",
+    "subject to terms and conditions", "see disclaimer", "disclaimer:",
+)
+_DISCLAIMER_PATTERN = re.compile("|".join(re.escape(p) for p in _DISCLAIMER_PHRASES), re.IGNORECASE)
+
+
+def _page_has_general_disclaimer(text: str) -> bool:
+    return bool(_DISCLAIMER_PATTERN.search(text))
+
 
 def _text_with_link_markers(html: str) -> str:
     """Same extraction as `parse_page`, except every <a ...> open tag leaves a
@@ -612,13 +704,19 @@ def build_agent_judgement_requests(
                 "sentence), decide whether it is a load-bearing claim central to this page's "
                 "purpose that a reader would reasonably expect to be sourced — not every "
                 "number needs a citation (a price, a model number, a date is often fine "
-                "unsourced). Hand-author a Finding only for genuine cases, per the rubric's "
-                "worked examples. If none of the candidates are load-bearing, emit nothing."
+                "unsourced). If page_has_general_disclaimer is true, check whether a "
+                "disclaimer/footnote elsewhere on the page plausibly covers that candidate's "
+                "topic (proximity to the same claim, or explicit textual linkage like 'as per "
+                "offer terms') before flagging it — a page-wide disclaimer does not excuse "
+                "every unrelated claim, only ones it plausibly covers. Hand-author a Finding "
+                "only for genuine cases, per the rubric's worked examples. If none of the "
+                "candidates are load-bearing, emit nothing."
             ),
             "observations": {
                 "candidate_unsourced_claims": candidates,
                 "total_candidates_found": len(candidates),
                 "total_word_count": len(visible_text.split()),
+                "page_has_general_disclaimer": _page_has_general_disclaimer(visible_text),
             },
         }
     ]
@@ -709,13 +807,13 @@ def audit_html(
     site: str, html: str, page_url: str | None = None, offsite_urls: list[str] | None = None
 ) -> dict:
     anchor_hrefs, all_hrefs, visible_text = parse_page(html)
-    anchor_positions, total_length = parse_page_with_anchor_positions(html)
+    anchor_positions, total_length, anchor_in_chrome = parse_page_with_anchor_positions(html)
 
     findings = (
         find_missing_about_link(all_hrefs)
         + find_missing_source_attribution(anchor_hrefs, visible_text, site)
-        + find_late_citations(anchor_positions, total_length, visible_text, site)
-        + find_unverifiable_superlatives(visible_text)
+        + find_late_citations(anchor_positions, total_length, visible_text, site, anchor_in_chrome)
+        + find_unverifiable_superlatives(visible_text, html)
     )
     findings = _stamp_page(findings, page_url)
 
@@ -978,16 +1076,21 @@ _SAMPLE_FETCH_BUDGET_SECONDS = 90.0
 _SAMPLE_FETCH_CHUNK_SIZE = 10
 
 
-def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
-    """CIT-08's and CIT-09's shared multi-page mode — fetches every on-site
-    URL in `page_urls` (the orchestrator's own bounded page sample) once,
-    building the sampled internal-link graph and each page's `<title>` off
-    that one fetch pass, then runs both capabilities: CIT-08 flags a
-    fact-dense page starved of PageRank relative to a non-fact-dense hub;
-    CIT-09 flags the sample-wide absence of any comparison-shaped page. A
-    separate, once-per-run mode from `audit_html`'s once-per-page mode, the
-    same relationship ENT-07's `audit_service_domains` has to `audit_html`
-    in entity-audit.
+def audit_sample(site: str, page_urls: list[str], *, clock=None) -> dict:
+    """Runs every citability-audit capability across a whole page sample in
+    one process — both the once-per-page checks `audit_html` otherwise runs
+    one `--url` subprocess per page for (CIT-01/02/06/07 script-decided,
+    CIT-04 agent-judged), and CIT-08's/CIT-09's own multi-page checks — off
+    a single shared concurrent fetch pass instead of fetching the sample
+    twice. CIT-08 flags a fact-dense page starved of PageRank relative to a
+    non-fact-dense hub; CIT-09 flags the sample-wide absence of any
+    comparison-shaped page.
+
+    Before this, the orchestrator's per-page checks meant one Python
+    subprocess spawn per sampled page — the dominant residual cost once
+    fetches themselves are cache-warm, since retrieval-readiness-audit and
+    static-extraction-audit had already moved to this same `--sample-file`
+    bulk shape for exactly that reason.
 
     The fetch loop is concurrent (Defect 2 follow-up to INF-10: sequential
     fetching made the 90s cap likely to fire on perfectly normal sites) —
@@ -998,12 +1101,11 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
     fetch timeout could otherwise run well past what one skill invocation
     should cost inside the audit's overall 5-minute budget. The check is
     still cooperative at batch granularity (an in-flight batch is allowed to
-    finish rather than aborted mid-flight), a deliberately coarser version
-    of the same tradeoff the old per-page check already made. On expiry,
-    fetching stops; already-fetched pages still get findings computed over
-    them (reduced coverage, not a failed capability), and every remaining
-    un-fetched page gets its own `unknown_checks` entry naming the cap as
-    the reason. `coverage_manifest` is always attached to the output."""
+    finish rather than aborted mid-flight). On expiry, fetching stops;
+    already-fetched pages still get findings computed over them (reduced
+    coverage, not a failed capability), and every remaining un-fetched page
+    gets its own `unknown_checks` entry naming the cap as the reason.
+    `coverage_manifest` is always attached to the output."""
     clock_kwargs = {"clock": clock} if clock is not None else {}
     budget = StageBudget(f"{OWNER_SKILL}-sample-fetch", _SAMPLE_FETCH_BUDGET_SECONDS, **clock_kwargs)
     unknowns: list[UnknownCheck] = []
@@ -1011,6 +1113,8 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
     edges: list[tuple[str, str]] = []
     page_word_counts: dict[str, int] = {}
     page_titles: dict[str, str] = {}
+    per_page_findings: list[dict] = []
+    per_page_judgements: list[dict] = []
 
     index = 0
     while index < len(page_urls):
@@ -1018,7 +1122,7 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
             for skipped_url in page_urls[index:]:
                 unknowns.append(
                     UnknownCheck(
-                        "CIT-08",
+                        "*",
                         OWNER_SKILL,
                         f"{skipped_url} was not fetched: {budget.stage} budget of "
                         f"{budget.cap_seconds}s was exceeded",
@@ -1030,9 +1134,12 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
         for page_url, html_or_error, status in fetch_pages_concurrently(chunk):
             if status != "present" or html_or_error is None:
                 unknowns.append(
-                    UnknownCheck("CIT-08", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
+                    UnknownCheck("*", OWNER_SKILL, f"{page_url} could not be fetched: {html_or_error}")
                 )
                 continue
+            page_result = audit_html(site, html_or_error, page_url=page_url)
+            per_page_findings.extend(page_result["findings"])
+            per_page_judgements.extend(page_result["agent_judgement_required"])
             node_ids.append(page_url)
             _, _, visible_text = parse_page(html_or_error)
             page_word_counts[page_url] = len(visible_text.split())
@@ -1041,15 +1148,15 @@ def audit_link_graph(site: str, page_urls: list[str], *, clock=None) -> dict:
                 if is_internal_link(link.url, site):
                     edges.append((page_url, link.url))
 
-    findings = find_link_authority_starved_pages(node_ids, edges, page_word_counts)
-    findings += find_comparison_content_gap(page_titles)
+    multi_page_findings = find_link_authority_starved_pages(node_ids, edges, page_word_counts)
+    multi_page_findings += find_comparison_content_gap(page_titles)
 
     return {
         "owner_skill": OWNER_SKILL,
         "capability_ids": CAPABILITY_IDS,
         "site": site,
-        "findings": [f.to_dict() for f in findings],
-        "agent_judgement_required": [],
+        "findings": per_page_findings + [f.to_dict() for f in multi_page_findings],
+        "agent_judgement_required": per_page_judgements,
         "unknown_checks": [u.to_dict() for u in unknowns],
         "coverage": coverage_manifest([budget]),
     }
@@ -1071,10 +1178,11 @@ def main(argv: list[str] | None = None) -> int:
     parser_.add_argument(
         "--sample-file",
         help=(
-            "Run CIT-08's hub/authority link-graph check and CIT-09's comparison-content-gap "
-            "check across a local file of on-site page URLs (one per line — the sample_urls "
-            "from audit-orchestrator's sample_pages.py) instead of auditing a single page. "
-            "Fetches each page itself (same as --url). Requires --site."
+            "Run every citability-audit capability — the once-per-page checks (CIT-01, CIT-02, "
+            "CIT-06, CIT-07 script-decided; CIT-04 agent-judged) plus CIT-08's hub/authority "
+            "link-graph check and CIT-09's comparison-content-gap check — across a local file of "
+            "on-site page URLs (one per line — the sample_urls from audit-orchestrator's "
+            "sample_pages.py), fetched once concurrently instead of once per page. Requires --site."
         ),
     )
     args = parser_.parse_args(argv)
@@ -1088,7 +1196,7 @@ def main(argv: list[str] | None = None) -> int:
             for line in Path(args.sample_file).read_text(encoding="utf-8", errors="replace").splitlines()
             if line.strip()
         ]
-        json.dump(audit_link_graph(site, page_urls), sys.stdout, indent=2)
+        json.dump(audit_sample(site, page_urls), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return 0
 

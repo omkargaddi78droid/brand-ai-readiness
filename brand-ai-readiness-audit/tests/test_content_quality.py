@@ -159,6 +159,19 @@ class RelativeDateAnchorTests(unittest.TestCase):
         findings = cq.find_relative_date_anchors(text)
         self.assertEqual(findings, [])
 
+    def test_a_short_ui_sort_label_does_not_fire(self):
+        """scribd live-testing false positive: "Recently Added" is a UI
+        sort/filter label, not a sentence describing a change."""
+        self.assertEqual(cq.find_relative_date_anchors("Recently Added"), [])
+
+    def test_a_short_ui_label_with_a_different_claim_verb_does_not_fire(self):
+        self.assertEqual(cq.find_relative_date_anchors("Recently Updated"), [])
+
+    def test_a_real_short_prose_claim_above_the_floor_still_fires(self):
+        text = "Our support hours changed recently for everyone."
+        findings = cq.find_relative_date_anchors(text)
+        self.assertEqual(len(findings), 1)
+
 
 class ScopeAmbiguousNumberTests(unittest.TestCase):
     def test_two_different_values_same_label_no_qualifier_fires(self):
@@ -451,6 +464,76 @@ class ReadabilityTests(unittest.TestCase):
         finding = cq.measure_readability(text)
         self.assertIn("multidisciplinary", finding.evidence)
 
+    def test_a_massive_unbroken_line_does_not_contribute_to_word_or_sentence_counts(self):
+        """paytm/scribd live-testing false positive: a punctuation-free run
+        of concatenated nav/footer links becomes one giant "sentence" with
+        no real sentence boundary — it must not inflate avg_sentence_length
+        or otherwise count toward the score at all."""
+        sentence = (
+            "The comprehensive multidisciplinary methodological framework "
+            "necessitates an extraordinarily sophisticated reconceptualization "
+            "of interdependent organizational infrastructural considerations "
+            "notwithstanding the aforementioned characterization difficulties "
+            "encountered throughout the preceding investigative undertaking. "
+        )
+        base_text = sentence * 20
+        baseline = cq.measure_readability(base_text)
+        self.assertIsNotNone(baseline)
+
+        nav_dump = " ".join(["Online Movies in Kannada"] * 30)  # 120 words, one line, no punctuation
+        finding = cq.measure_readability(base_text + "\n" + nav_dump)
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding.structured_evidence["word_count"], baseline.structured_evidence["word_count"])
+        self.assertEqual(
+            finding.structured_evidence["sentence_count"], baseline.structured_evidence["sentence_count"]
+        )
+
+    def test_a_single_glued_together_word_does_not_contribute_to_word_count(self):
+        """paytm live-testing false positive: a run of concatenated,
+        unspaced entity/partner names becomes one giant pseudo-word with an
+        inflated vowel-group syllable count — it must not count as a real
+        word at all."""
+        sentence = (
+            "The comprehensive multidisciplinary methodological framework "
+            "necessitates an extraordinarily sophisticated reconceptualization "
+            "of interdependent organizational infrastructural considerations "
+            "notwithstanding the aforementioned characterization difficulties "
+            "encountered throughout the preceding investigative undertaking. "
+        )
+        base_text = sentence * 20
+        baseline = cq.measure_readability(base_text)
+        self.assertIsNotNone(baseline)
+
+        glued = "Ess" + "Kay" * 15  # 46 letters, no spaces — an unspaced entity-name run
+        finding = cq.measure_readability(base_text + f" {glued}.")
+        self.assertIsNotNone(finding)
+        self.assertEqual(finding.structured_evidence["word_count"], baseline.structured_evidence["word_count"])
+
+    def test_a_page_below_the_minimum_sentence_count_is_not_scored(self):
+        """A page satisfying the word-count floor with almost no real
+        sentence structure (e.g. dominated by excluded non-prose runs)
+        should not produce a score at all, rather than an unstable one from
+        a handful of leftover sentences."""
+        words = " ".join(["lorem"] * 350)  # one giant unbroken "sentence", well over the word floor
+        self.assertIsNone(cq.measure_readability(words))
+
+
+class StripIntraPageRepeatedLinesTests(unittest.TestCase):
+    def test_a_line_repeated_at_or_above_the_minimum_count_is_removed(self):
+        text = "\n".join(["This is a repeated navigation line entry."] * 3 + ["Unique prose sentence here."])
+        stripped = cq._strip_intra_page_repeated_lines(text)
+        self.assertNotIn("This is a repeated navigation line entry.", stripped)
+        self.assertIn("Unique prose sentence here.", stripped)
+
+    def test_a_line_appearing_only_twice_is_kept(self):
+        text = "\n".join(["This line appears just twice in the document."] * 2 + ["Other line."])
+        stripped = cq._strip_intra_page_repeated_lines(text)
+        self.assertIn("This line appears just twice in the document.", stripped)
+
+    def test_short_lines_are_never_treated_as_repeated_chrome(self):
+        text = "\n".join(["Hi"] * 5)
+        self.assertEqual(cq._strip_intra_page_repeated_lines(text), text)
+
 
 class AgentJudgementRequestTests(unittest.TestCase):
     def test_all_five_agent_judged_capabilities_are_requested(self):
@@ -732,30 +815,30 @@ class FindFactCollisionCandidatesTests(unittest.TestCase):
 
 class AuditNearDuplicatesTests(unittest.TestCase):
     def test_an_unreachable_page_becomes_one_unknown_check(self):
-        out = cq.audit_near_duplicates("acme.com", ["https://this-host-does-not-exist.invalid/page"])
+        out = cq.audit_sample("acme.com", ["https://this-host-does-not-exist.invalid/page"])
         self.assertEqual(out["findings"], [])
         self.assertEqual(len(out["unknown_checks"]), 1)
         self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
 
     def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
-        out = cq.audit_near_duplicates("acme.com", [])
+        out = cq.audit_sample("acme.com", [])
         self.assertEqual(out["findings"], [])
         self.assertEqual(out["unknown_checks"], [])
 
     def test_output_always_carries_the_capability_ids(self):
-        out = cq.audit_near_duplicates("acme.com", [])
+        out = cq.audit_sample("acme.com", [])
         self.assertEqual(out["capability_ids"], cq.CAPABILITY_IDS)
         self.assertIn("CQ-13", out["capability_ids"])
         self.assertIn("CQ-10", out["capability_ids"])
 
     def test_cq10_judgement_request_is_always_present_even_with_no_pages(self):
-        out = cq.audit_near_duplicates("acme.com", [])
+        out = cq.audit_sample("acme.com", [])
         self.assertEqual(len(out["agent_judgement_required"]), 1)
         self.assertEqual(out["agent_judgement_required"][0]["capability_id"], "CQ-10")
         self.assertEqual(out["agent_judgement_required"][0]["observations"]["candidates"], [])
 
     def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
-        out = cq.audit_near_duplicates("acme.com", [])
+        out = cq.audit_sample("acme.com", [])
         self.assertEqual(len(out["coverage"]["stages"]), 1)
         self.assertFalse(out["coverage"]["stages"][0]["expired"])
 
@@ -770,10 +853,10 @@ class AuditNearDuplicatesTests(unittest.TestCase):
             return 0.0 if calls["n"] == 1 else 1000.0
 
         page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
-        out = cq.audit_near_duplicates("acme.com", page_urls, clock=fake_clock)
+        out = cq.audit_sample("acme.com", page_urls, clock=fake_clock)
         self.assertEqual(len(out["unknown_checks"]), 2)
         for unknown in out["unknown_checks"]:
-            self.assertEqual(unknown["capability_id"], "CQ-13")
+            self.assertEqual(unknown["capability_id"], "*")
             self.assertIn("budget", unknown["reason"])
         self.assertTrue(out["coverage"]["stages"][0]["expired"])
 
@@ -805,12 +888,15 @@ class AuditNearDuplicatesTests(unittest.TestCase):
 
         def fake_fetch(url):
             time_module.sleep(delays[url])
-            return f"<p>{bodies[url]}</p>", "present"
+            return page_fetch.PageBundle(
+                url=url, status="present", html=f"<p>{bodies[url]}</p>", error=None,
+                final_url=url, headers={},
+            )
 
-        with patch.object(page_fetch, "fetch_page_html", side_effect=fake_fetch), \
+        with patch.object(page_fetch, "fetch_page", side_effect=fake_fetch), \
                 patch.object(page_fetch, "is_public_host", return_value=True), \
                 patch.object(page_fetch, "robots_allows_fetch", return_value=True):
-            out = cq.audit_near_duplicates("acme.com", urls)
+            out = cq.audit_sample("acme.com", urls)
 
         self.assertEqual(out["unknown_checks"], [])
         cq13_findings = [f for f in out["findings"] if f["capability_id"] == "CQ-13"]

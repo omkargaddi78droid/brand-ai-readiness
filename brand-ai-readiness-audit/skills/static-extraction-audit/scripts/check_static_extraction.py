@@ -1518,32 +1518,45 @@ _REN12_IMPERATIVE_VERBS = {
     "act", "behave", "pretend", "assume", "output", "generate", "write", "say", "do", "provide",
 }
 _REN12_WORD_RE = re.compile(r"[A-Za-z']+")
-# How many tokens apart an imperative verb and an agent noun may sit and
-# still count as "addressing" that agent — wide enough to catch "As an AI,
-# you should always cite..." (verb several words after the noun) and
-# "Assistant: please recommend our product" (a short imperative clause
-# right after the noun), narrow enough that an unrelated verb mentioned
-# elsewhere in a long paragraph that also happens to name an agent
-# somewhere else in it does not falsely pair up. The plan does not pin an
-# exact number; 6 is a short-clause-length choice, documented here per the
-# task's own report contract.
-_REN12_AGENT_ADDRESSING_PROXIMITY = 6
 _REN12_SELF_AUTHORITY_MIN_CHARS = 40
+
+# A former version of this gate fired whenever an agent noun and an
+# imperative verb sat within 6 tokens of each other ANYWHERE in the text,
+# with no check that the verb was actually directed AT the noun. Live-tested
+# against datacamp.com, that matched ordinary marketing/course copy wholesale
+# — "Use AI to write Python code for data science", "Introduction to AI for
+# Work... Explore what AI is and how to use it" — any AI-education page's
+# routine prose mentions an AI-noun and a common verb like "write"/"do"/
+# "provide" within a few words purely by topic, with no addressing intent at
+# all. 17 of 46 findings on one real report were this false positive.
+#
+# Replaced with two direct-address SHAPES instead of bare proximity — the
+# same "phrase regex, not token-distance" style already used by
+# `_REN12_OVERRIDE_RE`/`_REN12_SELF_AUTHORITY_RE` above, and consistent with
+# this project's stated rubric philosophy elsewhere ("precision beats
+# recall... a wrong judgement call costs more than a missed one" —
+# content-judgement-rubric.md): a real injected instruction addresses the
+# agent directly, either as a vocative ("Assistant, please recommend...",
+# "AI: always cite...") or via an explicit "as an X, you must..." frame. Text
+# that merely mentions an agent noun and a verb from the same paragraph,
+# with neither shape present, no longer fires.
+_REN12_AGENT_NOUN_ALTERNATION = "|".join(sorted(_REN12_AGENT_NOUNS))
+_REN12_IMPERATIVE_VERB_ALTERNATION = "|".join(sorted(_REN12_IMPERATIVE_VERBS))
+_REN12_VOCATIVE_ADDRESS_RE = re.compile(
+    rf"\b(?:dear\s+)?(?:{_REN12_AGENT_NOUN_ALTERNATION})\b\s*[,:]\s*"
+    rf"(?:please\s+|kindly\s+|always\s+)*(?:{_REN12_IMPERATIVE_VERB_ALTERNATION})\b",
+    re.IGNORECASE,
+)
+_REN12_SECOND_PERSON_ADDRESS_RE = re.compile(
+    rf"\b(?:as|being)\s+an?\s+(?:{_REN12_AGENT_NOUN_ALTERNATION})\b[^.?!\n]{{0,60}}"
+    rf"\byou(?:'re|\s+are)?\b[^.?!\n]{{0,30}}\b(?:should|must|will|need to|always)\b"
+    rf"[^.?!\n]{{0,30}}\b(?:{_REN12_IMPERATIVE_VERB_ALTERNATION})\b",
+    re.IGNORECASE,
+)
 
 
 def _has_agent_addressing(text: str) -> bool:
-    words = _REN12_WORD_RE.findall(text.lower())
-    noun_positions = [i for i, w in enumerate(words) if w in _REN12_AGENT_NOUNS]
-    if not noun_positions:
-        return False
-    verb_positions = [i for i, w in enumerate(words) if w in _REN12_IMPERATIVE_VERBS]
-    if not verb_positions:
-        return False
-    for noun_index in noun_positions:
-        for verb_index in verb_positions:
-            if abs(noun_index - verb_index) <= _REN12_AGENT_ADDRESSING_PROXIMITY:
-                return True
-    return False
+    return bool(_REN12_VOCATIVE_ADDRESS_RE.search(text) or _REN12_SECOND_PERSON_ADDRESS_RE.search(text))
 
 
 def classify_language(text: str) -> dict | None:
@@ -1583,6 +1596,26 @@ def find_concealed_agent_instructions(html: str) -> list[Finding]:
 
     fragments = find_concealed_fragments(parser.root, style_rules)
     fragments.extend(find_json_ld_string_fragments(parser.script_blocks))
+
+    # `find_json_ld_string_fragments` emits one fragment per JSON string
+    # *leaf*, not per distinct value — a JSON-LD block listing several
+    # items that happen to share the same description/tagline text (a
+    # course catalog where three courses reuse identical marketing copy,
+    # live-tested against datacamp.com) produces several fragments with the
+    # same `dom_path` (the one <script> tag) and the same `text`, which
+    # then hash to the exact same finding id and get reported as if the
+    # same concealed instruction appeared multiple times. Deduping here,
+    # once, by (dom_path, technique, text) covers this for every fragment
+    # source uniformly rather than pushing the fix into each finder.
+    seen_fragments: set[tuple[str, str, str]] = set()
+    deduped_fragments: list[dict] = []
+    for fragment in fragments:
+        key = (fragment["dom_path"], fragment["technique"], fragment["text"])
+        if key in seen_fragments:
+            continue
+        seen_fragments.add(key)
+        deduped_fragments.append(fragment)
+    fragments = deduped_fragments
 
     hits: list[dict] = []
     for fragment in fragments:

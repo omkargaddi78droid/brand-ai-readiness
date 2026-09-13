@@ -28,6 +28,8 @@ from _perimeter_encoding import _best_effort_decode_content_encoding  # noqa: E4
 from _perimeter_fetch import (  # noqa: E402
     fetch_text,
     classify_response,
+    circuit_is_open,
+    record_connection_result,
     CHALLENGE_MARKERS,
     EDGE_BLOCK_STATUS_CODES,
 )
@@ -172,7 +174,17 @@ def _edge_block_finding(tier: str, agent: str, classification: str, http_status:
 def probe_with_user_agent(url: str, user_agent: str, timeout: float = FETCH_TIMEOUT_SECONDS) -> tuple[str, int | None]:
     """Live GET classified by `classify_response`. The only impure function in
     the PER-03 chain; kept this small so everything upstream of it stays
-    testable without a network."""
+    testable without a network.
+
+    Gated by the same fail-fast circuit breaker `_perimeter_fetch.fetch_text`
+    uses (shared by host, process-lifetime): PER-03 issues one probe per
+    bot-tier group plus a baseline, each its own connection — on a host
+    that is unreachable outright (not merely blocking with a real HTTP
+    response), those add up fast on top of `fetch_text`'s own sequential
+    chain. Once open, a probe to that host returns "unreachable" immediately
+    without a network attempt."""
+    if circuit_is_open(url) is not None:
+        return "unreachable", None
     request = urllib.request.Request(
         url,
         headers={"User-Agent": user_agent, "X-Audit-Purpose": AUDIT_PURPOSE_HEADER},
@@ -183,6 +195,7 @@ def probe_with_user_agent(url: str, user_agent: str, timeout: float = FETCH_TIME
             raw = response.read(4096)
             raw = _best_effort_decode_content_encoding(raw, response.headers.get("Content-Encoding", ""))
             body = raw.decode("utf-8", errors="replace")
+            record_connection_result(url, failed=False)
             return classify_response(response.status, body), response.status
     except urllib.error.HTTPError as error:
         try:
@@ -193,8 +206,10 @@ def probe_with_user_agent(url: str, user_agent: str, timeout: float = FETCH_TIME
             body = ""
         finally:
             error.close()
+        record_connection_result(url, failed=False)
         return classify_response(error.code, body), error.code
-    except Exception:
+    except Exception as error:
+        record_connection_result(url, failed=True, error_text=f"{type(error).__name__}: {error}")
         return "unreachable", None
 
 

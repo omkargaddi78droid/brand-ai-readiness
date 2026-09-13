@@ -985,23 +985,23 @@ class FindAddressInconsistenciesTests(unittest.TestCase):
 
 class AuditServiceDomainsTests(unittest.TestCase):
     def test_an_unreachable_sampled_page_becomes_one_unknown_check(self):
-        out = ent.audit_service_domains("acmewidgets.com", ["https://this-host-does-not-exist.invalid/page"])
+        out = ent.audit_sample("acmewidgets.com", ["https://this-host-does-not-exist.invalid/page"])
         self.assertEqual(out["findings"], [])
         self.assertEqual(len(out["unknown_checks"]), 1)
         self.assertIn("this-host-does-not-exist.invalid", out["unknown_checks"][0]["reason"])
 
     def test_no_page_urls_produces_an_empty_clean_report_not_a_crash(self):
-        out = ent.audit_service_domains("acmewidgets.com", [])
+        out = ent.audit_sample("acmewidgets.com", [])
         self.assertEqual(out["findings"], [])
         self.assertEqual(out["unknown_checks"], [])
 
     def test_output_always_carries_the_capability_ids(self):
-        out = ent.audit_service_domains("acmewidgets.com", [])
+        out = ent.audit_sample("acmewidgets.com", [])
         self.assertEqual(out["capability_ids"], ent.CAPABILITY_IDS)
         self.assertIn("ENT-07", out["capability_ids"])
 
     def test_coverage_manifest_is_always_attached_and_not_expired_by_default(self):
-        out = ent.audit_service_domains("acmewidgets.com", [])
+        out = ent.audit_sample("acmewidgets.com", [])
         self.assertEqual(len(out["coverage"]["stages"]), 1)
         self.assertFalse(out["coverage"]["stages"][0]["expired"])
 
@@ -1013,10 +1013,10 @@ class AuditServiceDomainsTests(unittest.TestCase):
             return 0.0 if calls["n"] == 1 else 1000.0
 
         page_urls = ["https://this-host-does-not-exist.invalid/a", "https://this-host-does-not-exist.invalid/b"]
-        out = ent.audit_service_domains("acmewidgets.com", page_urls, clock=fake_clock)
+        out = ent.audit_sample("acmewidgets.com", page_urls, clock=fake_clock)
         self.assertEqual(len(out["unknown_checks"]), 2)
         for unknown in out["unknown_checks"]:
-            self.assertEqual(unknown["capability_id"], "ENT-07")
+            self.assertEqual(unknown["capability_id"], "*")
             self.assertIn("budget", unknown["reason"])
         self.assertTrue(out["coverage"]["stages"][0]["expired"])
 
